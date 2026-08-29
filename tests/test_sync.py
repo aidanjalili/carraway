@@ -219,3 +219,46 @@ def test_an_edge_block_is_not_reported_as_a_claimed_token():
     assert _is_edge_block("Attention Required! | Cloudflare")
     assert not _is_edge_block("Forbidden (was it already claimed?)")
     assert not _is_edge_block("")
+
+
+def test_embedded_credentials_become_an_auth_header():
+    # SimpleFIN returns https://user:pass@host/simplefin, which urllib cannot
+    # use — it parses the password as a port and raises ValueError. Splitting
+    # them also keeps the secret out of any URL that might be logged or land
+    # in a traceback.
+    import base64
+
+    from carraway.sync.simplefin import split_credentials
+
+    url, auth = split_credentials("https://USER123:PASSabc@bridge.example.org/simplefin")
+    assert url == "https://bridge.example.org/simplefin"
+    assert base64.b64decode(auth.split()[1]).decode() == "USER123:PASSabc"
+
+    # A URL without credentials is left exactly as it was.
+    assert split_credentials("https://bridge.example.org/simplefin") == (
+        "https://bridge.example.org/simplefin",
+        "",
+    )
+
+
+def test_both_error_field_names_are_read():
+    # The published protocol says `errlist` with {code, msg} objects; the live
+    # Bridge returns `errors` with plain strings. A response that explains
+    # itself should not be thrown away over a field name.
+    from carraway.sync.simplefin import _messages_in
+
+    assert _messages_in('{"errors":["No connections available."],"accounts":[]}') == [
+        "No connections available."
+    ]
+    assert _messages_in('{"errlist":[{"code":"con.auth","msg":"Reauthorise Chase"}]}') == [
+        "Reauthorise Chase"
+    ]
+    assert _messages_in("not json at all") == []
+    assert _messages_in("") == []
+
+
+def test_plain_string_errors_become_warnings():
+    payload = {"errors": ["Chase needs reauthorisation"], "accounts": []}
+    with patch("carraway.sync.simplefin._get", return_value=payload):
+        result = SimpleFinProvider("https://u:p@example.org/simplefin").fetch()
+    assert result.warnings == ["Chase needs reauthorisation"]

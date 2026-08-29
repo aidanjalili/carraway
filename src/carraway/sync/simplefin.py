@@ -160,18 +160,42 @@ def claim_setup_token(setup_token: str) -> str:
     return access_url
 
 
-def _get(access_url: str, params: dict[str, str]) -> dict[str, Any]:
-    """GET /accounts against the access URL.
+def split_credentials(access_url: str) -> tuple[str, str]:
+    """Separate an access URL into (url without credentials, Basic auth value).
 
-    The credentials are embedded in the URL, so urllib carries them itself; no
-    Authorization header is assembled here and none is logged.
+    SimpleFIN hands back `https://user:pass@host/simplefin`. urllib cannot use
+    that form — it parses the password as a port and raises — so the userinfo
+    is stripped out and sent as an Authorization header instead. Keeping this
+    in one place also means the credential never ends up in a URL that could
+    be logged or printed in a traceback.
     """
-    base = access_url.rstrip("/")
-    url = f"{base}/accounts"
+    parsed = urllib.parse.urlsplit(access_url)
+    if not parsed.username:
+        return access_url, ""
+
+    user = urllib.parse.unquote(parsed.username)
+    password = urllib.parse.unquote(parsed.password or "")
+    host = parsed.hostname or ""
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+
+    clean = urllib.parse.urlunsplit((parsed.scheme, host, parsed.path, parsed.query, ""))
+    token = base64.b64encode(f"{user}:{password}".encode()).decode()
+    return clean, f"Basic {token}"
+
+
+def _get(access_url: str, params: dict[str, str]) -> dict[str, Any]:
+    """GET /accounts against the access URL."""
+    base, authorization = split_credentials(access_url)
+    url = base.rstrip("/") + "/accounts"
     if params:
         url += "?" + urllib.parse.urlencode(params)
+
     request = urllib.request.Request(url)
     request.add_header("User-Agent", _USER_AGENT)
+    if authorization:
+        request.add_header("Authorization", authorization)
+
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
             # parse_float=Decimal keeps balances and amounts exact; a float
@@ -192,11 +216,42 @@ def _get(access_url: str, params: dict[str, str]) -> dict[str, Any]:
             ) from exc
         if exc.code == 402:
             raise SimpleFinError("SimpleFIN says payment is required on your account") from exc
+        # A 4xx usually carries a JSON explanation worth far more than the
+        # status code — "No connections available." tells the user exactly
+        # what to do, where "HTTP 400" tells them nothing.
+        for message in _messages_in(body):
+            raise SimpleFinError(message) from exc
         raise SimpleFinError(f"SimpleFIN returned HTTP {exc.code}") from exc
     except urllib.error.URLError as exc:
+        # Deliberately reports the reason only. The URL carries credentials,
+        # and urllib puts it in the exception text.
         raise SimpleFinError(f"Could not reach SimpleFIN: {exc.reason}") from exc
     except json.JSONDecodeError as exc:
         raise SimpleFinError("SimpleFIN returned a response that is not JSON") from exc
+
+
+def _messages_in(body: str) -> list[str]:
+    """Human-readable errors out of a SimpleFIN response body.
+
+    The published protocol calls the field `errlist` with `{code, msg}`
+    objects, but the live Bridge returns `errors` holding plain strings. Both
+    are read, because a response that explains itself should not be discarded
+    over a field name.
+    """
+    try:
+        payload = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, dict):
+        return []
+
+    messages: list[str] = []
+    for entry in (payload.get("errors") or []) + (payload.get("errlist") or []):
+        if isinstance(entry, str) and entry.strip():
+            messages.append(entry.strip())
+        elif isinstance(entry, dict) and entry.get("msg"):
+            messages.append(str(entry["msg"]))
+    return messages
 
 
 def _account_type(name: str) -> AccountType:
@@ -269,11 +324,13 @@ class SimpleFinProvider:
         payload = _get(self.access_url, params)
         result = SyncResult()
 
-        for error in payload.get("errlist") or []:
-            # A failing connection should not cost the user the accounts that
-            # did sync, so these are reported rather than raised.
-            if isinstance(error, dict) and error.get("msg"):
-                result.warnings.append(str(error["msg"]))
+        # A failing connection should not cost the user the accounts that did
+        # sync, so these are reported rather than raised.
+        for entry in (payload.get("errors") or []) + (payload.get("errlist") or []):
+            if isinstance(entry, str) and entry.strip():
+                result.warnings.append(entry.strip())
+            elif isinstance(entry, dict) and entry.get("msg"):
+                result.warnings.append(str(entry["msg"]))
 
         for node in payload.get("accounts") or []:
             if not isinstance(node, dict):

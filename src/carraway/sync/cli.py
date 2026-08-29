@@ -126,7 +126,22 @@ def cmd_simplefin_sync(args: argparse.Namespace) -> int:
         result = provider.fetch(since=since, pending=args.pending)
     except SimpleFinError as exc:
         print(f"Sync failed: {exc}", file=sys.stderr)
+        if "no connections" in str(exc).lower():
+            # Connecting the app and connecting a bank are two separate steps
+            # in SimpleFIN Bridge, and it is easy to do only the first.
+            print(
+                "\nCarraway is connected to SimpleFIN, but SimpleFIN has no banks "
+                "linked yet.\nOpen SimpleFIN Bridge, use 'New connection' under "
+                "Financial Institutions to\nadd your bank, then run this again.",
+                file=sys.stderr,
+            )
         return 1
+
+    if not result.accounts:
+        print("SimpleFIN returned no accounts.")
+        for warning in result.warnings:
+            print(f"  {warning}")
+        return 0
 
     _persist(conn, result, "SimpleFIN")
     for account in result.accounts:
