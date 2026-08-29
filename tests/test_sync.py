@@ -1,0 +1,148 @@
+"""Provider adapters, and the credential store they depend on."""
+
+import json
+from datetime import date
+from unittest.mock import patch
+
+import pytest
+
+from carraway.core.money import Money
+from carraway.sync import credentials
+from carraway.sync.simplefin import SimpleFinError, SimpleFinProvider, claim_setup_token
+
+ACCOUNTS_PAYLOAD = {
+    "errlist": [{"code": "con.auth", "msg": "Chase needs reauthorisation"}],
+    "accounts": [
+        {
+            "id": "acc-1",
+            "name": "Everyday Checking",
+            "currency": "USD",
+            "balance": "1520.44",
+            "org": {"name": "Wells Fargo"},
+            "transactions": [
+                {
+                    "id": "t1",
+                    "posted": 1767139200,
+                    "amount": "-15.49",
+                    "description": "NETFLIX.COM",
+                },
+                {
+                    "id": "t2",
+                    "posted": 1767225600,
+                    "amount": "2612.44",
+                    "description": "ACME PAYROLL",
+                },
+            ],
+        },
+        {
+            "id": "acc-2",
+            "name": "Freedom Credit Card",
+            "currency": "USD",
+            "balance": "-842.10",
+            "org": {"name": "Chase"},
+            "transactions": [],
+        },
+    ],
+}
+
+
+def test_simplefin_maps_accounts_and_transactions():
+    with patch("carraway.sync.simplefin._get", return_value=ACCOUNTS_PAYLOAD):
+        result = SimpleFinProvider("https://u:p@example.org/simplefin").fetch()
+
+    assert [a.name for a in result.accounts] == ["Everyday Checking", "Freedom Credit Card"]
+    # Type is inferred from the name, since SimpleFIN does not report one.
+    assert str(result.accounts[1].type) == "credit_card"
+    assert result.accounts[0].institution == "Wells Fargo"
+
+    # SimpleFIN's sign convention already matches ours: negative is money out.
+    amounts = {t.description: t.amount for t in result.transactions}
+    assert amounts["NETFLIX.COM"] == Money.parse("-15.49")
+    assert amounts["ACME PAYROLL"] == Money.parse("2612.44")
+
+
+def test_a_failing_connection_does_not_lose_the_others():
+    # One bank needing reauthorisation must not cost the user the accounts
+    # that synced fine, so provider errors are warnings rather than exceptions.
+    with patch("carraway.sync.simplefin._get", return_value=ACCOUNTS_PAYLOAD):
+        result = SimpleFinProvider("https://u:p@example.org/simplefin").fetch()
+
+    assert result.warnings == ["Chase needs reauthorisation"]
+    assert len(result.accounts) == 2
+
+
+def test_resyncing_reuses_local_account_ids():
+    # Without this a second sync creates a parallel set of duplicate accounts.
+    provider = SimpleFinProvider("https://u:p@example.org/simplefin")
+    with patch("carraway.sync.simplefin._get", return_value=ACCOUNTS_PAYLOAD):
+        first = provider.fetch()
+        second = provider.fetch()
+
+    assert [a.id for a in first.accounts] == [a.id for a in second.accounts]
+
+
+def test_amounts_never_pass_through_a_float():
+    # json.loads would hand back 0.1 + 0.2 style floats; parse_float=Decimal is
+    # what keeps a cent from going missing between the bank and the ledger.
+    payload = json.loads('{"amount": 1234.56}', parse_float=__import__("decimal").Decimal)
+    assert str(payload["amount"]) == "1234.56"
+    assert Money.parse(str(payload["amount"])).minor == 123456
+
+
+def test_setup_token_must_be_base64_and_https():
+    with pytest.raises(SimpleFinError, match="setup token"):
+        claim_setup_token("this is not base64 at all !!")
+
+    import base64
+
+    plain = base64.b64encode(b"http://insecure.example.org/claim").decode()
+    with pytest.raises(SimpleFinError, match="HTTPS"):
+        claim_setup_token(plain)
+
+
+def test_credentials_round_trip(tmp_path, monkeypatch):
+    # Force the file fallback: the keyring is the machine's, not the test's.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(credentials, "_keyring", lambda: None)
+
+    assert credentials.load("unit-test-key") is None
+    credentials.store("unit-test-key", "s3cret")
+    assert credentials.load("unit-test-key") == "s3cret"
+
+    stored = tmp_path / "carraway" / "unit-test-key.secret"
+    # A secret written world-readable would be worse than not storing it.
+    assert stored.stat().st_mode & 0o077 == 0
+    assert credentials.delete("unit-test-key") is True
+    assert credentials.load("unit-test-key") is None
+
+
+def test_credentials_survive_a_broken_keyring(tmp_path, monkeypatch):
+    # A keyring that imports but has no working backend raises only on use.
+    # Falling through to the file beats losing what the user just pasted.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+
+    class Broken:
+        def set_password(self, *_):
+            raise RuntimeError("no Secret Service")
+
+        def get_password(self, *_):
+            raise RuntimeError("no Secret Service")
+
+    monkeypatch.setattr(credentials, "_keyring", lambda: Broken())
+    credentials.store("fallback-key", "value")
+    assert credentials.load("fallback-key") == "value"
+    credentials.delete("fallback-key")
+
+
+def test_since_becomes_a_start_date_parameter():
+    seen = {}
+
+    def fake_get(url, params):
+        seen.update(params)
+        return {"accounts": []}
+
+    with patch("carraway.sync.simplefin._get", side_effect=fake_get):
+        SimpleFinProvider("https://u:p@example.org/simplefin").fetch(since=date(2026, 1, 1))
+
+    assert "start-date" in seen
+    assert seen["start-date"].isdigit()

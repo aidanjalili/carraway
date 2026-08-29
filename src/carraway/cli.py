@@ -51,6 +51,7 @@ def cmd_accounts(args: argparse.Namespace) -> int:
 def cmd_import(args: argparse.Namespace) -> int:
     from .importers.csv_importer import ImportError_, import_csv
     from .importers.ofx_importer import import_ofx
+    from .importers.venmo import import_venmo, looks_like_venmo
 
     conn = db.connect(args.database)
     accounts = {a.id: a for a in db.list_accounts(conn)}
@@ -62,15 +63,27 @@ def cmd_import(args: argparse.Namespace) -> int:
     # Dispatch on extension. OFX is structured and unambiguous where CSV is
     # guesswork, so it is always preferred when the file offers it.
     suffix = Path(args.file).suffix.lower()
-    reader = import_ofx if suffix in (".ofx", ".qfx") else import_csv
+    if suffix in (".ofx", ".qfx"):
+        reader = import_ofx
+    elif suffix == ".csv" and looks_like_venmo(args.file):
+        # Venmo's export is a CSV, but with preamble, trailer rows and its own
+        # column names, so it is sniffed rather than left to the generic reader.
+        reader = import_venmo
+    else:
+        reader = import_csv
 
+    currency = accounts[args.account].currency
     try:
-        transactions, warnings = reader(
-            args.file,
-            args.account,
-            currency=accounts[args.account].currency,
-            flip_sign=args.flip_sign,
-        )
+        if reader is import_venmo:
+            # Venmo states the direction of every transaction explicitly, so
+            # there is no ambiguous sign for --flip-sign to resolve.
+            if args.flip_sign:
+                print("--flip-sign does not apply to Venmo exports; ignoring.", file=sys.stderr)
+            transactions, warnings = reader(args.file, args.account, currency=currency)
+        else:
+            transactions, warnings = reader(
+                args.file, args.account, currency=currency, flip_sign=args.flip_sign
+            )
     except ImportError_ as exc:
         print(f"Could not read {args.file}: {exc}", file=sys.stderr)
         return 1
@@ -484,6 +497,50 @@ def cmd_known(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_prices(args: argparse.Namespace) -> int:
+    """What has quietly gone up in price."""
+    from .analysis import price_changes, recurring
+
+    conn = db.connect(args.database)
+    transactions = db.list_transactions(conn)
+    if not transactions:
+        print("No transactions yet.")
+        return 0
+
+    series = recurring.detect(transactions, include_inflows=True)
+    changes = price_changes.find_price_changes(
+        transactions, series=series, include_inflows=args.include_income
+    )
+    if not changes:
+        print(f"No price changes found across {len(series)} recurring series.")
+        return 0
+
+    print(f"{len(changes)} price change(s):\n")
+    header = ["MERCHANT", "WAS", "NOW", "CHANGED", "PER YEAR", "CONF"]
+    rows = [
+        [
+            c.merchant[:28],
+            abs(c.old_amount).format(),
+            abs(c.new_amount).format(),
+            c.changed_on.isoformat(),
+            ("+" if c.direction == "increase" else "-") + abs(c.annual_impact).format(),
+            f"{c.confidence:.0%}",
+        ]
+        for c in changes
+    ]
+    widths = [max(len(r[i]) for r in [header, *rows]) for i in range(len(header))]
+    print(_fmt_row(header, widths))
+    print("-" * (sum(widths) + 2 * (len(widths) - 1)))
+    for row in rows:
+        print(_fmt_row(row, widths))
+
+    rises = [c for c in changes if c.direction == "increase"]
+    if rises:
+        yearly = total([abs(c.annual_impact) for c in rises])
+        print(f"\nPrice rises are costing you {yearly.format()}/year more than before.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="carraway",
@@ -557,6 +614,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_subs.set_defaults(func=cmd_subscriptions)
 
+    p_prices = sub.add_parser("prices", help="find recurring charges that changed price")
+    p_prices.add_argument(
+        "--include-income", action="store_true", help="also check recurring deposits"
+    )
+    p_prices.set_defaults(func=cmd_prices)
+
     p_known = sub.add_parser(
         "known", help="recognised subscriptions with too little history to detect"
     )
@@ -584,6 +647,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="skip anything costing less than this per year (default: %(default)s)",
     )
     p_review.set_defaults(func=cmd_review)
+
+    # Sync lives in its own package so the main CLI never imports it, and
+    # someone who only imports files pays nothing for code they never use.
+    from .sync.cli import register as register_sync
+
+    register_sync(sub, parser.get_default("database"))
 
     p_summary = sub.add_parser("summary", help="show totals across imported data")
     p_summary.add_argument("--account", help="limit to one account id")

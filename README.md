@@ -66,6 +66,7 @@ carraway recurring                             # everything that repeats
 carraway subscriptions                         # split into subscriptions, bills, habits
 carraway review                                # answer what it could not place
 carraway known                                 # recognised, but too little history to detect
+carraway prices                                # what quietly went up in price
 ```
 
 Recurring is not the same as cancellable. Rent, utilities and insurance repeat
@@ -126,17 +127,54 @@ pytest
 ## Bank connections — an honest note
 
 Carraway cannot offer free automatic bank sync, and neither can any other open
-source project. Aggregation providers (Plaid, MX, Finicity) charge per connected
-account per month, and a project with no revenue cannot absorb that.
+source project. Aggregation providers charge per connected account per month,
+and a project with no revenue cannot absorb that. So you bring your own
+provider: you hold the account, you pay them, and Carraway never sees a bank
+password.
 
-So the plan is:
+### SimpleFIN Bridge (recommended)
 
-- **File import** (CSV today, OFX/QFX next) — always free, always works.
-- **Bring-your-own provider** — optional adapters for [SimpleFIN][simplefin],
-  GoCardless and similar, where you supply the key and pay the provider directly
-  if you want automatic sync.
+Read-only access to thousands of US institutions for about **$15/year**, paid to
+[SimpleFIN][simplefin] directly.
 
-This is the same trade-off Actual Budget makes, for the same reason.
+```bash
+pip install -e '.[sync]'
+carraway simplefin setup      # paste the setup token from SimpleFIN Bridge
+carraway sync simplefin
+```
+
+The access URL is stored in your system keyring where one is available, and in
+a `0600` file under `~/.config/carraway` where one is not — the app tells you
+which before it saves anything.
+
+### Venmo — read this before enabling it
+
+⚠️ **Venmo retired its public API.** Carraway can sign in the way the Venmo
+mobile app does, and that carries real risks you are opting into:
+
+- **It breaks Venmo's terms of service**, and Venmo may suspend or close an
+  account for automated access.
+- **The token is not read-only.** Venmo issues one token for everything and it
+  never expires, so anyone holding it can move money. Carraway stores it in the
+  keyring, only ever issues `GET` requests with it, and `carraway venmo logout`
+  revokes it at Venmo rather than merely forgetting it locally.
+- **It will break** when an undocumented endpoint changes.
+
+Your password is used once during sign-in and never written anywhere.
+
+```bash
+carraway venmo login
+carraway sync venmo
+carraway venmo logout          # revoke the token when you are done
+```
+
+**The safer path, and the default:** Venmo's own CSV export
+(venmo.com → Statements → Download CSV, 90 days at a time) imports with no API
+access at all, and `carraway import` recognises the format automatically.
+
+```bash
+carraway import venmo-statement.csv --account <id>
+```
 
 ## Licence
 

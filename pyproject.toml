@@ -23,6 +23,9 @@ dependencies = []
 
 [project.optional-dependencies]
 gui = ["PySide6>=6.6"]
+# Bank sync needs no HTTP library — urllib does the job — but a secret belongs
+# in the OS keyring rather than a file. Optional, with a documented fallback.
+sync = ["keyring>=24.0"]
 dev = ["pytest>=8.0", "ruff>=0.6"]
 
 [project.scripts]
@@ -38,7 +41,7 @@ packages = ["src/carraway"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "src"]
-addopts = "-q --doctest-modules --ignore=src/carraway/cli.py --ignore=src/carraway/ui"
+addopts = "-q --doctest-modules --ignore=src/carraway/cli.py --ignore=src/carraway/ui --ignore=src/carraway/sync/cli.py"
 pythonpath = ["src"]
 
 [tool.ruff]

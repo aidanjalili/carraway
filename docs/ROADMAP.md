@@ -50,18 +50,20 @@ useful — no six-month stretch with nothing to show.
 - [ ] Month-over-month trends and net worth
 - [x] Recurring income and person-to-person payments surfaced for review
 - [x] A cancelled subscription stays visible but stops counting as money paid
-- [ ] Price-increase detection ("Netflix went from $15.49 to $17.99")
+- [x] Price-increase detection ("Netflix went from $15.49 to $17.99")
 - [ ] Import wizard with a column-mapping UI for banks the guesser misses
 - [ ] Load in a worker thread — 2,261 transactions is instant, but a decade of
       history on a slow disk should not freeze the window
 
 ## v0.4 — Bank sync (opt-in, bring your own key)
 
-- [ ] Provider adapter interface
-- [ ] SimpleFIN Bridge adapter (US, cheap, no business agreement needed)
+- [x] Provider adapter interface
+- [x] SimpleFIN Bridge adapter (US, ~$15/yr, no business agreement needed)
+- [x] Venmo, via the unofficial mobile API and via its CSV export
+- [x] Credential storage in the system keyring, with a 0600 file fallback
 - [ ] GoCardless adapter (UK/EU open banking, free tier)
-- [ ] Encrypted credential storage via the system keyring
 - [ ] Background sync with conflict handling against manual edits
+- [ ] Sync from the GUI rather than only the CLI
 
 ## v0.5 — Ship it
 
