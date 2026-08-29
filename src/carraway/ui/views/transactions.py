@@ -16,6 +16,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ...analysis import categorize as cat
 from ...core.models import Transaction
 from ...core.money import Money
 from .. import theme
@@ -113,9 +115,14 @@ class _FilterProxy(QSortFilterProxyModel):
     def __init__(self) -> None:
         super().__init__()
         self.account_id: str | None = None
+        self.kind: str = "All"
 
     def set_account(self, account_id: str | None) -> None:
         self.account_id = account_id
+        self.invalidateFilter()
+
+    def set_kind(self, kind: str) -> None:
+        self.kind = kind
         self.invalidateFilter()
 
     def filterAcceptsRow(self, row: int, parent: QModelIndex) -> bool:  # noqa: N802
@@ -123,6 +130,24 @@ class _FilterProxy(QSortFilterProxyModel):
         if self.account_id is not None:
             transaction = model.rows[row]
             if transaction.account_id != self.account_id:
+                return False
+
+        if self.kind != "All":
+            transaction = model.rows[row]
+            category = model.ledger.categories.get(transaction.id, "")
+            if self.kind == "Spending":
+                if not transaction.is_outflow or transaction.is_transfer:
+                    return False
+            elif self.kind == "Income":
+                if transaction.is_outflow or transaction.is_transfer:
+                    return False
+            elif self.kind == "Transfers":
+                if not (transaction.is_transfer or category == "Transfer"):
+                    return False
+            elif self.kind == "Pending":
+                if not transaction.pending:
+                    return False
+            elif self.kind != category:
                 return False
 
         needle = self.filterRegularExpression().pattern().lower()
@@ -164,10 +189,23 @@ class TransactionsView(QWidget):
         self.tabs.currentChanged.connect(self._account_changed)
         layout.addWidget(self.tabs)
 
+        search_row = QHBoxLayout()
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search description, category or account…")
         self.search.setClearButtonEnabled(True)
-        layout.addWidget(self.search)
+        search_row.addWidget(self.search, stretch=1)
+
+        # Direction first, then categories: "show me only income" is asked far
+        # more often than "show me only Pets", and a single list keeps the
+        # control simple.
+        self.kind = QComboBox()
+        self.kind.addItems(["All", "Spending", "Income", "Transfers", "Pending"])
+        self.kind.insertSeparator(self.kind.count())
+        self.kind.addItems(list(cat.CATEGORIES))
+        self.kind.currentTextChanged.connect(self._kind_changed)
+        search_row.addWidget(QLabel("Type"))
+        search_row.addWidget(self.kind)
+        layout.addLayout(search_row)
 
         self.model = TransactionModel(ledger)
         self.proxy = _FilterProxy()
@@ -195,6 +233,10 @@ class TransactionsView(QWidget):
         layout.addWidget(self.count)
 
         self._build_tabs()
+        self._update_count()
+
+    def _kind_changed(self, kind: str) -> None:
+        self.proxy.set_kind(kind)
         self._update_count()
 
     def _build_tabs(self) -> None:

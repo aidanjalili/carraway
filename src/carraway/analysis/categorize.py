@@ -186,6 +186,18 @@ BUILTIN_RULES: list[Rule] = [
         "ONLINE TRANSFER",
         "ONLINE BANKING TRANSFER",
         "XFER",
+        # Phrasings a real ledger turned up that the list above missed. A
+        # balance transfer is $3,192 of the user's own money moving between
+        # their own cards; counted as spending it is the single largest
+        # purchase in the history and entirely fictional.
+        "BALANCE TRANSFER",
+        "ELECTRONIC TRANSFER",
+        "INTERNAL TRANSFER",
+        "ACCOUNT TRANSFER",
+        "FUNDS TRANSFER",
+        "WIRE TRANSFER",
+        "TRANSFER TO SAVINGS",
+        "TRANSFER TO CHECKING",
         "ZELLE",
         "VENMO",
         "CASH APP",
@@ -535,6 +547,15 @@ BUILTIN_RULES: list[Rule] = [
         "DONORSCHOOSE",
         "1-800-FLOWERS",
         "KIVA.ORG",
+    ),
+    # Checked before the transfer rules by priority, since "BALANCE TRANSFER
+    # FEE" contains a transfer phrase but is money genuinely spent.
+    *_many(
+        FEES,
+        "BALANCE TRANSFER FEE",
+        "TRANSFER FEE",
+        "WIRE FEE",
+        priority=PRIORITY_USER,
     ),
     *_many(
         FEES,

@@ -22,6 +22,7 @@ from .data import Ledger
 from .views.budget import BudgetView
 from .views.dashboard import DashboardView
 from .views.networth import NetWorthView
+from .views.spending import SpendingView
 from .views.subscriptions import SubscriptionsView
 from .views.transactions import TransactionsView
 
@@ -31,6 +32,7 @@ _SCREENS = [
     ("Subscriptions", SubscriptionsView),
     ("Net worth", NetWorthView),
     ("Budget", BudgetView),
+    ("Spending", SpendingView),
     ("Overview", DashboardView),
     ("Transactions", TransactionsView),
 ]

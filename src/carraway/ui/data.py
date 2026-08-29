@@ -15,6 +15,7 @@ from ..analysis import budget as budget_mod
 from ..analysis import categorize as cat
 from ..analysis import networth as networth_mod
 from ..analysis import price_changes, recurring, subscriptions, transfers
+from ..analysis import spending as spending_mod
 from ..core import db
 from ..core.models import Account, RecurringSeries, Transaction
 from ..core.money import Money, total
@@ -117,6 +118,12 @@ class Ledger:
         conn.close()
         self.manual = db.list_manual_subscriptions(db.connect(self.path))
         return True
+
+    def spending_buckets(self, period: str = "monthly") -> list:
+        """Spending per period, with the computed categories rather than stored
+        ones — nothing writes a category to the database."""
+        names = [self.categories.get(t.id, "Uncategorized") for t in self.transactions]
+        return spending_mod.buckets(self.transactions, period=period, categories=names)
 
     def networth_points(self, granularity: str = "monthly") -> list:
         """Reconstructed net worth history, or empty when no balance is known.
