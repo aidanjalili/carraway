@@ -61,3 +61,16 @@ def test_signature_is_stable_and_ignores_user_edits():
     txs_b[0].category = "Entertainment"
     txs_b[0].notes = "shared with roommate"
     assert txs_a[0].signature == txs_b[0].signature
+
+
+def test_html_entities_in_descriptions_are_decoded():
+    # Seen on a real export: one row wrote "C &amp; S" where every other row
+    # wrote "C & S", which split one vendor into two merchants.
+    csv_text = (
+        "Date,Description,Amount\n"
+        "2026-01-14,CTLP*C &amp; S VENDING COM,-2.50\n"
+        "2026-01-15,CTLP*C & S VENDING COM,-2.50\n"
+    )
+    txs, _ = import_csv(io.StringIO(csv_text), "acct1")
+    assert txs[0].description == "CTLP*C & S VENDING COM"
+    assert txs[0].merchant == txs[1].merchant

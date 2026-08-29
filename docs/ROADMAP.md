@@ -21,7 +21,14 @@ useful — no six-month stretch with nothing to show.
 - [x] Merchant normalisation hardened against real statements
 - [ ] User-editable merchant alias table — normalisation can fold "NETFLIX.COM"
       and "NETFLIX, INC." together, but no heuristic will ever unify every
-      descriptor a bank invents. The user needs the last word.
+      descriptor a bank invents. The user needs the last word. Real data makes
+      the case: "KWIK TRIP", "KWIK TRIP VERONA" and "KWIK TRIP NORTHFIELD" are
+      three merchants to the normaliser because it cannot know which trailing
+      word is a town. Folding a merchant into a shorter one that is a prefix of
+      it would catch most of these automatically.
+- [ ] Learned categorisation. The built-in rules reach ~70% of a real ledger;
+      the rest is local businesses no shipped ruleset can ever name. The seam
+      is already there: `categorize_all(..., fallback=)`.
 - [ ] Split transactions
 - [ ] Separate *subscriptions* from merely *periodic spending*. Real data
       flagged a weekly corner-shop habit and a monthly takeaway order as

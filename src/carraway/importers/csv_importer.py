@@ -9,6 +9,7 @@ usable without paying a bank-aggregation provider.
 from __future__ import annotations
 
 import csv
+import html
 import io
 import uuid
 from dataclasses import dataclass
@@ -172,7 +173,10 @@ def import_csv(
             if amount is None:
                 warnings.append(f"line {line_no}: no amount, skipped")
                 continue
-            description = " ".join((row.get(mapping.description) or "").split())
+            # Some exporters emit "C &amp; S VENDING" rather than "C & S".
+            # Left alone it becomes a second, separate merchant.
+            raw_description = html.unescape(row.get(mapping.description) or "")
+            description = " ".join(raw_description.split())
             if not description:
                 description = "(no description)"
 
