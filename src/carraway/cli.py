@@ -541,6 +541,107 @@ def cmd_prices(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_backup(args: argparse.Namespace) -> int:
+    """Snapshot the database, or list and prune existing snapshots."""
+    from .core import backup
+
+    database = Path(args.database)
+    if args.list:
+        snapshots = backup.list_snapshots(database)
+        if not snapshots:
+            print("No snapshots yet.")
+            return 0
+        print(f"{len(snapshots)} snapshot(s) in {backup.backup_dir(database)}:")
+        for path, taken, size in snapshots:
+            print(f"  {taken}  {size / 1024:>8.0f} KB  {path.name}")
+        return 0
+
+    saved = backup.snapshot(database, tag=args.tag or "manual")
+    if saved is None:
+        print("Nothing to back up yet.")
+        return 0
+    print(f"Saved {saved}")
+    print(f"Keeping the newest {backup.KEEP}; older ones are removed automatically.")
+    return 0
+
+
+def cmd_schedule(args: argparse.Namespace) -> int:
+    """Install or remove a systemd user timer that syncs on its own.
+
+    A user timer rather than cron: it survives reboots, runs without the user
+    being logged in only if lingering is enabled, and `journalctl --user` shows
+    what happened. Persistent=true means a machine that was off at the
+    scheduled time catches up when it comes back, which is the whole point for
+    someone syncing a bank rather than a server.
+    """
+    import shutil
+    import subprocess
+
+    unit_dir = Path.home() / ".config" / "systemd" / "user"
+    service = unit_dir / "carraway-sync.service"
+    timer = unit_dir / "carraway-sync.timer"
+
+    if args.remove:
+        subprocess.run(
+            ["systemctl", "--user", "disable", "--now", "carraway-sync.timer"],
+            capture_output=True,
+            check=False,
+        )
+        removed = [p.name for p in (service, timer) if p.exists()]
+        for path in (service, timer):
+            path.unlink(missing_ok=True)
+        subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True, check=False)
+        print("Removed " + ", ".join(removed) if removed else "Nothing was scheduled.")
+        return 0
+
+    if not shutil.which("systemctl"):
+        print("systemd is not available on this system.", file=sys.stderr)
+        print("Schedule 'carraway sync simplefin' with cron instead.", file=sys.stderr)
+        return 1
+
+    executable = shutil.which("carraway") or str(Path(sys.argv[0]).resolve())
+    unit_dir.mkdir(parents=True, exist_ok=True)
+    service.write_text(
+        "[Unit]\n"
+        "Description=Carraway bank sync\n"
+        "After=network-online.target\n\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        f"ExecStart={executable} --database {args.database} sync simplefin --days 0 --link-all\n"
+    )
+    timer.write_text(
+        "[Unit]\n"
+        "Description=Sync Carraway on a schedule\n\n"
+        "[Timer]\n"
+        f"OnCalendar={args.when}\n"
+        "# Catch up after the machine was off, rather than silently skipping a\n"
+        "# run — a missed window is how a gap gets into the history.\n"
+        "Persistent=true\n"
+        "RandomizedDelaySec=1h\n\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n"
+    )
+
+    subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True, check=False)
+    result = subprocess.run(
+        ["systemctl", "--user", "enable", "--now", "carraway-sync.timer"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        print(f"Could not enable the timer: {result.stderr.strip()}", file=sys.stderr)
+        return 1
+
+    print(f"Scheduled: {args.when}")
+    print(f"  {service}")
+    print(f"  {timer}")
+    print("\nCheck it with:  systemctl --user list-timers carraway-sync.timer")
+    print("See past runs:  journalctl --user -u carraway-sync.service")
+    print("\nTo keep syncing while you are logged out, run:\n  loginctl enable-linger $USER")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="carraway",
@@ -653,6 +754,21 @@ def build_parser() -> argparse.ArgumentParser:
     from .sync.cli import register as register_sync
 
     register_sync(sub, parser.get_default("database"))
+
+    p_backup = sub.add_parser("backup", help="snapshot the database, or list snapshots")
+    p_backup.add_argument("--list", action="store_true", help="list existing snapshots")
+    p_backup.add_argument("--tag", help="label for this snapshot")
+    p_backup.set_defaults(func=cmd_backup)
+
+    p_schedule = sub.add_parser("schedule", help="sync automatically on a systemd timer")
+    p_schedule.add_argument(
+        "--when",
+        default="weekly",
+        help="systemd OnCalendar expression, e.g. daily or 'Mon *-*-* 09:00' "
+        "(default: %(default)s)",
+    )
+    p_schedule.add_argument("--remove", action="store_true", help="remove the schedule")
+    p_schedule.set_defaults(func=cmd_schedule)
 
     p_summary = sub.add_parser("summary", help="show totals across imported data")
     p_summary.add_argument("--account", help="limit to one account id")

@@ -12,7 +12,7 @@ import sys
 from dataclasses import replace
 from datetime import date, timedelta
 
-from ..core import db
+from ..core import backup, db
 from . import credentials
 
 _SIMPLEFIN_URL = "simplefin-access-url"
@@ -22,8 +22,15 @@ _VENMO_DEVICE = "venmo-device-id"
 _VENMO_ACCOUNT = "venmo-account-id"
 
 
-def _persist(conn, result, label: str) -> int:
+def _persist(conn, result, label: str, database) -> int:
     """Write a SyncResult through the same path a file import takes."""
+    # Snapshot first. A provider only exposes a few months of history, so this
+    # database is the only place older transactions still exist, and a sync is
+    # the moment most likely to write something unexpected.
+    saved = backup.snapshot(database, tag="sync")
+    if saved:
+        print(f"Backed up to {saved.name}")
+
     # Keep whatever the user called an account they already had. The provider's
     # name is more literal, but renaming something a person named themselves is
     # a surprise, and they can always rename it deliberately.
@@ -198,7 +205,7 @@ def cmd_simplefin_sync(args: argparse.Namespace) -> int:
             print(f"Sync failed: {exc}", file=sys.stderr)
             return 1
 
-    _persist(conn, result, "SimpleFIN")
+    _persist(conn, result, "SimpleFIN", args.database)
     for account in result.accounts:
         count = sum(1 for t in result.transactions if t.account_id == account.id)
         print(f"  {account.name[:40]:<42} {count:>4} transaction(s)")
@@ -290,7 +297,7 @@ def cmd_venmo_sync(args: argparse.Namespace) -> int:
         print(f"Sync failed: {exc}", file=sys.stderr)
         return 1
 
-    _persist(conn, result, "Venmo")
+    _persist(conn, result, "Venmo", args.database)
     return 0
 
 

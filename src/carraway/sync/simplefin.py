@@ -28,14 +28,15 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 from .. import __version__
 from ..analysis.recurring import normalise_merchant
-from ..core.models import Account, AccountType, Transaction, assign_occurrences
+from ..core.models import Account, Transaction, assign_occurrences
 from ..core.money import Money
+from .accounts import classify_account
 from .base import SyncResult
 
 # SimpleFIN says nothing about account type, so it is inferred from the name
@@ -61,40 +62,6 @@ def _is_edge_block(body: str) -> bool:
         return True
     return "error code:" in lowered and any(code in body for code in _CLOUDFLARE_CODES)
 
-
-_TYPE_HINTS: list[tuple[tuple[str, ...], AccountType]] = [
-    (
-        (
-            "credit card",
-            "credit ",
-            "visa",
-            "mastercard",
-            "amex",
-            "discover",
-            # Card product names carry no generic word at all, so the common
-            # US ones are listed: "Chase Freedom Unlimited" is a credit card
-            # and nothing in that string says so.
-            "freedom",
-            "sapphire",
-            "slate",
-            "quicksilver",
-            "venture",
-            "platinum",
-            "active cash",
-            "rewards",
-            "cashback",
-            "cash back",
-            "signature",
-            " card",
-        ),
-        AccountType.CREDIT_CARD,
-    ),
-    (("savings", "save", "money market"), AccountType.SAVINGS),
-    (("loan", "mortgage", "student"), AccountType.LOAN),
-    (("invest", "brokerage", "ira", "401k", "roth"), AccountType.INVESTMENT),
-    (("cash", "wallet"), AccountType.CASH),
-    (("checking", "chequing", "college", "current"), AccountType.CHECKING),
-]
 
 # SimpleFIN corrupts some institution names before we ever see them — a
 # registered-trademark sign arrives as literal U+FFFD replacement characters.
@@ -295,33 +262,13 @@ def _messages_in(body: str) -> list[str]:
     return messages
 
 
-def _account_type(name: str, balance: str | None = None) -> AccountType:
-    lowered = name.lower()
-    for needles, kind in _TYPE_HINTS:
-        if any(needle in lowered for needle in needles):
-            return kind
-
-    # Nothing in the name says what this is. A negative balance is the next
-    # best signal: an asset account sits at or above zero almost all the time,
-    # whereas a card sits below it almost all the time. Wrong occasionally —
-    # an overdrawn current account — and the user can correct it, which beats
-    # calling every unrecognised account a chequing account.
-    if balance is not None:
-        try:
-            if Decimal(str(balance)) < 0:
-                return AccountType.CREDIT_CARD
-        except (ArithmeticError, ValueError):
-            pass
-    return AccountType.CHECKING
-
-
 def _to_account(node: dict[str, Any], local_id: str) -> Account:
     name = clean_name(str(node.get("name") or "Account")) or "Account"
     org = node.get("org") if isinstance(node.get("org"), dict) else {}
     return Account(
         id=local_id,
         name=name,
-        type=_account_type(name, node.get("balance")),
+        type=classify_account(name, node.get("balance")),
         institution=str(org.get("name") or node.get("conn_id") or ""),
         currency=str(node.get("currency") or "USD"),
         external_id=str(node.get("id") or ""),
@@ -372,30 +319,79 @@ class SimpleFinProvider:
     # everything available.
     EARLIEST = date(2000, 1, 1)
 
+    # SimpleFIN hard-caps a request at 90 days and advises 45, so requests
+    # are sized just inside what it recommends rather than what it allows. MAX_WINDOWS bounds a sync against the daily
+    # quota of 24 requests while still reaching several years back.
+    WINDOW_DAYS = 44
+    MAX_WINDOWS = 20
+
     def fetch(self, *, since: date | None = None, pending: bool = False) -> SyncResult:
-        params: dict[str, str] = {}
-        midnight = datetime.combine(since or self.EARLIEST, datetime.min.time())
-        params["start-date"] = str(int(midnight.timestamp()))
+        """Retrieve accounts and transactions, walking back through history.
+
+        SimpleFIN caps a single request at 90 days — it silently truncates a
+        wider range and says so in an advisory message. That cap is per
+        request, not a limit on what is available, so this walks backwards in
+        windows until one comes back empty. Fetching only the most recent
+        window would silently miss everything older, which on a real account
+        was 212 transactions.
+        """
+        result = SyncResult()
+        seen_accounts: dict[str, Account] = {}
+        signatures: set[tuple[str, str, int, str]] = set()
+
+        window_end = date.today() + timedelta(days=1)
+        floor = since or self.EARLIEST
+
+        for _ in range(self.MAX_WINDOWS):
+            window_start = max(floor, window_end - timedelta(days=self.WINDOW_DAYS))
+            payload = _get(self.access_url, self._params(window_start, window_end, pending))
+            found = self._absorb(payload, result, seen_accounts, signatures)
+
+            if window_start <= floor:
+                break
+            if not found:
+                # Two consecutive empty windows would be tidier, but banks
+                # rarely expose more than a year through an aggregator, and a
+                # quiet month is far more common than a gap followed by more
+                # history. Stopping at the first empty window keeps a sync to
+                # a handful of requests against a daily quota of 24.
+                break
+            window_end = window_start
+
+        result.accounts = list(seen_accounts.values())
+        # Assigned once across every window: doing it per window would give
+        # the same charge a different ordinal depending on which request it
+        # arrived in, and it would stop matching what is already stored.
+        result.transactions.sort(key=lambda t: (t.date, t.id))
+        assign_occurrences(result.transactions)
+        return result
+
+    def _params(self, start: date, end: date, pending: bool) -> dict[str, str]:
+        params = {
+            "start-date": str(int(datetime.combine(start, datetime.min.time()).timestamp())),
+            "end-date": str(int(datetime.combine(end, datetime.min.time()).timestamp())),
+        }
         if pending:
             params["pending"] = "1"
+        return params
 
-        payload = _get(self.access_url, params)
-        result = SyncResult()
+    def _absorb(
+        self,
+        payload: dict[str, Any],
+        result: SyncResult,
+        seen_accounts: dict[str, Account],
+        signatures: set[tuple[str, str, int, str]],
+    ) -> int:
+        """Merge one window's payload into the running result.
 
-        # A failing connection should not cost the user the accounts that did
-        # sync, so these are reported rather than raised.
-        advisory = payload.get("x-api-message")
-        if isinstance(advisory, str) and advisory.strip():
-            result.warnings.append(advisory.strip())
-        elif isinstance(advisory, list):
-            result.warnings.extend(str(m).strip() for m in advisory if str(m).strip())
+        Windows share their boundary day, so the same transaction can arrive
+        twice; a signature set keeps it from being counted or stored twice.
+        """
+        for message in _messages_in(json.dumps(payload)):
+            if message not in result.warnings:
+                result.warnings.append(message)
 
-        for entry in (payload.get("errors") or []) + (payload.get("errlist") or []):
-            if isinstance(entry, str) and entry.strip():
-                result.warnings.append(entry.strip())
-            elif isinstance(entry, dict) and entry.get("msg"):
-                result.warnings.append(str(entry["msg"]))
-
+        found = 0
         for node in payload.get("accounts") or []:
             if not isinstance(node, dict):
                 continue
@@ -404,15 +400,20 @@ class SimpleFinProvider:
             self.account_ids[external] = local_id
 
             account = _to_account(node, local_id)
-            result.accounts.append(account)
+            seen_accounts.setdefault(external, account)
 
-            converted = [
-                tx
-                for raw in (node.get("transactions") or [])
-                if isinstance(raw, dict)
-                and (tx := _to_transaction(raw, local_id, account.currency)) is not None
-            ]
-            assign_occurrences(converted)
-            result.transactions.extend(converted)
-
-        return result
+            fresh = []
+            for raw in node.get("transactions") or []:
+                if not isinstance(raw, dict):
+                    continue
+                tx = _to_transaction(raw, local_id, account.currency)
+                if tx is None:
+                    continue
+                key = (local_id, tx.date.isoformat(), tx.amount.minor, tx.description.upper())
+                if key in signatures:
+                    continue
+                signatures.add(key)
+                fresh.append(tx)
+            result.transactions.extend(fresh)
+            found += len(fresh)
+        return found
