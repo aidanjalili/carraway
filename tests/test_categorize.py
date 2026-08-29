@@ -338,3 +338,32 @@ def test_hidden_categories_are_dropped_but_added_ones_appear():
     # Uncategorized must survive whatever the user does, or rows have nowhere
     # to fall back to.
     assert "Uncategorized" in names
+
+
+def test_adding_a_user_rule_does_not_drop_the_catalogue():
+    from carraway.analysis.categorize import rules_from
+
+    # Rule resolution rebuilt from the hand-written list alone when custom
+    # rules were passed, silently dropping every rule derived from the
+    # subscription catalogue: adding one rule un-categorised DigitalOcean and
+    # a hundred others.
+    unrelated = rules_from([{"pattern": "SOME LOCAL SHOP", "category": "Dining"}])
+    assert categorize(make_tx("DIGITALOCEAN.COM", "-12.00")) == "Subscriptions"
+    assert categorize(make_tx("DIGITALOCEAN.COM", "-12.00"), unrelated) == "Subscriptions"
+
+
+def test_rent_is_not_filed_as_a_utility():
+    # Deriving category rules from the biller catalogue filed everything it
+    # named as Utilities — including rent, which put $14,000 in the wrong
+    # place and made Rent/Mortgage disappear from the breakdown.
+    assert categorize(make_tx("Mill District Ap Rent 270358801", "-948.00")) == "Rent/Mortgage"
+    assert categorize(make_tx("XCEL ENERGY-MN XCELENERGY", "-184.09")) == "Utilities"
+    assert categorize(make_tx("USAA INSURANCE PAYMEN", "-88.66")) == "Insurance"
+
+
+def test_a_trading_or_betting_account_is_a_transfer():
+    # Money in a regulated exchange is still the user's, exactly as it is in a
+    # brokerage — the app already files Fidelity and Coinbase this way.
+    assert categorize(make_tx("KALSHI KLEAR LLC NEW YORK NY", "-500.00")) == "Transfer"
+    assert categorize(make_tx("TWINSPIRES TWINSPIRES PPD", "60.00")) == "Transfer"
+    assert categorize(make_tx("NON-CHASE ATM WITHDRAW 009446", "-103.00")) == "Transfer"

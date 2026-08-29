@@ -203,6 +203,17 @@ BUILTIN_RULES: list[Rule] = [
         "CASH APP",
         "SQUARE CASH",
         "ATM WITHDRAWAL",
+        "ATM WITHDRAW",
+        "ATM CASH DEPOSIT",
+        # A regulated exchange or a betting account holds the user's own
+        # money, exactly as a brokerage does — the app already files
+        # Fidelity and Coinbase this way.
+        "KALSHI",
+        "TWINSPIRES",
+        "POLYMARKET",
+        "DRAFTKINGS",
+        "FANDUEL",
+        "FID BKG SVC",
         "CREDIT CARD PAYMENT",
         "PAYMENT THANK YOU",
         "AUTOPAY PAYMENT",
@@ -500,6 +511,10 @@ BUILTIN_RULES: list[Rule] = [
         "STATE FARM",
         "PROGRESSIVE",
         "ALLSTATE",
+        "LEMONADE INC",
+        "LIBERTY MUTUAL",
+        "TRAVELERS INS",
+        "NATIONWIDE INS",
         "USAA",
         "LIBERTY MUTUAL",
         "FARMERS INS",
@@ -693,6 +708,22 @@ BUILTIN_RULES: list[Rule] = [
         "SUNOCO",
         "MARATHON PETRO",
         "PILOT TRAVEL",
+        "CENEX",
+        "VIOC",
+        "VALVOLINE",
+        "JIFFY LUBE",
+        "MIDAS",
+        "FIRESTONE COMPLETE",
+        "DISCOUNT TIRE",
+        "BLINK CHARGING",
+        "GENESIS BLINK",
+        "ELECTRIFY AMERICA",
+        "CHARGEPOINT",
+        "CTA-",
+        "PARKMOBILE",
+        "PKMOBPP",
+        "WIDOT",
+        "DMV",
         "MBTA",
         "VENTRA",
         "METRA",
@@ -756,6 +787,19 @@ BUILTIN_RULES: list[Rule] = [
         "POPEYES",
         "DAIRY QUEEN",
         "JERSEY MIKE",
+        "APPLEBEE",
+        "BUFFALO WILD",
+        "BWW ",
+        "OLIVE GARDEN",
+        "RED LOBSTER",
+        "CHILIS",
+        "IHOP",
+        "DENNY",
+        "CRACKER BARREL",
+        "PANDA EXPRESS",
+        "NOODLES & CO",
+        "POTBELLY",
+        "SWEETGREEN",
         "CANTEEN",
         "SNACK SODA",
         # Missing outright, and all obvious from a real ledger.
@@ -811,6 +855,14 @@ BUILTIN_RULES: list[Rule] = [
         "FLEET FARM",
         "TRACTOR SUPPLY",
         "HARBOR FREIGHT",
+        "BOOT BARN",
+        "OFFICEMAX",
+        "OFFICE DEPOT",
+        "CUSTOMINK",
+        "IFIXIT",
+        "BEST BUY",
+        "MICRO CENTER",
+        "BARNES & NOBLE",
     ),
     *_many(
         UTILITIES,
@@ -851,6 +903,27 @@ BUILTIN_RULES: list[Rule] = [
         "ALASKA AIR",
         "FRONTIER AIR",
         "SPIRIT AIR",
+        # Airline descriptors are rarely the airline's full name; these are
+        # the forms that actually reach a statement.
+        "SUNCTRYAIR",
+        "SUN COUNTRY",
+        "SOUTHWES",
+        "TACA AIR",
+        "AEGEAN",
+        "BREEZE AIRWA",
+        "UNITED.COM",
+        "AIR CANADA",
+        "LUFTHANSA",
+        "BRITISH A",
+        "GREYHOUND",
+        "AMTRAK",
+        "NATIONAL CAR RENTAL",
+        "ENTERPRISE RENT",
+        "HERTZ",
+        "AVIS ",
+        "TRU BY HILTON",
+        "TRU MINNEAPOLIS",
+        "DUTY FREE",
     ),
     # American Airlines bills from its Fort Worth headquarters; "AMERICAN"
     # alone would swallow far too much.
@@ -892,13 +965,17 @@ def _catalogue_rules() -> list[Rule]:
     specific built-in rule should still win, but a catalogue entry should beat
     a bare keyword match.
     """
-    from .subscriptions import bill_names, subscription_names
+    from .subscriptions import subscription_names
 
-    rules = [
+    # Only the subscription half. Deriving rules from the biller list was
+    # tried and reverted: it names rent, insurance and loan providers
+    # alongside utilities, so filing all of them as Utilities moved $14,000 of
+    # rent into the wrong category and made Rent/Mortgage vanish from the
+    # breakdown entirely. The hand-written rules place those correctly, and
+    # each needs its own category rather than one bucket.
+    return [
         Rule(name, SUBSCRIPTIONS, priority=PRIORITY_BUILTIN - 10) for name in subscription_names()
     ]
-    rules += [Rule(name, UTILITIES, priority=PRIORITY_BUILTIN - 20) for name in bill_names()]
-    return rules
 
 
 def _ordered(rules: Sequence[Rule]) -> list[Rule]:
@@ -912,13 +989,21 @@ def _ordered(rules: Sequence[Rule]) -> list[Rule]:
     return sorted(rules, key=lambda r: (-r.priority, -len(r.pattern)))
 
 
-_BUILTIN_ORDERED = _ordered(BUILTIN_RULES + _catalogue_rules())
+# The complete built-in set: the hand-written rules plus everything derived
+# from the subscription catalogue. Both callers must use this, or they
+# disagree about what the app already knows.
+_ALL_BUILTIN = BUILTIN_RULES + _catalogue_rules()
+_BUILTIN_ORDERED = _ordered(_ALL_BUILTIN)
 
 
 def _resolve(rules: Sequence[Rule] | None, include_builtins: bool) -> list[Rule]:
     if not rules:
         return _BUILTIN_ORDERED if include_builtins else []
-    return _ordered([*BUILTIN_RULES, *rules] if include_builtins else list(rules))
+    # _ALL_BUILTIN rather than BUILTIN_RULES: the catalogue-derived rules are
+    # part of the built-in set, and rebuilding from the hand-written list alone
+    # dropped them. Adding a single user rule silently un-categorised every
+    # merchant that was only known through the subscription catalogue.
+    return _ordered([*_ALL_BUILTIN, *rules] if include_builtins else list(rules))
 
 
 # -- the entry points ----------------------------------------------------
