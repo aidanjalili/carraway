@@ -13,6 +13,7 @@ from datetime import date
 from typing import Protocol
 
 from ..core.models import Account, Transaction
+from ..core.money import Money
 
 
 @dataclass(slots=True)
@@ -21,6 +22,10 @@ class SyncResult:
 
     accounts: list[Account] = field(default_factory=list)
     transactions: list[Transaction] = field(default_factory=list)
+    # account id -> balance as the provider reported it today. Kept because
+    # net worth history is reconstructed backwards from a known balance, and
+    # a provider only ever tells you today's.
+    balances: dict[str, Money] = field(default_factory=dict)
     # Provider-reported problems, e.g. one bank connection needing
     # reauthorisation while the rest succeeded. Never fatal on their own: a
     # partial sync is more useful than an aborted one.

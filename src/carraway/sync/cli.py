@@ -39,6 +39,9 @@ def _persist(conn, result, label: str, database) -> int:
         if account.id in named:
             account = replace(account, name=named[account.id])
         db.upsert_account(conn, account)
+    for account_id, balance in getattr(result, "balances", {}).items():
+        db.record_balance(conn, account_id, balance)
+
     inserted, skipped = db.insert_transactions(conn, result.transactions)
 
     print(f"{label}: {inserted} new transaction(s)")

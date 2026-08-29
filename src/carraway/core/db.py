@@ -66,6 +66,22 @@ MIGRATIONS: list[str] = [
         decided_at TEXT NOT NULL
     );
     """,
+    # v4 - observed balances. A provider reports only today's figure, so each
+    # observation is kept: net worth history is reconstructed by walking
+    # transactions back from a known balance, and that needs an anchor. Keeping
+    # every observation also means a later sync corroborates the reconstruction
+    # rather than replacing it.
+    """
+    CREATE TABLE balances (
+        account_id   TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        observed_on  TEXT NOT NULL,      -- ISO-8601 date the provider reported
+        amount_minor INTEGER NOT NULL,   -- never a float; see core.money
+        currency     TEXT NOT NULL DEFAULT 'USD',
+        PRIMARY KEY (account_id, observed_on)
+    );
+
+    CREATE INDEX idx_balances_account ON balances(account_id, observed_on);
+    """,
 ]
 
 
@@ -249,6 +265,58 @@ def clear_verdict(conn: sqlite3.Connection, merchant: str) -> int:
     cur = conn.execute("DELETE FROM merchant_verdicts WHERE merchant = ?", (merchant.upper(),))
     conn.commit()
     return cur.rowcount
+
+
+# -- balances ------------------------------------------------------------
+
+
+def record_balance(
+    conn: sqlite3.Connection, account_id: str, amount: Money, observed_on: date | None = None
+) -> None:
+    """Store a balance observation, replacing any for the same day.
+
+    Same-day replacement rather than accumulation: two syncs on one day are two
+    readings of the same fact, and the later one is better.
+    """
+    conn.execute(
+        """
+        INSERT INTO balances (account_id, observed_on, amount_minor, currency)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(account_id, observed_on) DO UPDATE SET
+            amount_minor = excluded.amount_minor,
+            currency = excluded.currency
+        """,
+        (account_id, (observed_on or date.today()).isoformat(), amount.minor, amount.currency),
+    )
+    conn.commit()
+
+
+def latest_balances(conn: sqlite3.Connection) -> dict[str, Money]:
+    """The most recent balance seen for each account."""
+    rows = conn.execute(
+        """
+        SELECT b.account_id, b.amount_minor, b.currency
+        FROM balances b
+        JOIN (
+            SELECT account_id, MAX(observed_on) AS newest
+            FROM balances GROUP BY account_id
+        ) latest ON latest.account_id = b.account_id AND latest.newest = b.observed_on
+        """
+    ).fetchall()
+    return {r["account_id"]: Money(r["amount_minor"], r["currency"]) for r in rows}
+
+
+def balance_history(conn: sqlite3.Connection, account_id: str) -> list[tuple[date, Money]]:
+    """Every balance observed for one account, oldest first."""
+    rows = conn.execute(
+        "SELECT observed_on, amount_minor, currency FROM balances "
+        "WHERE account_id = ? ORDER BY observed_on",
+        (account_id,),
+    ).fetchall()
+    return [
+        (date.fromisoformat(r["observed_on"]), Money(r["amount_minor"], r["currency"]))
+        for r in rows
+    ]
 
 
 def update_categories(conn: sqlite3.Connection, assignments: list[tuple[str, str]]) -> int:

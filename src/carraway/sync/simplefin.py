@@ -320,8 +320,9 @@ class SimpleFinProvider:
     EARLIEST = date(2000, 1, 1)
 
     # SimpleFIN hard-caps a request at 90 days and advises 45, so requests
-    # are sized just inside what it recommends rather than what it allows. MAX_WINDOWS bounds a sync against the daily
-    # quota of 24 requests while still reaching several years back.
+    # are sized just inside what it recommends rather than what it allows.
+    # MAX_WINDOWS bounds a sync against the daily quota of 24 requests while
+    # still reaching several years back.
     WINDOW_DAYS = 44
     MAX_WINDOWS = 20
 
@@ -401,6 +402,13 @@ class SimpleFinProvider:
 
             account = _to_account(node, local_id)
             seen_accounts.setdefault(external, account)
+
+            raw_balance = node.get("balance")
+            if raw_balance is not None and local_id not in result.balances:
+                # A balance we cannot parse is not worth failing a sync
+                # over; the transactions are still good.
+                with contextlib.suppress(ValueError, TypeError):
+                    result.balances[local_id] = Money.parse(str(raw_balance), account.currency)
 
             fresh = []
             for raw in node.get("transactions") or []:
