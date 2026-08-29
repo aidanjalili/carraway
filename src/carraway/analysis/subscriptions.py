@@ -22,7 +22,13 @@ again — see `core.db.set_verdict`.
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from typing import Literal
+
+# At this length a catalog name is specific enough that finding it inside a
+# longer run of characters is a match rather than a coincidence. Chosen so
+# "DASHPASS" qualifies and "AWS", "MAX" and "BOX" do not.
+_UNAMBIGUOUS_LENGTH = 7
 
 Kind = Literal["subscription", "bill", "habit", "unknown"]
 
@@ -31,14 +37,21 @@ BILL: Kind = "bill"
 HABIT: Kind = "habit"
 UNKNOWN: Kind = "unknown"
 
-# Matched as substrings against the normalised merchant. Names are held in the
-# form normalisation leaves them in: uppercase, no ".COM", no corporate suffix.
+# Matched against the normalised merchant on word boundaries. Names are held in
+# the form normalisation leaves them in: uppercase, no ".COM", no corporate
+# suffix.
+#
+# An entry must identify a company on its own. Ordinary English words do not:
+# "BOX" matched "LIQUOR BOX", and "MAX" matched an office supply shop, so those
+# are spelled out ("BOX.COM", "HBO MAX") even though it costs a few real
+# matches. A false positive here is worse than a miss, because the review flow
+# exists to catch misses and nothing catches a confident wrong answer.
 _SUBSCRIPTIONS: tuple[str, ...] = (
     # streaming video
     "NETFLIX",
     "HULU",
     "DISNEY",
-    "MAX",
+    "HBO MAX",
     "HBO",
     "PARAMOUNT",
     "PEACOCK",
@@ -71,8 +84,8 @@ _SUBSCRIPTIONS: tuple[str, ...] = (
     "GOOGLE ONE",
     "GOOGLE STORAGE",
     "DROPBOX",
-    "BOX",
-    "MEGA",
+    "BOX.COM",
+    "MEGA.NZ",
     "DIGITALOCEAN",
     "LINODE",
     "VULTR",
@@ -94,7 +107,7 @@ _SUBSCRIPTIONS: tuple[str, ...] = (
     "GITHUB",
     "GITLAB",
     "BITBUCKET",
-    "NPM",
+    "NPMJS",
     "DOCKER",
     "JETBRAINS",
     "NAMECHEAP",
@@ -298,11 +311,40 @@ _BILLS: tuple[str, ...] = (
 _PERIODICAL_HINTS = re.compile(r"\b(MAGAZINE|MAGAZINES|SUBSCRIPTION|SUBSCR|PERIODICAL)\b")
 
 
+@lru_cache(maxsize=4)
+def _ordered(names: tuple[str, ...]) -> tuple[tuple[str, re.Pattern[str]], ...]:
+    """Catalog names longest-first, each as a word-boundary pattern.
+
+    Longest first so "AMAZON PRIME" wins over a hypothetical "AMAZON".
+
+    Word boundaries matter more than they look: plain substring matching had
+    "AWS" match inside "MATT LAWS", "MAX" inside "OFFICEMAX" and "BOX" inside
+    "LIQUOR BOX", so a Zelle payment to a person was reported as a cloud
+    subscription. Short entries are the ones people most want in a catalog and
+    the ones most likely to appear inside unrelated words.
+    """
+    ordered = []
+    for name in sorted(names, key=len, reverse=True):
+        # \b does not fire next to punctuation like "+" or ".", so anchor on a
+        # non-word character instead of relying on it at both ends.
+        #
+        # Long names need no boundaries at all: processors run words together
+        # in both directions ("DOORDASHDASHPASS", "SPOTIFYUSA"), and a name of
+        # this length is specific enough that appearing inside a longer run is
+        # a real match rather than an accident. Short names keep both
+        # boundaries, which is the whole point of the rule.
+        if len(name) >= _UNAMBIGUOUS_LENGTH:
+            pattern = re.compile(re.escape(name))
+        else:
+            pattern = re.compile(rf"(?<![A-Z0-9]){re.escape(name)}(?![A-Z0-9])")
+        ordered.append((name, pattern))
+    return tuple(ordered)
+
+
 def _matches(merchant: str, names: tuple[str, ...]) -> str | None:
     upper = merchant.upper()
-    # Longest first, so "AMAZON PRIME" wins over a hypothetical "AMAZON".
-    for name in sorted(names, key=len, reverse=True):
-        if name in upper:
+    for name, pattern in _ordered(names):
+        if pattern.search(upper):
             return name
     return None
 

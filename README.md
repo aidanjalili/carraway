@@ -42,6 +42,7 @@ carraway categorize                            # spending broken down by categor
 carraway recurring                             # everything that repeats
 carraway subscriptions                         # split into subscriptions, bills, habits
 carraway review                                # answer what it could not place
+carraway known                                 # recognised, but too little history to detect
 ```
 
 Recurring is not the same as cancellable. Rent, utilities and insurance repeat

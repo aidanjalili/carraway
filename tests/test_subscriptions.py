@@ -88,3 +88,30 @@ def test_periodical_hint_catches_unnamed_publishers():
     # The hint must not drag in businesses that merely sound similar.
     assert classify("Crescendo Espresso Bar Madison") == UNKNOWN
     assert classify("Holiday Inn Express Suites") == UNKNOWN
+
+
+def test_short_catalog_names_do_not_match_inside_words():
+    # Plain substring matching had "AWS" match "MATT LAWS", "MAX" match
+    # "OFFICEMAX" and "BOX" match "LIQUOR BOX", so a Zelle payment to a person
+    # was reported as a cloud subscription. A confident wrong answer is worse
+    # than a miss here: the review flow catches misses, nothing catches this.
+    for merchant in [
+        "Zelle Payment To Matt Laws",
+        "Officemax Depot Madison",
+        "Liquor Box La Jolla",
+        "Maxwell House Coffee",
+        "Boxing Gym Downtown",
+    ]:
+        assert classify(merchant) == UNKNOWN, merchant
+
+    # The real companies still match when named properly.
+    assert classify("AWS Cloud Services") == SUBSCRIPTION
+    assert classify("Box.com Storage") == SUBSCRIPTION
+    assert classify("HBO Max") == SUBSCRIPTION
+
+
+def test_long_names_match_inside_run_together_descriptors():
+    # Processors concatenate words with no separator, in both directions.
+    assert classify("Dd Doordashdashpass") == SUBSCRIPTION
+    assert classify("SPOTIFYUSA") == SUBSCRIPTION
+    assert classify("NETFLIXCOM") == SUBSCRIPTION

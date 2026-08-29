@@ -382,6 +382,58 @@ def cmd_subscriptions(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_known(args: argparse.Namespace) -> int:
+    """List, or mark, merchants the catalog recognises but detection cannot.
+
+    Detection needs a pattern, and a yearly magazine bought once has exactly
+    one data point. The charge is still in the ledger and the catalog still
+    recognises the merchant, so the app can say "this looks like a
+    subscription, I just cannot prove it recurs yet" instead of staying silent
+    about money the user is definitely paying.
+    """
+    from .analysis import recurring
+
+    conn = db.connect(args.database)
+    transactions = db.list_transactions(conn)
+    if not transactions:
+        print("No transactions yet.")
+        return 0
+
+    verdicts = db.get_verdicts(conn)
+    detected = {s.merchant.upper() for s in recurring.detect(transactions)}
+
+    # Group by merchant so a magazine bought twice shows as one entry.
+    seen: dict[str, list] = {}
+    for tx in transactions:
+        if tx.is_transfer or not tx.is_outflow:
+            continue
+        merchant = tx.merchant or recurring.normalise_merchant(tx.description)
+        if not merchant or merchant.upper() in detected:
+            continue
+        if subscriptions.resolve(merchant, verdicts) != subscriptions.SUBSCRIPTION:
+            continue
+        seen.setdefault(merchant, []).append(tx)
+
+    if not seen:
+        print("Nothing recognised beyond what detection already found.")
+        return 0
+
+    print("Recognised as subscriptions, but not enough history to confirm a pattern:\n")
+    rows = sorted(seen.items(), key=lambda kv: -abs(total([t.amount for t in kv[1]]).minor))
+    for merchant, txs in rows:
+        spent = abs(total([t.amount for t in txs]))
+        last = max(t.date for t in txs)
+        times = f"{len(txs)}x" if len(txs) > 1 else "once"
+        print(f"  {merchant[:38]:<40}{spent.format():>10}  {times}, last {last}")
+
+    print(
+        f"\n{len(rows)} merchant(s). These are charges the catalog knows are "
+        "subscriptions,\nbut which appear too few times to detect a cadence — "
+        "typically annual\nrenewals in a short statement history."
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="carraway",
@@ -454,6 +506,11 @@ def build_parser() -> argparse.ArgumentParser:
         "subscriptions", help="recurring things split into subscriptions, bills and habits"
     )
     p_subs.set_defaults(func=cmd_subscriptions)
+
+    p_known = sub.add_parser(
+        "known", help="recognised subscriptions with too little history to detect"
+    )
+    p_known.set_defaults(func=cmd_known)
 
     p_review = sub.add_parser("review", help="answer what unrecognised recurring merchants are")
     p_review.add_argument(
