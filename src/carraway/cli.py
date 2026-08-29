@@ -17,7 +17,7 @@ from . import __version__
 from .analysis import recurring
 from .core import db
 from .core.models import Account, AccountType
-from .core.money import total
+from .core.money import Money, total
 
 
 def _fmt_row(cells: list[str], widths: list[int]) -> str:
@@ -50,6 +50,7 @@ def cmd_accounts(args: argparse.Namespace) -> int:
 
 def cmd_import(args: argparse.Namespace) -> int:
     from .importers.csv_importer import ImportError_, import_csv
+    from .importers.ofx_importer import import_ofx
 
     conn = db.connect(args.database)
     accounts = {a.id: a for a in db.list_accounts(conn)}
@@ -58,8 +59,13 @@ def cmd_import(args: argparse.Namespace) -> int:
         print("Run 'carraway accounts' to list them.", file=sys.stderr)
         return 1
 
+    # Dispatch on extension. OFX is structured and unambiguous where CSV is
+    # guesswork, so it is always preferred when the file offers it.
+    suffix = Path(args.file).suffix.lower()
+    reader = import_ofx if suffix in (".ofx", ".qfx") else import_csv
+
     try:
-        transactions, warnings = import_csv(
+        transactions, warnings = reader(
             args.file,
             args.account,
             currency=accounts[args.account].currency,
@@ -152,6 +158,96 @@ def cmd_summary(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_transfers(args: argparse.Namespace) -> int:
+    from .analysis import transfers
+
+    conn = db.connect(args.database)
+    all_tx = db.list_transactions(conn)
+    if not all_tx:
+        print("No transactions yet.")
+        return 0
+
+    pairs = transfers.find_transfers(all_tx, max_days=args.max_days)
+    if not pairs:
+        print(f"No transfers found among {len(all_tx)} transactions.")
+        return 0
+
+    accounts = {a.id: a.name for a in db.list_accounts(conn)}
+    print(f"Found {len(pairs)} transfer pair(s):\n")
+    for pair in pairs:
+        out, inn = pair.outflow, pair.inflow
+        print(f"  {abs(out.amount).format()}  {pair.confidence:.0%} confident")
+        print(
+            f"    out  {out.date}  {accounts.get(out.account_id, '?'):<18} {out.description[:44]}"
+        )
+        print(
+            f"    in   {inn.date}  {accounts.get(inn.account_id, '?'):<18} {inn.description[:44]}"
+        )
+        print(f"    why  {pair.reason}")
+        if pair.fee:
+            print(f"    fee  {pair.fee.format()}")
+        print()
+
+    if not args.apply:
+        print("Nothing written. Re-run with --apply to group these.")
+        return 0
+
+    marked = transfers.apply_transfer_groups(all_tx, pairs)
+    written = db.update_transfer_groups(conn, all_tx)
+    print(f"Grouped {marked} transactions ({written} rows written).")
+    print("These are now excluded from spending totals and recurring detection.")
+    return 0
+
+
+def cmd_categorize(args: argparse.Namespace) -> int:
+    from .analysis import categorize as cat
+
+    conn = db.connect(args.database)
+    all_tx = db.list_transactions(conn, account_id=args.account)
+    if not all_tx:
+        print("No transactions yet.")
+        return 0
+
+    assigned = cat.categorize_all(all_tx)
+
+    # Report by spend rather than by count: what a category costs is the thing
+    # worth looking at, and a long tail of tiny rows would otherwise dominate.
+    by_category: dict[str, list[Money]] = {}
+    counts: dict[str, int] = {}
+    for tx, category in zip(all_tx, assigned, strict=True):
+        counts[category] = counts.get(category, 0) + 1
+        if tx.is_outflow and not tx.is_transfer:
+            by_category.setdefault(category, []).append(tx.amount)
+
+    rows = sorted(
+        ((name, total(amounts), counts[name]) for name, amounts in by_category.items()),
+        key=lambda r: r[1].minor,
+    )
+    print(f"{'CATEGORY':<18}{'SPENT':>13}{'TXNS':>7}")
+    print("-" * 38)
+    for name, spent, count in rows:
+        print(f"{name:<18}{abs(spent).format():>13}{count:>7}")
+
+    unknown = counts.get(cat.UNCATEGORIZED, 0)
+    print(f"\n{len(all_tx) - unknown}/{len(all_tx)} categorised ({unknown} unmatched)")
+
+    suggestions = cat.suggest_rules(all_tx)
+    if suggestions:
+        print("\nBiggest unmatched merchants - worth a rule each:")
+        for s in suggestions[:8]:
+            print(f"  {s.merchant[:34]:<36}{s.count:>4} txns")
+
+    if not args.apply:
+        print("\nNothing written. Re-run with --apply to save these categories.")
+        return 0
+
+    changed = db.update_categories(
+        conn, [(tx.id, c) for tx, c in zip(all_tx, assigned, strict=True)]
+    )
+    print(f"\nSaved {changed} category assignment(s).")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="carraway",
@@ -200,6 +296,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="also detect recurring deposits such as paychecks",
     )
     p_recurring.set_defaults(func=cmd_recurring)
+
+    p_transfers = sub.add_parser("transfers", help="find transfers between your own accounts")
+    p_transfers.add_argument(
+        "--apply", action="store_true", help="save the groupings (default is a dry run)"
+    )
+    p_transfers.add_argument(
+        "--max-days",
+        type=int,
+        default=4,
+        help="how far apart the two halves may post (default: %(default)s)",
+    )
+    p_transfers.set_defaults(func=cmd_transfers)
+
+    p_categorize = sub.add_parser("categorize", help="categorise spending and show a breakdown")
+    p_categorize.add_argument("--account", help="limit to one account id")
+    p_categorize.add_argument(
+        "--apply", action="store_true", help="save the categories (default is a dry run)"
+    )
+    p_categorize.set_defaults(func=cmd_categorize)
 
     p_summary = sub.add_parser("summary", help="show totals across imported data")
     p_summary.add_argument("--account", help="limit to one account id")

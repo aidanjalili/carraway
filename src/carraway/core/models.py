@@ -65,6 +65,11 @@ class Transaction:
     # Marks the two halves of a transfer between your own accounts, so they can
     # be excluded from spending totals rather than double-counted.
     transfer_group: str = ""
+    # Distinguishes genuinely separate purchases that look identical: same
+    # merchant, same amount, same day. Without it the second one is treated as
+    # a duplicate of the first and silently dropped on import. Set by
+    # `assign_occurrences()`, which importers call before handing rows over.
+    occurrence: int = 0
     tags: list[str] = field(default_factory=list)
 
     @property
@@ -83,6 +88,11 @@ class Transaction:
         durable ID in CSV exports, so we fingerprint the immutable facts
         instead. Deliberately excludes category and notes, which the user
         edits after import and which must not create a duplicate on re-import.
+
+        `occurrence` is included so that two real purchases which agree on
+        every other field stay distinct. It is assigned by position within the
+        file, so re-importing the same statement reproduces the same ordinals
+        and remains idempotent.
         """
         raw = "|".join(
             [
@@ -91,6 +101,7 @@ class Transaction:
                 str(self.amount.minor),
                 self.amount.currency,
                 " ".join(self.description.split()).upper(),
+                str(self.occurrence),
             ]
         )
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
@@ -127,3 +138,27 @@ class RecurringSeries:
             "yearly": 1,
         }.get(self.cadence, 0)
         return abs(self.typical_amount) * per_year
+
+
+def assign_occurrences(transactions: list[Transaction]) -> list[Transaction]:
+    """Number transactions that are otherwise indistinguishable, in file order.
+
+    Two coffees at the same shop for the same price on the same day are real,
+    separate purchases, but they agree on every field the dedupe fingerprint
+    looks at. Numbering them 0, 1, 2... in the order the statement lists them
+    keeps them distinct while leaving re-import idempotent, since the same file
+    always yields the same ordinals.
+
+    Mutates and returns the list it is given.
+    """
+    seen: dict[tuple[str, str, int, str], int] = {}
+    for tx in transactions:
+        key = (
+            tx.account_id,
+            tx.date.isoformat(),
+            tx.amount.minor,
+            " ".join(tx.description.split()).upper(),
+        )
+        tx.occurrence = seen.get(key, 0)
+        seen[key] = tx.occurrence + 1
+    return transactions

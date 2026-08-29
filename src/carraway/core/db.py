@@ -51,6 +51,12 @@ MIGRATIONS: list[str] = [
     -- Enforces import idempotency: re-importing the same file is a no-op.
     CREATE UNIQUE INDEX idx_tx_signature ON transactions(account_id, signature);
     """,
+    # v2 - tell apart real purchases that agree on every other field.
+    # Two coffees at one shop for one price on one day used to collapse into a
+    # single row on import. See Transaction.occurrence and assign_occurrences.
+    """
+    ALTER TABLE transactions ADD COLUMN occurrence INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 
@@ -151,8 +157,8 @@ def insert_transactions(
             """
             INSERT OR IGNORE INTO transactions
                 (id, account_id, date, amount_minor, currency, description,
-                 merchant, category, notes, pending, transfer_group, signature)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 merchant, category, notes, pending, transfer_group, occurrence, signature)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 tx.id,
@@ -166,6 +172,7 @@ def insert_transactions(
                 tx.notes,
                 int(tx.pending),
                 tx.transfer_group,
+                tx.occurrence,
                 tx.signature,
             ),
         )
@@ -186,7 +193,45 @@ def _row_to_transaction(r: sqlite3.Row) -> Transaction:
         notes=r["notes"],
         pending=bool(r["pending"]),
         transfer_group=r["transfer_group"],
+        occurrence=r["occurrence"],
     )
+
+
+def update_categories(conn: sqlite3.Connection, assignments: list[tuple[str, str]]) -> int:
+    """Persist `(transaction_id, category)` pairs. Returns rows changed.
+
+    Only writes rows whose category actually differs, so re-running
+    categorisation over an unchanged ledger reports honestly that it changed
+    nothing rather than claiming every row as an update.
+    """
+    changed = 0
+    for tx_id, category in assignments:
+        cur = conn.execute(
+            "UPDATE transactions SET category = ? WHERE id = ? AND category IS NOT ?",
+            (category, tx_id, category),
+        )
+        changed += cur.rowcount
+    conn.commit()
+    return changed
+
+
+def update_transfer_groups(conn: sqlite3.Connection, transactions: list[Transaction]) -> int:
+    """Write each transaction's in-memory `transfer_group` back to the database.
+
+    Takes the objects rather than ids because `apply_transfer_groups` stamps
+    them in place, so the caller already holds the answer.
+    """
+    changed = 0
+    for tx in transactions:
+        if not tx.transfer_group:
+            continue
+        cur = conn.execute(
+            "UPDATE transactions SET transfer_group = ? WHERE id = ? AND transfer_group = ''",
+            (tx.transfer_group, tx.id),
+        )
+        changed += cur.rowcount
+    conn.commit()
+    return changed
 
 
 def list_transactions(

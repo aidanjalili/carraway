@@ -25,7 +25,7 @@ def test_signed_amount_column():
     assert len(txs) == 3
     assert txs[0].amount == Money.parse("-15.49")
     assert txs[1].amount == Money.parse("2400.00")
-    assert txs[0].merchant == "NETFLIX.COM"
+    assert txs[0].merchant == "NETFLIX"
 
 
 def test_separate_debit_credit_columns_and_semicolons():

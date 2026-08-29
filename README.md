@@ -9,8 +9,9 @@ paying for — without uploading your financial life to anybody's server.
 > Named for Nick Carraway, the narrator who watches the money and tells you
 > what really happened.
 
-⚠️ **Status: pre-alpha.** The core engine and CLI work today. The desktop GUI
-has not been built yet. See the [roadmap](docs/ROADMAP.md).
+⚠️ **Status: pre-alpha.** The core engine and CLI work today, and have been
+run against real multi-year bank exports. The desktop GUI has not been built
+yet. See the [roadmap](docs/ROADMAP.md).
 
 ---
 
@@ -35,8 +36,10 @@ statistics problem rather than a proprietary secret.
 
 ```bash
 carraway accounts --add "Chase Checking" --type checking
-carraway import statement.csv --account <id>
-carraway recurring
+carraway import statement.csv --account <id>   # or statement.ofx / .qfx
+carraway transfers --apply                     # stop double-counting card payments
+carraway categorize                            # spending broken down by category
+carraway recurring                             # the subscriptions view
 ```
 
 ```

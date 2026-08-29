@@ -16,7 +16,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from ..analysis.recurring import normalise_merchant
-from ..core.models import Transaction
+from ..core.models import Transaction, assign_occurrences
 from ..core.money import Money
 
 # Header names seen in the wild, lowercased. Order matters: earlier entries win.
@@ -188,6 +188,7 @@ def import_csv(
         except (ValueError, TypeError) as exc:
             warnings.append(f"line {line_no}: {exc}")
 
+    assign_occurrences(transactions)
     if not transactions and not warnings:
         warnings.append("no data rows found below the header")
     return transactions, warnings

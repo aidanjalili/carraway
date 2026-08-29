@@ -14,13 +14,18 @@ useful — no six-month stretch with nothing to show.
 
 ## v0.2 — Make the data trustworthy
 
-- [ ] OFX/QFX import (most US banks export these; better structured than CSV)
-- [ ] Automatic categorisation — rules engine first, learned from user
-      corrections second
-- [ ] Transfer matching, so moving money between your own accounts stops being
+- [x] OFX/QFX import, both 1.x SGML and 2.x XML
+- [x] Automatic categorisation — rules engine with a seam for a learned model
+- [x] Transfer matching, so moving money between your own accounts stops being
       counted as both income and spending
-- [ ] Merchant-name cleanup with a user-editable alias table
+- [x] Merchant normalisation hardened against real statements
+- [ ] User-editable merchant alias table — normalisation can fold "NETFLIX.COM"
+      and "NETFLIX, INC." together, but no heuristic will ever unify every
+      descriptor a bank invents. The user needs the last word.
 - [ ] Split transactions
+- [ ] Separate *subscriptions* from merely *periodic spending*. Real data
+      flagged a weekly corner-shop habit and a monthly takeaway order as
+      recurring. Both are true and neither is a subscription.
 
 ## v0.3 — The GUI
 

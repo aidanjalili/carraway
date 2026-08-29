@@ -70,3 +70,28 @@ def test_migrations_are_idempotent(tmp_path):
 def test_liability_account_types():
     assert AccountType.CREDIT_CARD.is_liability
     assert not AccountType.CHECKING.is_liability
+
+
+def test_identical_same_day_purchases_are_both_kept(tmp_path):
+    # Found on real data: two separate purchases at the same merchant, for the
+    # same amount, on the same day agree on every field the dedupe fingerprint
+    # reads, so the second was silently dropped. Losing a real transaction is
+    # far worse than keeping a duplicate, because nothing surfaces the loss.
+    conn = make_db(tmp_path)
+    csv_text = (
+        "Date,Description,Amount\n"
+        "2026-01-14,BLUE BOTTLE COFFEE,-4.75\n"
+        "2026-01-14,BLUE BOTTLE COFFEE,-4.75\n"
+        "2026-01-14,BLUE BOTTLE COFFEE,-4.75\n"
+    )
+    txs, _ = import_csv(io.StringIO(csv_text), "acct1")
+    assert [t.occurrence for t in txs] == [0, 1, 2]
+
+    inserted, skipped = db.insert_transactions(conn, txs)
+    assert (inserted, skipped) == (3, 0)
+    assert len(db.list_transactions(conn)) == 3
+
+    # Re-importing the same statement must still be a no-op.
+    again, _ = import_csv(io.StringIO(csv_text), "acct1")
+    assert db.insert_transactions(conn, again) == (0, 3)
+    assert len(db.list_transactions(conn)) == 3

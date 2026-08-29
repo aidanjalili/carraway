@@ -67,6 +67,20 @@ _LONG_DIGITS = re.compile(r"\b\d{4,}\b")
 # splits it) and "MACYS" (no digit).
 _ORDER_CODE = re.compile(r"\b(?=[A-Z0-9]*\d)(?=[A-Z0-9]*[A-Z])[A-Z0-9]{6,}\b")
 _TRAILING_STATE = re.compile(r"\s+[A-Z]{2}\s*$")
+# A phone number with its country code ("1 8445052993"), and digit runs that
+# are phone-shaped but not quite ("186-65797172"). Real statements are full of
+# both, and each one left behind a different orphan fragment that split one
+# merchant into several.
+_PHONE_WITH_COUNTRY = re.compile(r"\b1[-. ]\d{3}[-. ]?\d{3}[-. ]?\d{4}\b")
+_DIGIT_RUN = re.compile(r"\b[\d][\d\-. ]{6,}\b")
+# Tokens that carry no identity: bare numbers, or numbers with leftover
+# punctuation such as the "186-" a mangled phone number leaves behind.
+_EMPTY_TOKEN = re.compile(r"^[\d\-.#*]+$")
+# Corporate suffixes and TLDs. "NETFLIX.COM", "NETFLIX INC." and "NETFLIX" are
+# one company, and without this they are three merchants with three separate
+# recurring series, each too weak to be confident about.
+_CORP_SUFFIX = {"INC", "INC.", "LLC", "LLC.", "LTD", "LTD.", "CORP", "CORP.", "CO", "CO."}
+_TLD = re.compile(r"\.(COM|NET|ORG|IO|CO|US|APP|GOV)$")
 
 
 def normalise_merchant(description: str) -> str:
@@ -75,7 +89,9 @@ def normalise_merchant(description: str) -> str:
     >>> normalise_merchant("SQ *BLUE BOTTLE COFFEE #402 05/14 SAN FRANCISCO CA")
     'BLUE BOTTLE COFFEE SAN FRANCISCO'
     >>> normalise_merchant("NETFLIX.COM 866-579-7172 CA")
-    'NETFLIX.COM'
+    'NETFLIX'
+    >>> normalise_merchant("NETFLIX, INC. 186-65797172 CA")
+    'NETFLIX'
 
     City names survive, because telling "SAN FRANCISCO" from part of a business
     name needs a gazetteer we do not have. That is fine: detection only needs
@@ -93,18 +109,32 @@ def normalise_merchant(description: str) -> str:
 
     # Phone numbers must go before the generic long-digit rule, or that rule
     # eats the last block and leaves a "866-579-" stub behind.
+    text = _PHONE_WITH_COUNTRY.sub(" ", text)
     text = _PHONE.sub(" ", text)
     text = _DATE_FRAGMENT.sub(" ", text)
     text = _STORE_NUMBER.sub(" ", text)
     text = _REF_CODE.sub(" ", text)
     text = _MASKED_CARD.sub(" ", text)
+    text = _DIGIT_RUN.sub(" ", text)
     text = _LONG_DIGITS.sub(" ", text)
     text = _ORDER_CODE.sub(" ", text)
 
     text = re.sub(r"[^\w\s.&'-]", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     text = _TRAILING_STATE.sub("", text).strip()
-    return re.sub(r"\s+", " ", text).strip()
+
+    # Token pass: drop what carries no identity, fold the variants of one
+    # company together, and collapse the doubled names some processors emit
+    # ("NETFLIX.COM NETFLIX.COM").
+    tokens: list[str] = []
+    for token in text.split():
+        if _EMPTY_TOKEN.match(token) or token in _CORP_SUFFIX:
+            continue
+        token = _TLD.sub("", token)
+        if not token or (tokens and token == tokens[-1]):
+            continue
+        tokens.append(token)
+    return " ".join(tokens)
 
 
 def _classify_gaps(gaps: list[float]) -> tuple[str, float] | None:

@@ -67,7 +67,7 @@ def test_weekly_and_yearly_cadences():
     ]
     cadences = {s.merchant: s.cadence for s in detect(weekly + yearly)}
     assert cadences["The Gym Membership"] == "weekly"
-    assert cadences["Domain Renewal Llc"] == "yearly"
+    assert cadences["Domain Renewal"] == "yearly"  # LLC is not part of the identity
 
 
 def test_variable_amount_bill_is_still_detected():
@@ -128,7 +128,11 @@ def test_stale_series_are_flagged():
 def test_merchant_normalisation():
     blue_bottle = normalise_merchant("SQ *BLUE BOTTLE #402 SAN FRANCISCO CA")
     assert blue_bottle == "BLUE BOTTLE SAN FRANCISCO"
-    assert normalise_merchant("NETFLIX.COM 866-579-7172 CA") == "NETFLIX.COM"
+    assert normalise_merchant("NETFLIX.COM 866-579-7172 CA") == "NETFLIX"
+    # All the ways one company appears across real statements must agree.
+    assert normalise_merchant("NETFLIX, INC. 186-65797172 CA") == "NETFLIX"
+    assert normalise_merchant("Netflix 1 8445052993 CA") == "NETFLIX"
+    assert normalise_merchant("NETFLIX.COM NETFLIX.COM CA") == "NETFLIX"
     # Different noise around the same merchant must collapse to one key.
     a = normalise_merchant("POS DEBIT SQ *JOES PIZZA 05/14")
     b = normalise_merchant("SQ *JOES PIZZA #1123")
