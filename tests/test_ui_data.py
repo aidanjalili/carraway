@@ -90,3 +90,30 @@ def test_spending_by_category_excludes_money_that_only_moved(tmp_path):
     ledger = _ledger(tmp_path, _statement("-8.43"))
     names = {name for name, _, _ in ledger.spending_by_category()}
     assert "Transfer" not in names
+
+
+def test_an_account_with_no_balance_is_reported_by_name(tmp_path):
+    # accounts_missing_balances returns ids, and an id tells the user nothing.
+    # This crashed the net worth screen the first time an account without a
+    # recorded balance existed, which is any freshly imported one.
+    import io
+
+    from carraway.core.models import Account, AccountType
+    from carraway.importers.csv_importer import import_csv
+
+    path = tmp_path / "t.db"
+    conn = db.connect(path)
+    db.upsert_account(conn, Account(id="a1", name="Everyday", type=AccountType.CHECKING))
+    db.upsert_account(conn, Account(id="a2", name="No Balance Here", type=AccountType.CASH))
+    txs, _ = import_csv(io.StringIO(_statement("-8.43")), "a1")
+    db.insert_transactions(conn, txs)
+    db.record_balance(conn, "a1", Money.parse("100.00"))
+    conn.close()
+
+    ledger = Ledger(path=path)
+    ledger.load()
+
+    missing = ledger.accounts_without_balances()
+    assert missing == ["a2"]
+    by_id = {a.id: a.name for a in ledger.accounts}
+    assert [by_id[i] for i in missing] == ["No Balance Here"]

@@ -207,7 +207,11 @@ class NetWorthView(QWidget):
             notes.append(f"best month {summary.best_month[0]} ({summary.best_month[1].format()})")
         missing = self.ledger.accounts_without_balances()
         if missing:
-            # Silently dropping an account would misstate net worth by a
-            # constant, which is worse than saying which one is missing.
-            notes.append("excluded, no balance known: " + ", ".join(a.name for a in missing))
+            # Ids come back, not accounts, so they are resolved to names here:
+            # "excluded: 518742a0bfbf" tells the user nothing. Silently
+            # dropping an account would misstate net worth by a constant,
+            # which is worse than naming the gap.
+            by_id = {a.id: a.name for a in self.ledger.accounts}
+            names = [by_id.get(account_id, account_id) for account_id in missing]
+            notes.append("excluded, no balance known: " + ", ".join(names))
         self.footnote.setText("   ·   ".join(notes))
