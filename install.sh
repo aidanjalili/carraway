@@ -150,11 +150,35 @@ esac
 
 if command -v systemctl >/dev/null && [ -n "$(command -v "$VENV/bin/carraway")" ]; then
     echo
-    answer=$(ask "Sync automatically once a week? [y/N] ")
+    cat <<'WHY'
+Carraway keeps a permanent record of your transactions, but your bank only
+exposes the last few months through any provider. Sync regularly and the
+history accrues indefinitely; leave it too long and those months are gone for
+good, because there is nowhere left to fetch them from.
+
+A daily timer is set up for that reason. It catches up after the machine has
+been off rather than skipping a run.
+WHY
+    echo
+    answer=$(ask "Sync automatically once a day? [Y/n] ")
     case "$answer" in
-        [Yy]*) "$VENV/bin/carraway" schedule --when weekly || \
-                   warn "Could not install the timer." ;;
-        *) dim "Skipped. Set it up later with: carraway schedule --when weekly" ;;
+        [Nn]*)
+            dim "Skipped. Set it up later with: carraway schedule --when daily"
+            ;;
+        *)
+            if "$VENV/bin/carraway" schedule --when daily; then
+                # A user timer only runs while the user has a session, unless
+                # lingering is enabled — which is exactly the case where a
+                # missed window costs history.
+                if command -v loginctl >/dev/null; then
+                    loginctl enable-linger "$USER" 2>/dev/null \
+                        && dim "Enabled lingering, so it syncs even when you are logged out." \
+                        || warn "Run 'loginctl enable-linger $USER' to sync while logged out."
+                fi
+            else
+                warn "Could not install the timer."
+            fi
+            ;;
     esac
 fi
 

@@ -38,6 +38,22 @@ transaction being stored twice.
 Note that SimpleFIN caps a request at **90 days**, so file import remains the
 way to load older history.
 
+### Keep it synced
+
+```bash
+carraway schedule --when daily     # a systemd user timer
+loginctl enable-linger $USER       # so it runs while you are logged out
+```
+
+Worth doing rather than optional. Carraway keeps a permanent record, but your
+bank only exposes the last few months through any provider — sync regularly and
+the history accrues indefinitely, leave it too long and those months are gone,
+because there is nowhere left to fetch them from. The timer catches up after
+the machine has been off rather than skipping a run.
+
+The desktop app also syncs when you open it, if the data is more than a few
+hours old, and has a Refresh button for when it is not.
+
 The access URL is stored in your system keyring where one is available, and in
 a `0600` file under `~/.config/carraway` where one is not — the app tells you
 which before it saves anything.
