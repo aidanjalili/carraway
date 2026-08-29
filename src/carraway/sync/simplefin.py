@@ -23,6 +23,7 @@ import base64
 import binascii
 import contextlib
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -62,12 +63,52 @@ def _is_edge_block(body: str) -> bool:
 
 
 _TYPE_HINTS: list[tuple[tuple[str, ...], AccountType]] = [
-    (("credit card", "credit ", "visa", "mastercard", "amex"), AccountType.CREDIT_CARD),
+    (
+        (
+            "credit card",
+            "credit ",
+            "visa",
+            "mastercard",
+            "amex",
+            "discover",
+            # Card product names carry no generic word at all, so the common
+            # US ones are listed: "Chase Freedom Unlimited" is a credit card
+            # and nothing in that string says so.
+            "freedom",
+            "sapphire",
+            "slate",
+            "quicksilver",
+            "venture",
+            "platinum",
+            "active cash",
+            "rewards",
+            "cashback",
+            "cash back",
+            "signature",
+            " card",
+        ),
+        AccountType.CREDIT_CARD,
+    ),
     (("savings", "save", "money market"), AccountType.SAVINGS),
     (("loan", "mortgage", "student"), AccountType.LOAN),
     (("invest", "brokerage", "ira", "401k", "roth"), AccountType.INVESTMENT),
     (("cash", "wallet"), AccountType.CASH),
+    (("checking", "chequing", "college", "current"), AccountType.CHECKING),
 ]
+
+# SimpleFIN corrupts some institution names before we ever see them — a
+# registered-trademark sign arrives as literal U+FFFD replacement characters.
+# Stripping them beats showing "VISA�� CARD" in the account list.
+_REPLACEMENT_RUN = re.compile("�+")
+
+
+def clean_name(name: str) -> str:
+    """Tidy an institution-supplied name for display.
+
+    >>> clean_name("WELLS FARGO ACTIVE CASH VISA\ufffd\ufffd CARD ...5309 (5309)")
+    'WELLS FARGO ACTIVE CASH VISA CARD ...5309 (5309)'
+    """
+    return re.sub(r"\s{2,}", " ", _REPLACEMENT_RUN.sub("", name)).strip()
 
 
 class SimpleFinError(RuntimeError):
@@ -254,21 +295,33 @@ def _messages_in(body: str) -> list[str]:
     return messages
 
 
-def _account_type(name: str) -> AccountType:
+def _account_type(name: str, balance: str | None = None) -> AccountType:
     lowered = name.lower()
     for needles, kind in _TYPE_HINTS:
         if any(needle in lowered for needle in needles):
             return kind
+
+    # Nothing in the name says what this is. A negative balance is the next
+    # best signal: an asset account sits at or above zero almost all the time,
+    # whereas a card sits below it almost all the time. Wrong occasionally —
+    # an overdrawn current account — and the user can correct it, which beats
+    # calling every unrecognised account a chequing account.
+    if balance is not None:
+        try:
+            if Decimal(str(balance)) < 0:
+                return AccountType.CREDIT_CARD
+        except (ArithmeticError, ValueError):
+            pass
     return AccountType.CHECKING
 
 
 def _to_account(node: dict[str, Any], local_id: str) -> Account:
-    name = str(node.get("name") or "Account")
+    name = clean_name(str(node.get("name") or "Account")) or "Account"
     org = node.get("org") if isinstance(node.get("org"), dict) else {}
     return Account(
         id=local_id,
         name=name,
-        type=_account_type(name),
+        type=_account_type(name, node.get("balance")),
         institution=str(org.get("name") or node.get("conn_id") or ""),
         currency=str(node.get("currency") or "USD"),
         external_id=str(node.get("id") or ""),
@@ -312,12 +365,17 @@ class SimpleFinProvider:
         # the same account rather than creating a duplicate each time.
         self.account_ids = account_ids or {}
 
+    # SimpleFIN returns accounts but *no transactions at all* when no
+    # start-date is given — it only volunteers yesterday onward — which reads
+    # as "this account is empty" rather than "you did not ask". So a start
+    # date is always sent; this is the one used when the caller wants
+    # everything available.
+    EARLIEST = date(2000, 1, 1)
+
     def fetch(self, *, since: date | None = None, pending: bool = False) -> SyncResult:
         params: dict[str, str] = {}
-        if since:
-            params["start-date"] = str(
-                int(datetime.combine(since, datetime.min.time()).timestamp())
-            )
+        midnight = datetime.combine(since or self.EARLIEST, datetime.min.time())
+        params["start-date"] = str(int(midnight.timestamp()))
         if pending:
             params["pending"] = "1"
 
@@ -326,6 +384,12 @@ class SimpleFinProvider:
 
         # A failing connection should not cost the user the accounts that did
         # sync, so these are reported rather than raised.
+        advisory = payload.get("x-api-message")
+        if isinstance(advisory, str) and advisory.strip():
+            result.warnings.append(advisory.strip())
+        elif isinstance(advisory, list):
+            result.warnings.extend(str(m).strip() for m in advisory if str(m).strip())
+
         for entry in (payload.get("errors") or []) + (payload.get("errlist") or []):
             if isinstance(entry, str) and entry.strip():
                 result.warnings.append(entry.strip())

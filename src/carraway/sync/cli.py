@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import sys
+from dataclasses import replace
 from datetime import date, timedelta
 
 from ..core import db
@@ -23,7 +24,13 @@ _VENMO_ACCOUNT = "venmo-account-id"
 
 def _persist(conn, result, label: str) -> int:
     """Write a SyncResult through the same path a file import takes."""
+    # Keep whatever the user called an account they already had. The provider's
+    # name is more literal, but renaming something a person named themselves is
+    # a surprise, and they can always rename it deliberately.
+    named = {a.id: a.name for a in db.list_accounts(conn)}
     for account in result.accounts:
+        if account.id in named:
+            account = replace(account, name=named[account.id])
         db.upsert_account(conn, account)
     inserted, skipped = db.insert_transactions(conn, result.transactions)
 
@@ -107,6 +114,42 @@ def cmd_simplefin_check(args: argparse.Namespace) -> int:
     return 0
 
 
+def _link_accounts(conn, remote_accounts, *, assume_yes: bool) -> bool:
+    """Ask the user to match provider accounts to ones they already have.
+
+    Returns False if they backed out. Skipped entirely when everything is
+    already linked, so this is a first-sync step rather than a recurring one.
+    """
+    from . import linking
+
+    local_accounts = db.list_accounts(conn)
+    suggestions = [s for s in linking.suggest(remote_accounts, local_accounts) if s.local]
+    if not suggestions:
+        return True
+
+    print("These provider accounts look like accounts you already have.")
+    print("Linking them stops the same transaction being imported twice.\n")
+    for item in suggestions:
+        print(f"  {item.remote.name[:36]:<38} -> {item.local.name}")
+        print(f"     {item.score:.0%} confident: {item.reason}")
+
+    if not assume_yes:
+        print("\n[y] link these  [n] keep them separate  [q] cancel the sync")
+        answer = input("> ").strip().lower()
+        if answer.startswith("q"):
+            print("Cancelled. Nothing was written.")
+            return False
+        if not answer.startswith("y"):
+            print("Left unlinked. Overlapping transactions will appear twice.")
+            return True
+
+    for item in suggestions:
+        linked = replace(item.local, external_id=item.remote.external_id)
+        db.upsert_account(conn, linked)
+    print(f"\nLinked {len(suggestions)} account(s).")
+    return True
+
+
 def cmd_simplefin_sync(args: argparse.Namespace) -> int:
     from .simplefin import SimpleFinError, SimpleFinProvider
 
@@ -116,14 +159,15 @@ def cmd_simplefin_sync(args: argparse.Namespace) -> int:
         return 1
 
     conn = db.connect(args.database)
-    # Re-use the local ids already assigned to these external accounts, or a
-    # second sync would create a parallel set of duplicate accounts.
-    known = {a.external_id: a.id for a in db.list_accounts(conn) if a.external_id}
-    provider = SimpleFinProvider(access_url, account_ids=known)
-
     since = date.today() - timedelta(days=args.days) if args.days else None
+
+    def pull() -> object:
+        known = {a.external_id: a.id for a in db.list_accounts(conn) if a.external_id}
+        provider = SimpleFinProvider(access_url, account_ids=known)
+        return provider.fetch(since=since, pending=args.pending)
+
     try:
-        result = provider.fetch(since=since, pending=args.pending)
+        result = pull()
     except SimpleFinError as exc:
         print(f"Sync failed: {exc}", file=sys.stderr)
         if "no connections" in str(exc).lower():
@@ -143,9 +187,21 @@ def cmd_simplefin_sync(args: argparse.Namespace) -> int:
             print(f"  {warning}")
         return 0
 
+    if sys.stdin.isatty() or args.link_all:
+        if not _link_accounts(conn, result.accounts, assume_yes=args.link_all):
+            return 0
+        # Re-fetch so the newly linked accounts resolve to their local ids;
+        # the transactions in `result` still carry the provisional ones.
+        try:
+            result = pull()
+        except SimpleFinError as exc:
+            print(f"Sync failed: {exc}", file=sys.stderr)
+            return 1
+
     _persist(conn, result, "SimpleFIN")
     for account in result.accounts:
-        print(f"  {account.name} ({account.institution})")
+        count = sum(1 for t in result.transactions if t.account_id == account.id)
+        print(f"  {account.name[:40]:<42} {count:>4} transaction(s)")
     return 0
 
 
@@ -295,5 +351,10 @@ def register(sub: argparse._SubParsersAction, database_default: str) -> None:
         if name == "simplefin":
             parser.add_argument(
                 "--pending", action="store_true", help="include pending transactions"
+            )
+            parser.add_argument(
+                "--link-all",
+                action="store_true",
+                help="accept the suggested account links without asking",
             )
         parser.set_defaults(func=handler)

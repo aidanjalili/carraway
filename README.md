@@ -144,6 +144,14 @@ carraway simplefin setup      # claim it and connect
 carraway sync simplefin
 ```
 
+On the first sync Carraway offers to link the provider's accounts to any you
+already imported from files — "CHASE COLLEGE (6822)" and "Chase Checking 6822"
+are the same account, and linking them is what stops every overlapping
+transaction being stored twice.
+
+Note that SimpleFIN caps a request at **90 days**, so file import remains the
+way to load older history.
+
 The access URL is stored in your system keyring where one is available, and in
 a `0600` file under `~/.config/carraway` where one is not — the app tells you
 which before it saves anything.
