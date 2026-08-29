@@ -23,9 +23,10 @@ which is a worse budget but never a wrong one.
 
 Three more decisions worth stating up front:
 
-* **Baselines are medians, not means.** One December, one wedding or one flight
-  would otherwise permanently inflate the allowance it lands in, and a budget
-  built from a holiday is a budget nobody can hit.
+* **Spending baselines are medians, not means.** One December, one wedding or
+  one flight would otherwise permanently inflate the allowance it lands in, and
+  a budget built from a holiday is a budget nobody can hit. Income is the
+  exception and is taken as a rate; `_baselines` explains why.
 * **Cuts are allocated proportionally** to what each category currently costs.
   Asking someone to find $50 in a $600 grocery bill and $50 in a $60 coffee
   habit are wildly different requests; only one of them is arithmetic.
@@ -156,6 +157,14 @@ def allocate(amount: Money, weights: Sequence[int]) -> list[Money]:
     for i in order[:leftover]:
         shares[i] += 1
     return [Money(sign * s, amount.currency) for s in shares]
+
+
+def _mean_minor(values: Sequence[int]) -> int:
+    """Mean of a list of cent counts, in cents, without going near a float."""
+    if not values:
+        return 0
+    average = Decimal(sum(values)) / Decimal(len(values))
+    return int(average.quantize(Decimal(1), rounding=ROUND_HALF_EVEN))
 
 
 def _median_minor(values: Sequence[int]) -> int:
@@ -527,12 +536,22 @@ def _baselines(
     period: Period,
     committed_ids: set[str],
 ) -> tuple[int, dict[str, int]]:
-    """Median per-period income, and median per-period discretionary spend by category.
+    """Per-period income, and median per-period discretionary spend by category.
 
     Periods in which a category saw no spending count as zero rather than being
     skipped. Otherwise a category touched once in six months would show a
     baseline of the whole charge every month, and the budget would hand out an
     allowance for a thing the user hardly ever buys.
+
+    Income is the one figure here taken as a mean rather than a median, and
+    that is deliberate. Pay arrives monthly, semi-monthly or fortnightly, never
+    weekly and evenly, so the *median* week of a real salary contains no
+    paycheck at all: run against a real database, a median put weekly income at
+    $6.60 and declared a comfortably reachable goal impossible. A mean over a
+    whole number of periods is agnostic to the cadence pay happens to arrive
+    on, which is exactly the property needed. The cost is that a windfall
+    inside the lookback — a bonus, a tax refund — reads as permanent income and
+    makes the budget too generous; narrow `lookback` to exclude it.
     """
     if not window:
         return 0, {}
@@ -557,7 +576,7 @@ def _baselines(
         spend[category][bucket] -= tx.amount.minor
 
     return (
-        _median_minor(list(income.values())),
+        _mean_minor(list(income.values())),
         {name: _median_minor(list(periods.values())) for name, periods in spend.items()},
     )
 

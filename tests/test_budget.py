@@ -543,3 +543,35 @@ def test_a_user_verdict_overrules_the_catalog():
     health = overruled.for_category("Health")
     assert health.committed == Money.zero()
     assert health.cut.minor > 0
+
+
+def test_income_is_not_measured_by_the_median_week():
+    # Pay arrives on its own cadence, never weekly and evenly. Four-weekly pay
+    # leaves nine weeks in thirteen with no deposit at all, so the *median*
+    # week earns nothing and a comfortable goal would be called impossible.
+    # This is not hypothetical: it is what the first run against a real
+    # database did, reporting a weekly income of $6.60.
+    txs: list[Transaction] = []
+    for i, week in enumerate(WEEKS):
+        if i % 4 == 0:
+            txs.append(make_tx(week, "5000.00", "ACME CORP PAYROLL DIRECT DEP"))
+        txs.append(make_tx(week + timedelta(days=2), "-100.00", "TRADER JOES #123"))
+
+    result = plan(Goal(Money.parse("5000"), 26, "weekly"), txs, asof=WEEKLY_ASOF)
+    assert result.periods_observed == 13
+    assert result.income == Money.parse("1538.46")  # $20,000 across 13 weeks
+    assert result.feasible
+
+
+def test_a_monthly_salary_budgeted_weekly_still_reads_as_a_weekly_rate():
+    # The same salary, seen through both period lengths. A month is not four
+    # weeks, so the two do not agree to the cent, but they have to describe the
+    # same person: $5,000 a month is about $1,150 a week, never $0.00.
+    day = date(2026, 7, 1)
+    monthly = plan(Goal(Money.parse("6000"), 6), history(), series=series_for(), asof=day)
+    weekly = plan(
+        Goal(Money.parse("6000"), 26), history(), series=series_for(), period="weekly", asof=day
+    )
+    assert monthly.income == Money.parse("5000.00")
+    # Three paychecks inside the thirteen-week window, not "the median week".
+    assert weekly.income == Money.parse("1153.85")
