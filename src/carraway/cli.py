@@ -19,6 +19,10 @@ from .core import db
 from .core.models import Account, AccountType
 from .core.money import Money, total
 
+# Payments a year, by cadence. A biweekly charge is 26 payments rather than
+# 24, which is the error people most often make estimating an annual cost.
+_PER_YEAR = {"weekly": 52, "biweekly": 26, "monthly": 12, "quarterly": 4, "yearly": 1}
+
 
 def _fmt_row(cells: list[str], widths: list[int]) -> str:
     return "  ".join(c.ljust(w) for c, w in zip(cells, widths, strict=True)).rstrip()
@@ -794,6 +798,54 @@ def cmd_dedupe(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_track(args: argparse.Namespace) -> int:
+    """Record a subscription no detector can find, or list the ones recorded.
+
+    Anything paid through Venmo, Zelle or PayPal reaches the statement as
+    "VENMO PAYMENT", never as the service, so it cannot be detected at all.
+    The only way for the app to know is to be told.
+    """
+    conn = db.connect(args.database)
+
+    if args.remove:
+        removed = db.remove_manual_subscription(conn, args.remove)
+        print("Removed." if removed else f"No tracked subscription with id {args.remove!r}.")
+        return 0
+
+    if not args.merchant:
+        tracked = db.list_manual_subscriptions(conn)
+        if not tracked:
+            print("Nothing tracked manually yet.")
+            print("Add one with:  carraway track 'T-Mobile' 35 monthly --via 'venmo to dad'")
+            return 0
+        print(f"{'ID':<14}{'SERVICE':<26}{'AMOUNT':>10}  {'CADENCE':<10}PAID VIA")
+        for item in tracked:
+            print(
+                f"{item['id']:<14}{str(item['merchant'])[:24]:<26}"
+                f"{abs(item['amount']).format():>10}  {str(item['cadence']):<10}{item['paid_via']}"
+            )
+        yearly = total([abs(i["amount"]) * _PER_YEAR.get(str(i["cadence"]), 0) for i in tracked])
+        print(f"\n{len(tracked)} tracked, {yearly.format()}/year")
+        return 0
+
+    if args.amount is None or not args.cadence:
+        print("Give an amount and a cadence, e.g. carraway track 'AAA' 67 yearly", file=sys.stderr)
+        return 1
+
+    subscription_id = db.add_manual_subscription(
+        conn,
+        args.merchant,
+        Money.parse(str(args.amount)),
+        args.cadence,
+        kind=args.kind,
+        paid_via=args.via or "",
+        notes=args.notes or "",
+    )
+    print(f"Tracking {args.merchant} at {Money.parse(str(args.amount)).format()} {args.cadence}")
+    print(f"  id {subscription_id}; remove it with 'carraway track --remove {subscription_id}'")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="carraway",
@@ -938,6 +990,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--format", choices=["ods", "csv"], help="override the format implied by the extension"
     )
     p_export.set_defaults(func=cmd_export)
+
+    p_track = sub.add_parser(
+        "track", help="record a subscription that never appears as itself on a statement"
+    )
+    p_track.add_argument("merchant", nargs="?", help="what it is, e.g. 'T-Mobile'")
+    p_track.add_argument("amount", nargs="?", help="what it costs, e.g. 35")
+    p_track.add_argument(
+        "cadence",
+        nargs="?",
+        choices=["weekly", "biweekly", "monthly", "quarterly", "yearly"],
+        help="how often it bills",
+    )
+    p_track.add_argument("--via", help="how it is paid, e.g. 'venmo to dad'")
+    p_track.add_argument("--kind", default="subscription", choices=["subscription", "bill"])
+    p_track.add_argument("--notes", help="anything worth remembering")
+    p_track.add_argument("--remove", metavar="ID", help="stop tracking one")
+    p_track.set_defaults(func=cmd_track)
 
     p_dedupe = sub.add_parser(
         "dedupe", help="find one charge imported twice from two different sources"

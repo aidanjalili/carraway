@@ -32,6 +32,7 @@ class Ledger:
     verdicts: dict[str, str] = field(default_factory=dict)  # merchant -> user's answer
     price_changes: list = field(default_factory=list)
     balances: dict = field(default_factory=dict)
+    manual: list = field(default_factory=list)
     decided: dict[str, date] = field(default_factory=dict)  # merchant -> when answered
 
     def load(self) -> None:
@@ -46,11 +47,13 @@ class Ledger:
         transfers.apply_transfer_groups(self.transactions, pairs)
 
         self.balances = db.latest_balances(conn)
+        self.manual = db.list_manual_subscriptions(conn)
         self.verdicts = db.get_verdicts(conn)
         self.decided = db.get_verdict_dates(conn)
         # Inflows included so recurring income and person-to-person
         # payments are visible; the views split them out by kind.
         self.series = recurring.detect(self.transactions, include_inflows=True)
+        self.series = self.series + self.manual_series()
         self.price_changes = price_changes.find_price_changes(self.transactions, series=self.series)
         assigned = cat.categorize_all(self.transactions)
         self.categories = {
@@ -59,6 +62,61 @@ class Ledger:
         conn.close()
 
     # -- derived views the screens ask for --------------------------------
+
+    def manual_series(self) -> list[RecurringSeries]:
+        """Tracked subscriptions, shaped like detected ones.
+
+        Presented as RecurringSeries so every view, total and sort treats a
+        subscription the user told us about exactly like one the app found —
+        the distinction matters for provenance, not for what it costs.
+        """
+        today = date.today()
+        out: list[RecurringSeries] = []
+        for item in self.manual:
+            amount = item["amount"]
+            out.append(
+                RecurringSeries(
+                    merchant=str(item["merchant"]),
+                    account_id="",
+                    cadence=str(item["cadence"]),
+                    typical_amount=amount,
+                    occurrences=0,  # nothing was observed; this was told to us
+                    first_seen=today,
+                    last_seen=today,
+                    next_expected=None,
+                    confidence=1.0,  # the user's own word, not an inference
+                    amount_varies=False,
+                    transaction_ids=[],
+                )
+            )
+        return out
+
+    def is_manual(self, series: RecurringSeries) -> bool:
+        return series.occurrences == 0 and not series.transaction_ids
+
+    def add_manual(self, values: dict) -> None:
+        conn = db.connect(self.path)
+        db.add_manual_subscription(
+            conn,
+            values["merchant"],
+            values["amount"],
+            values["cadence"],
+            kind=values.get("kind", "subscription"),
+            paid_via=values.get("paid_via", ""),
+            notes=values.get("notes", ""),
+        )
+        conn.close()
+        self.manual = db.list_manual_subscriptions(db.connect(self.path))
+
+    def remove_manual(self, series: RecurringSeries) -> bool:
+        match = next((i for i in self.manual if str(i["merchant"]) == series.merchant), None)
+        if match is None:
+            return False
+        conn = db.connect(self.path)
+        db.remove_manual_subscription(conn, str(match["id"]))
+        conn.close()
+        self.manual = db.list_manual_subscriptions(db.connect(self.path))
+        return True
 
     def networth_points(self, granularity: str = "monthly") -> list:
         """Reconstructed net worth history, or empty when no balance is known.

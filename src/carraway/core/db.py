@@ -82,6 +82,24 @@ MIGRATIONS: list[str] = [
 
     CREATE INDEX idx_balances_account ON balances(account_id, observed_on);
     """,
+    # v5 - subscriptions the user knows about but no detector can find.
+    # Anything paid through Venmo, Zelle or PayPal reaches the statement as
+    # "VENMO PAYMENT", never as the merchant, so the service is structurally
+    # invisible. Comparing a real user's own list against detection showed
+    # this accounted for most of what was missing.
+    """
+    CREATE TABLE manual_subscriptions (
+        id          TEXT PRIMARY KEY,
+        merchant    TEXT NOT NULL,
+        amount_minor INTEGER NOT NULL,   -- never a float; see core.money
+        currency    TEXT NOT NULL DEFAULT 'USD',
+        cadence     TEXT NOT NULL,       -- weekly | biweekly | monthly | quarterly | yearly
+        kind        TEXT NOT NULL DEFAULT 'subscription',
+        paid_via    TEXT NOT NULL DEFAULT '',  -- "venmo to dad", "paypal", an account name
+        notes       TEXT NOT NULL DEFAULT '',
+        active      INTEGER NOT NULL DEFAULT 1
+    );
+    """,
 ]
 
 
@@ -317,6 +335,74 @@ def balance_history(conn: sqlite3.Connection, account_id: str) -> list[tuple[dat
         (date.fromisoformat(r["observed_on"]), Money(r["amount_minor"], r["currency"]))
         for r in rows
     ]
+
+
+# -- subscriptions the user tells us about --------------------------------
+
+
+def add_manual_subscription(
+    conn: sqlite3.Connection,
+    merchant: str,
+    amount: Money,
+    cadence: str,
+    *,
+    kind: str = "subscription",
+    paid_via: str = "",
+    notes: str = "",
+) -> str:
+    """Record a subscription detection cannot see. Returns its id."""
+    import uuid
+
+    subscription_id = uuid.uuid4().hex[:12]
+    conn.execute(
+        """
+        INSERT INTO manual_subscriptions
+            (id, merchant, amount_minor, currency, cadence, kind, paid_via, notes, active)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+        """,
+        (
+            subscription_id,
+            merchant,
+            -abs(amount.minor),  # stored as an outflow, matching every other amount
+            amount.currency,
+            cadence,
+            kind,
+            paid_via,
+            notes,
+        ),
+    )
+    conn.commit()
+    return subscription_id
+
+
+def list_manual_subscriptions(
+    conn: sqlite3.Connection, *, active_only: bool = True
+) -> list[dict[str, object]]:
+    where = "WHERE active = 1" if active_only else ""
+    rows = conn.execute(f"SELECT * FROM manual_subscriptions {where} ORDER BY merchant").fetchall()
+    return [
+        {
+            "id": r["id"],
+            "merchant": r["merchant"],
+            "amount": Money(r["amount_minor"], r["currency"]),
+            "cadence": r["cadence"],
+            "kind": r["kind"],
+            "paid_via": r["paid_via"],
+            "notes": r["notes"],
+            "active": bool(r["active"]),
+        }
+        for r in rows
+    ]
+
+
+def remove_manual_subscription(conn: sqlite3.Connection, subscription_id: str) -> int:
+    """Deactivate rather than delete: a cancelled subscription is still worth
+    remembering, and the user may have paid for it for years."""
+    cur = conn.execute(
+        "UPDATE manual_subscriptions SET active = 0 WHERE id = ?", (subscription_id,)
+    )
+    conn.commit()
+    return cur.rowcount
 
 
 def delete_transactions(conn: sqlite3.Connection, ids: list[str]) -> int:

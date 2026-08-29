@@ -262,12 +262,22 @@ def cmd_venmo_login(args: argparse.Namespace) -> int:
             print(f"Two-factor failed: {exc}", file=sys.stderr)
             return 1
     except VenmoError as exc:
-        print(f"Login failed: {exc}", file=sys.stderr)
+        print(f"\nLogin failed: {exc}", file=sys.stderr)
+        print(
+            "\nIf that wording came from Venmo, it is telling you something real.\n"
+            "Note it wants the login you use in the app — often a phone number or\n"
+            "username rather than an email address.",
+            file=sys.stderr,
+        )
         return 1
     finally:
         # Not security, just hygiene: drop the only reference promptly rather
         # than leaving it live for the rest of the command.
         del password
+
+    if not token or not user_id:
+        print("Venmo returned no token. Nothing was saved.", file=sys.stderr)
+        return 1
 
     credentials.store(_VENMO_DEVICE, device_id)
     credentials.store(_VENMO_USER, user_id)
@@ -301,6 +311,25 @@ def cmd_venmo_sync(args: argparse.Namespace) -> int:
         return 1
 
     _persist(conn, result, "Venmo", args.database)
+    return 0
+
+
+def cmd_venmo_check(args: argparse.Namespace) -> int:
+    """Separate 'Venmo is down' from 'you are not signed in' from 'bad password'."""
+    from .venmo_api import VenmoError, check_reachable
+
+    token = credentials.load(_VENMO_TOKEN)
+    try:
+        print(f"Venmo API: {check_reachable(token)}")
+    except VenmoError as exc:
+        print(f"Venmo API: {exc}", file=sys.stderr)
+        return 1
+
+    user_id = credentials.load(_VENMO_USER)
+    if token and user_id:
+        print(f"Signed in (user {user_id}); token in {credentials.describe_store()}.")
+    else:
+        print("Not signed in. Run 'carraway venmo login'.")
     return 0
 
 
@@ -345,6 +374,9 @@ def register(sub: argparse._SubParsersAction, database_default: str) -> None:
     vm_login = vm_sub.add_parser("login", help="sign in and store a token")
     vm_login.add_argument("--username", help="email, phone or username")
     vm_login.set_defaults(func=cmd_venmo_login)
+    vm_check = vm_sub.add_parser("check", help="is Venmo's API reachable, and are we signed in?")
+    vm_check.set_defaults(func=cmd_venmo_check)
+
     vm_logout = vm_sub.add_parser("logout", help="revoke the token at Venmo and forget it")
     vm_logout.set_defaults(func=cmd_venmo_logout)
 

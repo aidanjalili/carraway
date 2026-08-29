@@ -38,6 +38,7 @@ from ..core.models import Account, Transaction, assign_occurrences
 from ..core.money import Money
 from .accounts import classify_account
 from .base import SyncResult
+from .net import urlopen
 
 # SimpleFIN says nothing about account type, so it is inferred from the name
 # the institution reports. A wrong guess only affects presentation, and the
@@ -129,7 +130,7 @@ def claim_setup_token(setup_token: str) -> str:
     request.add_header("Content-Length", "0")
     request.add_header("User-Agent", _USER_AGENT)
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urlopen(request, timeout=30) as response:
             access_url = response.read().decode("utf-8").strip()
     except urllib.error.HTTPError as exc:
         detail, body = "", ""
@@ -205,7 +206,7 @@ def _get(access_url: str, params: dict[str, str]) -> dict[str, Any]:
         request.add_header("Authorization", authorization)
 
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
+        with urlopen(request, timeout=60) as response:
             # parse_float=Decimal keeps balances and amounts exact; a float
             # would already have lost precision by the time we saw it.
             return json.loads(response.read().decode("utf-8"), parse_float=Decimal)

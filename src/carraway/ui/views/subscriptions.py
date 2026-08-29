@@ -16,10 +16,12 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QHBoxLayout,
     QHeaderView,
     QLabel,
     QMenu,
     QPushButton,
+    QTabBar,
     QTableWidget,
     QVBoxLayout,
     QWidget,
@@ -29,6 +31,7 @@ from ...core.models import RecurringSeries
 from ...core.money import Money, total
 from ..data import Ledger
 from ..widgets import SortableItem, StatCard, StatRow
+from . import add_subscription
 from .classify_dialog import ClassifyDialog
 
 _HEADERS = [
@@ -96,6 +99,24 @@ class SubscriptionsView(QWidget):
         self.price_notice.setVisible(False)
         layout.addWidget(self.price_notice)
 
+        # Bills, subscriptions and stopped things answer different questions,
+        # so they get their own tabs rather than one list the user must scan.
+        tab_row = QHBoxLayout()
+        self.tabs = QTabBar()
+        self.tabs.setExpanding(False)
+        self.tabs.setDrawBase(False)
+        for label in ("Subscriptions", "Bills", "Income", "Habits", "Stopped", "All"):
+            self.tabs.addTab(label)
+        self.tabs.currentChanged.connect(lambda _: self.refresh())
+        tab_row.addWidget(self.tabs)
+        tab_row.addStretch(1)
+
+        add = QPushButton("Track one manually…")
+        add.setCursor(Qt.CursorShape.PointingHandCursor)
+        add.clicked.connect(self._add_manual)
+        tab_row.addWidget(add)
+        layout.addLayout(tab_row)
+
         self.table = QTableWidget(0, len(_HEADERS))
         self.table.setHorizontalHeaderLabels(_HEADERS)
         # Headers must sit over their columns: text left, numbers right.
@@ -115,6 +136,10 @@ class SubscriptionsView(QWidget):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         layout.addWidget(self.table, stretch=1)
 
+        self.totals = QLabel("")
+        self.totals.setObjectName("SectionHeading")
+        layout.addWidget(self.totals)
+
         self.footnote = QLabel("")
         self.footnote.setObjectName("Muted")
         self.footnote.setWordWrap(True)
@@ -131,8 +156,28 @@ class SubscriptionsView(QWidget):
 
         self.refresh()
 
+    def _visible(self) -> list:
+        """The series belonging to the selected tab."""
+        chosen = self.tabs.tabText(self.tabs.currentIndex())
+        stale = {id(s) for s in self.ledger.stale_series}
+        everything = self.ledger.series
+        if chosen == "All":
+            return everything
+        if chosen == "Stopped":
+            # Anything whose expected charge never arrived, whatever its kind:
+            # "did this quietly stop?" is its own question.
+            return [s for s in everything if id(s) in stale]
+
+        wanted = {
+            "Subscriptions": "subscription",
+            "Bills": "bill",
+            "Income": "income",
+            "Habits": "habit",
+        }[chosen]
+        return [s for s in everything if self.ledger.kind_of(s) == wanted and id(s) not in stale]
+
     def refresh(self) -> None:
-        series = self.ledger.series
+        series = self._visible()
         active = self.ledger.active_series
         stale = self.ledger.stale_series
         today = date.today()
@@ -203,6 +248,16 @@ class SubscriptionsView(QWidget):
         self.table.setSortingEnabled(True)
         self.table.sortItems(1, Qt.SortOrder.AscendingOrder)
 
+        # A running total for whatever is on screen, which is the number
+        # someone actually came to this tab for.
+        shown_year = total([self.ledger.current_annual(s) for s in series])
+        shown_month = Money(round(shown_year.minor / 12), shown_year.currency)
+        label = self.tabs.tabText(self.tabs.currentIndex())
+        self.totals.setText(
+            f"{label}: {len(series)} · {shown_month.format()} per month · "
+            f"{shown_year.format()} per year"
+        )
+
         varies = sum(1 for s in series if s.amount_varies)
         notes = [f"{len(series)} series detected as of {today.isoformat()}"]
         if unknown:
@@ -251,10 +306,31 @@ class SubscriptionsView(QWidget):
         if series is None:
             return
         menu = QMenu(self)
-        action = QAction(f"What is {series.merchant}?", self)
-        action.triggered.connect(lambda: self._classify(series))
-        menu.addAction(action)
+        classify = QAction(f"What is {series.merchant}?", self)
+        classify.triggered.connect(lambda: self._classify(series))
+        menu.addAction(classify)
+
+        if self.ledger.is_manual(series):
+            # Only a tracked entry can be removed. A detected one is a fact
+            # about the ledger, and deleting it would just mean re-detecting it.
+            menu.addSeparator()
+            drop = QAction(f"Stop tracking {series.merchant}", self)
+            drop.triggered.connect(lambda: self._remove_manual(series))
+            menu.addAction(drop)
+
         menu.exec(self.table.viewport().mapToGlobal(position))
+
+    def _add_manual(self) -> None:
+        """Record a subscription no detector can see."""
+        values = add_subscription.prompt(self)
+        if values is None:
+            return
+        self.ledger.add_manual(values)
+        self.refresh()
+
+    def _remove_manual(self, series) -> None:
+        if self.ledger.remove_manual(series):
+            self.refresh()
 
     def _classify_selected(self) -> None:
         rows = self.table.selectionModel().selectedRows()

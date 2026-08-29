@@ -34,6 +34,7 @@ from ..analysis.recurring import normalise_merchant
 from ..core.models import Account, AccountType, Transaction, assign_occurrences
 from ..core.money import Money
 from .base import SyncResult
+from .net import urlopen
 
 _BASE = "https://api.venmo.com/v1"
 # Venmo pages transactions at 50 and ignores larger values.
@@ -84,7 +85,7 @@ def _request(
         request.add_header(key, value)
 
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urlopen(request, timeout=30) as response:
             raw = response.read().decode("utf-8")
             parsed = json.loads(raw, parse_float=Decimal) if raw else {}
             return response.status, parsed, dict(response.headers)
@@ -103,6 +104,19 @@ def new_device_id() -> str:
     return f"carraway-{uuid.uuid4().hex[:24]}"
 
 
+def _otp_secret(headers: dict[str, str]) -> str:
+    """The two-factor secret from a response, whatever case Venmo used.
+
+    Venmo does not answer a two-factor challenge with a consistent status
+    code — 401 and 400 have both been seen — so the header is what identifies
+    it, not the status.
+    """
+    for key, value in headers.items():
+        if key.lower() == "venmo-otp-secret" and value:
+            return value
+    return ""
+
+
 def log_in(username: str, password: str, device_id: str) -> tuple[str, str]:
     """Exchange credentials for a token. Returns (token, user id).
 
@@ -119,14 +133,19 @@ def log_in(username: str, password: str, device_id: str) -> tuple[str, str]:
             "password": password,
         },
     )
-    if status == 401:
-        secret = headers.get("venmo-otp-secret") or headers.get("Venmo-Otp-Secret")
-        if secret:
-            raise TwoFactorRequired(secret)
-        raise VenmoError("Venmo rejected those credentials")
-    if status != 200:
-        raise VenmoError(_message(body, f"login failed with HTTP {status}"))
-    return _token_from(body)
+
+    # Checked before the status, because a challenge is identified by this
+    # header rather than by any particular code.
+    secret = _otp_secret(headers)
+    if secret:
+        raise TwoFactorRequired(secret)
+
+    if status == 200:
+        return _token_from(body)
+
+    # Venmo's own wording is far more useful than anything invented here:
+    # "Your email or password was incorrect" versus a bare HTTP 400.
+    raise VenmoError(_message(body, f"Venmo refused the login (HTTP {status})"))
 
 
 def send_two_factor_code(otp_secret: str, device_id: str) -> None:
@@ -153,6 +172,35 @@ def submit_two_factor_code(code: str, otp_secret: str, device_id: str) -> tuple[
     if status != 200:
         raise VenmoError(_message(body, f"that code was not accepted (HTTP {status})"))
     return _token_from(body)
+
+
+def check_reachable(token: str | None = None) -> str:
+    """Report whether Venmo is answering, without attempting a login.
+
+    Deliberately never sends credentials, real or fake. An earlier version
+    probed the login endpoint with a dummy password, which was a bad idea on
+    two counts: it burns the same rate limit a real sign-in needs, and
+    repeated failed logins from one address is exactly the pattern Venmo
+    watches for. With a token this makes one harmless authenticated GET;
+    without one it only opens a connection.
+    """
+    if token:
+        status, body, _ = _request("GET", "/me", token=token)
+        if status == 200:
+            return "reachable, and the stored token works"
+        if status == 401:
+            return "reachable, but the stored token has been revoked"
+        return _message(body, f"reachable, but returned HTTP {status}")
+
+    from .net import connect_ipv4
+
+    # IPv4 specifically: Venmo's AAAA records do not answer, so a plain
+    # connection would report the service unreachable when it is not.
+    try:
+        with connect_ipv4("api.venmo.com", 443, timeout=8):
+            return "reachable (no token stored, so nothing was authenticated)"
+    except OSError as exc:
+        raise VenmoError(f"could not reach api.venmo.com: {exc}") from exc
 
 
 def log_out(token: str) -> bool:
