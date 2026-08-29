@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -19,8 +20,10 @@ from PySide6.QtWidgets import (
 )
 
 from ..core import db
+from . import sync_worker
 from .assets import app_icon
 from .data import Ledger
+from .sync_worker import SyncRunner
 from .views.budget import BudgetView
 from .views.dashboard import DashboardView
 from .views.networth import NetWorthView
@@ -66,6 +69,16 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(root)
 
+        self.syncer = SyncRunner(self.ledger.path, self)
+        self.syncer.started.connect(self._sync_started)
+        self.syncer.finished.connect(self._sync_finished)
+        self.syncer.failed.connect(self._sync_failed)
+        self._describe_last_sync()
+
+        # Kick off shortly after the window is up rather than during
+        # construction, so the app is on screen and usable while it runs.
+        QTimer.singleShot(600, self._sync_if_due)
+
     def _build_sidebar(self) -> QWidget:
         sidebar = QFrame()
         sidebar.setObjectName("Sidebar")
@@ -107,6 +120,18 @@ class MainWindow(QMainWindow):
 
         layout.addStretch(1)
 
+        self.refresh_button = QPushButton("Refresh from banks")
+        self.refresh_button.setObjectName("NavButton")
+        self.refresh_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.refresh_button.clicked.connect(self._sync_now)
+        layout.addWidget(self.refresh_button)
+
+        self.sync_status = QLabel("")
+        self.sync_status.setObjectName("Muted")
+        self.sync_status.setStyleSheet("padding: 0 8px; font-size: 11px;")
+        self.sync_status.setWordWrap(True)
+        layout.addWidget(self.sync_status)
+
         import_button = QPushButton("Import statements…")
         import_button.setObjectName("NavButton")
         import_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -128,6 +153,78 @@ class MainWindow(QMainWindow):
         layout.addWidget(accounts)
         layout.addWidget(privacy)
         return sidebar
+
+    # -- syncing ---------------------------------------------------------
+
+    def _sync_if_due(self) -> None:
+        """Sync on open, but only when the data is actually stale."""
+        if not sync_worker.is_configured():
+            self.sync_status.setText("No bank connected.")
+            return
+        conn = db.connect(self.ledger.path)
+        due = sync_worker.is_due(conn)
+        conn.close()
+        if due:
+            self.syncer.start()
+        else:
+            self._describe_last_sync()
+
+    def _sync_now(self) -> None:
+        """The Refresh button: always syncs, because a person asked."""
+        if not sync_worker.is_configured():
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.information(
+                self,
+                "No bank connected",
+                "Connect one first with:\n\n    carraway simplefin setup",
+            )
+            return
+        if not self.syncer.start():
+            self.sync_status.setText("Already refreshing…")
+
+    def _sync_started(self) -> None:
+        self.refresh_button.setEnabled(False)
+        self.refresh_button.setText("Refreshing…")
+        self.sync_status.setText("Fetching from your banks…")
+
+    def _sync_finished(self, inserted: int, skipped: int, warnings: list) -> None:
+        self.refresh_button.setEnabled(True)
+        self.refresh_button.setText("Refresh from banks")
+        # Only reload when something actually changed; rebuilding every screen
+        # to show the same numbers is a visible stutter for no reason.
+        if inserted:
+            self.ledger.load()
+            self.refresh_all()
+        note = f"{inserted} new transaction(s)" if inserted else "Up to date"
+        if warnings:
+            note += f" · {warnings[0][:60]}"
+        self.sync_status.setText(note)
+
+    def _sync_failed(self, message: str) -> None:
+        self.refresh_button.setEnabled(True)
+        self.refresh_button.setText("Refresh from banks")
+        # Reported in place rather than as a dialog: a sync failing while
+        # someone reads their spending should not interrupt them.
+        self.sync_status.setText(f"Refresh failed — {message[:70]}")
+
+    def _describe_last_sync(self) -> None:
+        conn = db.connect(self.ledger.path)
+        previous = sync_worker.last_sync(conn)
+        conn.close()
+        if previous is None:
+            self.sync_status.setText("Never refreshed.")
+            return
+        minutes = int((datetime.now() - previous).total_seconds() // 60)
+        if minutes < 1:
+            when = "just now"
+        elif minutes < 60:
+            when = f"{minutes} min ago"
+        elif minutes < 60 * 24:
+            when = f"{minutes // 60}h ago"
+        else:
+            when = f"{minutes // (60 * 24)}d ago"
+        self.sync_status.setText(f"Last refreshed {when}")
 
     def _import(self) -> None:
         """Import one or more statement files, then reload everything."""
