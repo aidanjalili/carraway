@@ -245,7 +245,9 @@ class TransactionsView(QWidget):
         self.kind = QComboBox()
         self.kind.addItems(["All", "Spending", "Income", "Transfers", "Pending"])
         self.kind.insertSeparator(self.kind.count())
-        self.kind.addItems(list(cat.CATEGORIES))
+        # From the ledger rather than the built-in list, so a category the
+        # user added is filterable and one they hid is not.
+        self.kind.addItems(list(ledger.categories_available or cat.CATEGORIES))
         self.kind.currentTextChanged.connect(self._kind_changed)
         search_row.addWidget(QLabel("Type"))
         search_row.addWidget(self.kind)
@@ -485,7 +487,24 @@ class TransactionsView(QWidget):
             f"{shown:,} of {held:,} transactions" if shown != held else f"{held:,} transactions"
         )
 
+    def _rebuild_kinds(self) -> None:
+        """Re-fill the type filter after the category list changed."""
+        chosen = self.kind.currentText()
+        self.kind.blockSignals(True)
+        self.kind.clear()
+        self.kind.addItems(["All", "Spending", "Income", "Transfers", "Pending"])
+        self.kind.insertSeparator(self.kind.count())
+        self.kind.addItems(list(self.ledger.categories_available or cat.CATEGORIES))
+        index = self.kind.findText(chosen)
+        self.kind.setCurrentIndex(index if index >= 0 else 0)
+        self.kind.blockSignals(False)
+        if index < 0:
+            # The chosen category no longer exists, so the filter it applied
+            # must go too rather than silently showing nothing.
+            self.proxy.set_kind("All")
+
     def refresh(self) -> None:
+        self._rebuild_kinds()
         self.model.beginResetModel()
         self.model.rows = list(self.ledger.transactions)
         self.model.endResetModel()
