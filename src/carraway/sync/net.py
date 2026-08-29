@@ -19,16 +19,16 @@ import socket
 import urllib.error
 import urllib.request
 
-# Long enough not to trip on a slow-but-working IPv6 path, short enough that a
-# dead one does not look like a hang.
-FIRST_ATTEMPT_TIMEOUT = 8.0
+# A single connect attempt. Kept small because several are tried in a row.
+CONNECT_TIMEOUT = 5.0
 
 
 def connect_ipv4(host: str, port: int, timeout=None, source_address=None) -> socket.socket:
     """Open a TCP connection over IPv4 only.
 
-    Raises the last error if every A record fails, matching what
-    socket.create_connection does across families.
+    socket.create_connection has no family argument, so addresses are resolved
+    here and only A records are tried. Raises the last error if all of them
+    fail, matching what create_connection does across families.
     """
     last: Exception | None = None
     for family, kind, proto, _, address in socket.getaddrinfo(
@@ -36,11 +36,15 @@ def connect_ipv4(host: str, port: int, timeout=None, source_address=None) -> soc
     ):
         sock = socket.socket(family, kind, proto)
         try:
-            if timeout is not None:
-                sock.settimeout(timeout)
+            # Cap each attempt: a host with several A records should not
+            # multiply one slow address by the number of addresses.
+            sock.settimeout(min(timeout, CONNECT_TIMEOUT) if timeout else CONNECT_TIMEOUT)
             if source_address:
                 sock.bind(source_address)
             sock.connect(address)
+            # Restore the caller's timeout for the exchange itself; the short
+            # one above is only about how long to wait for a connection.
+            sock.settimeout(timeout)
             return sock
         except OSError as exc:
             sock.close()
@@ -73,19 +77,24 @@ _ipv4_opener = urllib.request.build_opener(_IPv4Handler)
 
 
 def urlopen(request, timeout: float = 30.0):
-    """Open a request, falling back to IPv4 if the first attempt times out.
+    """Open a request, trying IPv4 before falling back to normal resolution.
 
-    Only a timeout triggers the retry. An HTTP error is a real answer from the
-    server and must propagate untouched, or a 403 would be retried as though
-    it were a network fault.
+    IPv4 first, which is the opposite of what Python does by default. Both
+    providers here publish AAAA records that do not answer, and the cost of
+    that is worse than it looks: `getaddrinfo` returns eight IPv6 addresses
+    for api.venmo.com, and `create_connection` tries each one with the full
+    timeout in turn. At even a modest per-attempt timeout that is a minute of
+    apparent hang before anything else is tried — which is exactly how it
+    reads to someone waiting at a password prompt.
+
+    The default path is still the fallback, so an IPv6-only network keeps
+    working: it is tried second rather than not at all.
     """
-    first = min(timeout, FIRST_ATTEMPT_TIMEOUT)
     try:
-        return urllib.request.urlopen(request, timeout=first)
-    except urllib.error.HTTPError:
-        raise
-    except (TimeoutError, urllib.error.URLError) as exc:
-        reason = getattr(exc, "reason", exc)
-        if not isinstance(reason, TimeoutError | socket.timeout | OSError):
-            raise
         return _ipv4_opener.open(request, timeout=timeout)
+    except urllib.error.HTTPError:
+        # A real answer from the server. Retrying over another address family
+        # would just ask the same question again and get the same reply.
+        raise
+    except (TimeoutError, urllib.error.URLError, OSError):
+        return urllib.request.urlopen(request, timeout=timeout)
