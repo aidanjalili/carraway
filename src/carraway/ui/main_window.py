@@ -239,12 +239,21 @@ class MainWindow(QMainWindow):
             if target.suffix.lower() == ".csv":
                 written = export_csv(target, self.ledger.transactions, categories=categories)
             else:
+                kinds = {s.merchant.upper(): self.ledger.kind_of(s) for s in self.ledger.series}
+                paid_via = {
+                    str(t["merchant"]).upper(): str(t["paid_via"])
+                    for t in self.ledger.manual
+                    if t["paid_via"]
+                }
                 written = export_ods(
                     target.with_suffix(".ods") if not target.suffix else target,
                     self.ledger.transactions,
                     accounts=self.ledger.accounts,
                     series=self.ledger.series,
                     categories=categories,
+                    balances=self.ledger.balances,
+                    kinds=kinds,
+                    paid_via=paid_via,
                 )
         except Exception as exc:
             QMessageBox.warning(self, "Export failed", str(exc))

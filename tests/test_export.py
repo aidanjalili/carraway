@@ -125,12 +125,18 @@ def test_package_holds_the_required_parts(tmp_path):
 def test_expected_sheets_exist(tmp_path):
     path = export_ods(tmp_path / "ledger.ods", LEDGER, series=SERIES)
     names = list(sheets(read_content(path)))
-    assert names == ["Transactions", "Categories", "Subscriptions"]
+    assert names == ["Auto-Pay", "By Month", "Transactions", "Categories"]
 
 
-def test_subscriptions_sheet_is_omitted_without_series(tmp_path):
+def test_the_autopay_sheet_is_omitted_without_series(tmp_path):
     path = export_ods(tmp_path / "ledger.ods", LEDGER)
-    assert "Subscriptions" not in sheets(read_content(path))
+    assert "Auto-Pay" not in sheets(read_content(path))
+
+
+def test_the_networth_sheet_needs_balances(tmp_path):
+    # Account names with no figures beside them are not worth a page.
+    path = export_ods(tmp_path / "ledger.ods", LEDGER, accounts=ACCOUNTS)
+    assert "Net Worth" not in sheets(read_content(path))
 
 
 def test_amounts_are_numeric_cells(tmp_path):
@@ -198,9 +204,12 @@ def test_empty_ledger_still_produces_a_valid_file(tmp_path):
     with zipfile.ZipFile(path) as package:
         assert package.testzip() is None
     tables = sheets(read_content(path))
-    assert set(tables) == {"Transactions", "Categories"}
+    # No accounts and no series, so those sheets are skipped; By Month is
+    # always present and simply has no months in it.
+    assert set(tables) == {"By Month", "Transactions", "Categories"}
     # Only the header row: a table with no rows at all is not valid ODF.
     assert len(rows(tables["Transactions"])) == 1
+    assert len(rows(tables["By Month"])) == 1
 
 
 def test_categories_sheet_totals_outflows_only(tmp_path):
@@ -250,14 +259,50 @@ def test_mismatched_category_list_is_rejected(tmp_path):
         export_ods(tmp_path / "ledger.ods", LEDGER, categories=["A"])
 
 
-def test_subscriptions_sheet_carries_annual_cost(tmp_path):
+def test_the_autopay_sheet_groups_by_cadence_with_subtotals(tmp_path):
     path = export_ods(tmp_path / "ledger.ods", LEDGER, series=SERIES)
-    body = rows(sheets(read_content(path))["Subscriptions"])[1:]
-    assert cell_text(body[0][0]) == "NETFLIX"
-    assert cell_text(body[0][1]) == "monthly"
-    # Both figures are positive magnitudes: "costs you 15.49/mo, 185.88/yr".
-    assert body[0][2].get(f"{{{NS['office']}}}value") == "15.49"
-    assert body[0][3].get(f"{{{NS['office']}}}value") == "185.88"
+    body = rows(sheets(read_content(path))["Auto-Pay"])[1:]
+    text = [cell_text(row[0]) if row else "" for row in body]
+
+    # Laid out the way someone keeping this by hand would: a heading, the
+    # entries under it, then a subtotal — not one undifferentiated list.
+    assert "Billed monthly or more often" in text
+    assert "Total per month" in text
+    assert "EVERYTHING, PER YEAR" in text
+
+    entry = next(row for row in body if cell_text(row[0]) == "NETFLIX")
+    assert cell_text(entry[2]) == "monthly"
+    # Positive magnitudes: "costs you 15.49 a time, 185.88 a year".
+    assert entry[1].get(f"{{{NS['office']}}}value") == "15.49"
+    assert entry[7].get(f"{{{NS['office']}}}value") == "185.88"
+
+
+def test_the_networth_sheet_totals_and_subtracts(tmp_path):
+    from carraway.core.money import Money
+
+    balances = {
+        ACCOUNTS[0].id: Money.parse("1500.00"),
+        ACCOUNTS[1].id: Money.parse("-400.00"),  # a card, reported negative
+    }
+    path = export_ods(tmp_path / "ledger.ods", LEDGER, accounts=ACCOUNTS, balances=balances)
+    body = rows(sheets(read_content(path))["Net Worth"])[1:]
+    labels = [cell_text(row[0]) if row else "" for row in body]
+    assert "Assets" in labels and "Liabilities" in labels and "NET WORTH" in labels
+
+    net = next(row for row in body if cell_text(row[0]) == "NET WORTH")
+    # A card balance is money owed, so it subtracts: 1500 - 400.
+    assert net[2].get(f"{{{NS['office']}}}value") == "1100.00"
+
+
+def test_the_by_month_sheet_nets_income_against_spending(tmp_path):
+    path = export_ods(tmp_path / "ledger.ods", LEDGER)
+    body = rows(sheets(read_content(path))["By Month"])[1:]
+    assert body, "expected at least one month"
+    for row in body:
+        income = float(row[1].get(f"{{{NS['office']}}}value"))
+        spending = float(row[2].get(f"{{{NS['office']}}}value"))
+        net = float(row[3].get(f"{{{NS['office']}}}value"))
+        assert abs((income - spending) - net) < 0.005
 
 
 def test_mixed_currencies_do_not_break_the_summary(tmp_path):

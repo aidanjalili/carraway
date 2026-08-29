@@ -781,12 +781,32 @@ def cmd_export(args: argparse.Namespace) -> int:
     accounts = db.list_accounts(conn)
     series = recurring.detect(transactions, include_inflows=True)
 
+    # Tracked entries belong in the workbook too — a subscription paid through
+    # someone else costs the same as one the bank can see.
+    tracked = db.list_manual_subscriptions(conn)
+    series += subscriptions.as_series(tracked, series)
+    verdicts = {**subscriptions.manual_kinds(tracked), **db.get_verdicts(conn)}
+    kinds = {
+        s.merchant.upper(): subscriptions.resolve(
+            s.merchant, verdicts, is_inflow=s.typical_amount.minor > 0
+        )
+        for s in series
+    }
+    paid_via = {str(t["merchant"]).upper(): str(t["paid_via"]) for t in tracked if t["paid_via"]}
+
     target = Path(args.file).expanduser()
     if args.format == "csv" or target.suffix.lower() == ".csv":
         written = export_csv(target, transactions, categories=categories)
     else:
         written = export_ods(
-            target, transactions, accounts=accounts, series=series, categories=categories
+            target,
+            transactions,
+            accounts=accounts,
+            series=series,
+            categories=categories,
+            balances=db.latest_balances(conn),
+            kinds=kinds,
+            paid_via=paid_via,
         )
 
     size = written.stat().st_size

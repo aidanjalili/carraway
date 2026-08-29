@@ -249,11 +249,239 @@ def _subscription_rows(series: Sequence[RecurringSeries]) -> Iterator[list[str]]
         ]
 
 
+# Sections and subtotals, which is what makes a sheet read like something a
+# person laid out rather than a table dump. Modelled on the workbook a real
+# user kept by hand before this app existed: assets then liabilities then a
+# net worth line; subscriptions split into monthly and yearly with a subtotal
+# for each and a grand total under both.
+_PER_YEAR = {"weekly": 52, "biweekly": 26, "monthly": 12, "quarterly": 4, "yearly": 1}
+_MONTHLY_CADENCES = ("weekly", "biweekly", "monthly")
+
+
+def _blank_row() -> list[str]:
+    return [_string_cell("")]
+
+
+def _section(title: str) -> list[str]:
+    return [_string_cell(title, style=_HEADER_STYLE)]
+
+
+def _monthly_equivalent(series: RecurringSeries) -> Money:
+    """What a series costs in an average month, whatever its cadence.
+
+    A quarterly premium is a third of itself each month; a biweekly charge is
+    26 payments a year rather than 24. Comparing cadences without this is the
+    error that makes a hand-kept spreadsheet wrong.
+    """
+    yearly = abs(series.typical_amount) * _PER_YEAR.get(series.cadence, 0)
+    return Money(round(yearly.minor / 12), yearly.currency)
+
+
+def _balance_rows(
+    accounts: Sequence[Account], balances: dict[str, Money], *, liabilities: bool
+) -> Iterator[list[str]]:
+    """Assets or liabilities, with a total, laid out as a person would."""
+    total_minor = 0
+    currency = "USD"
+    for account in sorted(accounts, key=lambda a: a.name.lower()):
+        if account.type.is_liability != liabilities:
+            continue
+        balance = balances.get(account.id)
+        if balance is None:
+            yield [
+                _string_cell(account.name),
+                _string_cell(str(account.type)),
+                _string_cell("no balance recorded"),
+            ]
+            continue
+        shown = abs(balance) if liabilities else balance
+        currency = shown.currency
+        total_minor += shown.minor
+        yield [
+            _string_cell(account.name),
+            _string_cell(str(account.type)),
+            _money_cell(shown),
+        ]
+
+    yield _blank_row()
+    yield [
+        _string_cell("Total " + ("liabilities" if liabilities else "assets"), style=_HEADER_STYLE),
+        _string_cell(""),
+        _money_cell(Money(total_minor, currency)),
+    ]
+
+
+def _networth_rows(accounts: Sequence[Account], balances: dict[str, Money]) -> Iterator[list[str]]:
+    """Assets, then liabilities, then the one line that matters."""
+    yield from _section("Assets")
+    assets = 0
+    liabilities = 0
+    currency = "USD"
+
+    for account in sorted(accounts, key=lambda a: a.name.lower()):
+        balance = balances.get(account.id)
+        if balance is None or account.type.is_liability:
+            continue
+        currency = balance.currency
+        assets += balance.minor
+        yield [_string_cell(account.name), _string_cell(str(account.type)), _money_cell(balance)]
+
+    yield [
+        _string_cell("Total assets", style=_HEADER_STYLE),
+        _string_cell(""),
+        _money_cell(Money(assets, currency)),
+    ]
+    yield _blank_row()
+
+    yield from _section("Liabilities")
+    for account in sorted(accounts, key=lambda a: a.name.lower()):
+        balance = balances.get(account.id)
+        if balance is None or not account.type.is_liability:
+            continue
+        owed = abs(balance)
+        liabilities += owed.minor
+        yield [_string_cell(account.name), _string_cell(str(account.type)), _money_cell(owed)]
+
+    yield [
+        _string_cell("Total liabilities", style=_HEADER_STYLE),
+        _string_cell(""),
+        _money_cell(Money(liabilities, currency)),
+    ]
+    yield _blank_row()
+
+    yield [
+        _string_cell("NET WORTH", style=_HEADER_STYLE),
+        _string_cell("assets less liabilities"),
+        _money_cell(Money(assets - liabilities, currency)),
+    ]
+
+    missing = [a.name for a in accounts if a.id not in balances]
+    if missing:
+        yield _blank_row()
+        yield [_string_cell("Not counted, no balance recorded: " + ", ".join(missing))]
+
+
+def _autopay_rows(
+    series: Sequence[RecurringSeries],
+    kinds: dict[str, str],
+    paid_via: dict[str, str],
+    account_names: dict[str, str] | None = None,
+) -> Iterator[list[str]]:
+    """Subscriptions and bills, split by cadence with a subtotal for each.
+
+    Mirrors the layout of a hand-kept sheet: everything billed within a month
+    together with its monthly total, everything billed yearly together with
+    its annual total, then one figure for the year covering both.
+    """
+    monthly = [s for s in series if s.cadence in _MONTHLY_CADENCES]
+    longer = [s for s in series if s.cadence not in _MONTHLY_CADENCES]
+    currency = series[0].typical_amount.currency if series else "USD"
+
+    def emit(group: Sequence[RecurringSeries], title: str) -> Iterator[list[str]]:
+        if not group:
+            return
+        yield from _section(title)
+        for item in sorted(group, key=lambda s: -abs(s.annualised.minor)):
+            when = item.next_expected.isoformat() if item.next_expected else "—"
+            # A detected series was charged to an account, and that is its
+            # payment method. Only entries the user typed in need the note
+            # they wrote, which is what paid_via holds.
+            method = paid_via.get(item.merchant.upper()) or (
+                (account_names or {}).get(item.account_id, "")
+            )
+            yield [
+                _string_cell(item.merchant),
+                _money_cell(abs(item.typical_amount)),
+                _string_cell(item.cadence),
+                _string_cell(when),
+                _string_cell(method),
+                _string_cell(kinds.get(item.merchant.upper(), "")),
+                _money_cell(_monthly_equivalent(item)),
+                _money_cell(abs(item.annualised)),
+            ]
+        yield _blank_row()
+
+    yield from emit(monthly, "Billed monthly or more often")
+    if monthly:
+        per_month = sum(_monthly_equivalent(s).minor for s in monthly)
+        yield [
+            _string_cell("Total per month", style=_HEADER_STYLE),
+            _string_cell(""),
+            _string_cell(""),
+            _string_cell(""),
+            _string_cell(""),
+            _string_cell(""),
+            _money_cell(Money(per_month, currency)),
+            _money_cell(Money(per_month * 12, currency)),
+        ]
+        yield _blank_row()
+
+    yield from emit(longer, "Billed quarterly or yearly")
+    if longer:
+        per_year = sum(abs(s.annualised.minor) for s in longer)
+        yield [
+            _string_cell("Total per year", style=_HEADER_STYLE),
+            _string_cell(""),
+            _string_cell(""),
+            _string_cell(""),
+            _string_cell(""),
+            _string_cell(""),
+            _money_cell(Money(round(per_year / 12), currency)),
+            _money_cell(Money(per_year, currency)),
+        ]
+        yield _blank_row()
+
+    grand = sum(abs(s.annualised.minor) for s in series)
+    yield [
+        _string_cell("EVERYTHING, PER YEAR", style=_HEADER_STYLE),
+        _string_cell(""),
+        _string_cell(""),
+        _string_cell(""),
+        _string_cell(""),
+        _string_cell(""),
+        _money_cell(Money(round(grand / 12), currency)),
+        _money_cell(Money(grand, currency)),
+    ]
+
+
+def _month_rows(
+    transactions: Sequence[Transaction], categories: Sequence[str]
+) -> Iterator[list[str]]:
+    """Income, spending and the difference, one row a month."""
+    from collections import defaultdict
+
+    income: dict[str, int] = defaultdict(int)
+    spending: dict[str, int] = defaultdict(int)
+    currency = "USD"
+    for tx, name in zip(transactions, categories, strict=True):
+        if tx.is_transfer or name == "Transfer":
+            continue
+        key = f"{tx.date.year}-{tx.date.month:02d}"
+        currency = tx.amount.currency
+        if tx.is_outflow:
+            spending[key] += abs(tx.amount.minor)
+        else:
+            income[key] += tx.amount.minor
+
+    for key in sorted(set(income) | set(spending)):
+        got, spent = income[key], spending[key]
+        yield [
+            _string_cell(key),
+            _money_cell(Money(got, currency)),
+            _money_cell(Money(spent, currency)),
+            _money_cell(Money(got - spent, currency)),
+        ]
+
+
 def _content_xml(
     transactions: Sequence[Transaction],
     categories: Sequence[str],
     account_names: dict[str, str],
     series: Sequence[RecurringSeries] | None,
+    accounts: Sequence[Account] | None = None,
+    balances: dict[str, Money] | None = None,
+    kinds: dict[str, str] | None = None,
+    paid_via: dict[str, str] | None = None,
 ) -> Iterator[str]:
     exponents = {2}
     exponents.update(exponent_for(tx.amount.currency) for tx in transactions)
@@ -265,6 +493,32 @@ def _content_xml(
     yield _automatic_styles(exponents)
     yield "<office:body><office:spreadsheet>"
 
+    if accounts and balances:
+        yield from _table(
+            "Net Worth",
+            ["Account", "Type", "Amount"],
+            _networth_rows(accounts, balances),
+        )
+    if series:
+        yield from _table(
+            "Auto-Pay",
+            [
+                "Service",
+                "Price",
+                "Per unit time",
+                "Next billed",
+                "Payment method",
+                "Kind",
+                "Per month",
+                "Per year",
+            ],
+            _autopay_rows(series, kinds or {}, paid_via or {}, account_names),
+        )
+    yield from _table(
+        "By Month",
+        ["Month", "Income", "Spending", "Net"],
+        _month_rows(transactions, categories),
+    )
     yield from _table(
         "Transactions",
         ["Date", "Account", "Description", "Merchant", "Category", "Amount"],
@@ -275,12 +529,6 @@ def _content_xml(
         ["Category", "Currency", "Total Spent", "Transactions"],
         _category_rows(transactions, categories),
     )
-    if series:
-        yield from _table(
-            "Subscriptions",
-            ["Merchant", "Cadence", "Typical Amount", "Annual Cost"],
-            _subscription_rows(series),
-        )
 
     yield "</office:spreadsheet></office:body></office:document-content>"
 
@@ -332,12 +580,21 @@ def export_ods(
     accounts: Sequence[Account] | None = None,
     series: Sequence[RecurringSeries] | None = None,
     categories: Sequence[str] | None = None,
+    balances: dict[str, Money] | None = None,
+    kinds: dict[str, str] | None = None,
+    paid_via: dict[str, str] | None = None,
 ) -> Path:
     """Write `transactions` to an .ods workbook at `path` and return that path.
 
-    The workbook holds a Transactions sheet, a Categories summary, and — when
-    `series` is supplied — a Subscriptions sheet. `accounts` is only used to
-    show account names instead of ids; unknown ids fall back to the id itself.
+    Five sheets, laid out the way a person keeping this by hand would: Net
+    Worth (assets, then liabilities, then the difference), Auto-Pay
+    (subscriptions and bills split by cadence, each with a subtotal), By Month
+    (income against spending), Transactions, and Categories.
+
+    `accounts` and `balances` are needed for the Net Worth sheet and it is
+    skipped without them, since assets with no figures beside them are not
+    worth a page. `kinds` and `paid_via` are keyed by uppercased merchant and
+    only annotate the Auto-Pay sheet.
     """
     target = Path(path)
     resolved = _categories_of(transactions, categories)
@@ -362,7 +619,17 @@ def export_ods(
         content = zipfile.ZipInfo("content.xml", date_time=_ZIP_TIMESTAMP)
         content.compress_type = zipfile.ZIP_DEFLATED
         with package.open(content, "w") as stream:
-            for chunk in _content_xml(transactions, resolved, account_names, series):
+            chunks = _content_xml(
+                transactions,
+                resolved,
+                account_names,
+                series,
+                accounts,
+                balances,
+                kinds,
+                paid_via,
+            )
+            for chunk in chunks:
                 stream.write(chunk.encode("utf-8"))
 
     return target
