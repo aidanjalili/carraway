@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- A ledger card with a rising line: what the app is for, at 32px. -->
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2f3540"/>
+      <stop offset="1" stop-color="#1c1f26"/>
+    </linearGradient>
+  </defs>
+  <rect x="10" y="18" width="108" height="92" rx="14" fill="url(#g)"/>
+  <rect x="10" y="18" width="108" height="92" rx="14" fill="none" stroke="#3b424f" stroke-width="2"/>
+  <!-- The green light across the bay, in ledger form. -->
+  <polyline points="26,88 48,72 66,80 86,50 104,38"
+            fill="none" stroke="#4ade80" stroke-width="7"
+            stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="104" cy="38" r="7" fill="#4ade80"/>
+  <rect x="26" y="98" width="46" height="6" rx="3" fill="#3b424f"/>
+</svg>

@@ -21,7 +21,6 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
-    QTabBar,
     QTableView,
     QVBoxLayout,
     QWidget,
@@ -32,6 +31,7 @@ from ...core.models import Transaction
 from ...core.money import Money
 from .. import theme
 from ..data import Ledger
+from ..widgets import FilterStrip
 
 _COLUMNS = ["Date", "Description", "Category", "Account", "Amount"]
 
@@ -179,13 +179,12 @@ class TransactionsView(QWidget):
         header.addWidget(self.balance_label)
         layout.addLayout(header)
 
-        # One tab per account, with "All accounts" first. Accounts carry very
-        # different volumes, so the count sits in the tab: it is the fastest
-        # way to see which account a run of transactions came from.
-        self.tabs = QTabBar()
-        self.tabs.setExpanding(False)
-        self.tabs.setDrawBase(False)
-        self.tabs.setUsesScrollButtons(True)
+        # One button per account, with "All accounts" first. Accounts carry
+        # very different volumes, so the count sits in the label: it is the
+        # fastest way to see which account a run of transactions came from.
+        # A wrapping row rather than a tab bar, because ten accounts in a tab
+        # bar hides most of them behind scroll arrows.
+        self.tabs = FilterStrip()
         self.tabs.currentChanged.connect(self._account_changed)
         layout.addWidget(self.tabs)
 

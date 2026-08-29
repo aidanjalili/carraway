@@ -21,7 +21,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QMenu,
     QPushButton,
-    QTabBar,
     QTableWidget,
     QVBoxLayout,
     QWidget,
@@ -30,7 +29,7 @@ from PySide6.QtWidgets import (
 from ...core.models import RecurringSeries
 from ...core.money import Money, total
 from ..data import Ledger
-from ..widgets import SortableItem, StatCard, StatRow
+from ..widgets import FilterStrip, SortableItem, StatCard, StatRow
 from . import add_subscription
 from .classify_dialog import ClassifyDialog
 
@@ -102,9 +101,7 @@ class SubscriptionsView(QWidget):
         # Bills, subscriptions and stopped things answer different questions,
         # so they get their own tabs rather than one list the user must scan.
         tab_row = QHBoxLayout()
-        self.tabs = QTabBar()
-        self.tabs.setExpanding(False)
-        self.tabs.setDrawBase(False)
+        self.tabs = FilterStrip()
         for label in ("Subscriptions", "Bills", "Income", "Habits", "Stopped", "All"):
             self.tabs.addTab(label)
         self.tabs.currentChanged.connect(lambda _: self.refresh())

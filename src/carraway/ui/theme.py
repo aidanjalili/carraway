@@ -100,6 +100,22 @@ def stylesheet(p: Palette) -> str:
         font-weight: 600;
     }}
 
+    QPushButton#FilterChip {{
+        background: {p.surface};
+        border: 1px solid {p.border};
+        border-radius: 14px;
+        padding: 5px 13px;
+        color: {p.muted};
+        font-size: 13px;
+    }}
+    QPushButton#FilterChip:hover {{ color: {p.text}; border-color: {p.muted}; }}
+    QPushButton#FilterChip:checked {{
+        background: {p.surface_alt};
+        border-color: {p.accent};
+        color: {p.text};
+        font-weight: 600;
+    }}
+
     QLineEdit {{
         background: {p.surface_alt};
         border: 1px solid {p.border};

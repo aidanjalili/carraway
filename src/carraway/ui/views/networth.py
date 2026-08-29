@@ -14,6 +14,7 @@ from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QHeaderView,
@@ -114,9 +115,25 @@ class NetWorthView(QWidget):
         header.addStretch(1)
         self.granularity = QComboBox()
         self.granularity.addItems(["monthly", "weekly", "daily"])
+        remembered = str(ledger.setting("networth_granularity") or "monthly")
+        if remembered in ("monthly", "weekly", "daily"):
+            self.granularity.setCurrentText(remembered)
         self.granularity.currentTextChanged.connect(lambda _: self.refresh())
         header.addWidget(self.granularity)
         layout.addLayout(header)
+
+        # Pinned here rather than buried in Settings: "what is my net worth
+        # excluding retirement?" is a question asked while looking at the
+        # number, and a screen away is a screen too far. The same values are
+        # editable in Settings for anyone who prefers them there.
+        self.include_row = QHBoxLayout()
+        self.include_row.setSpacing(10)
+        self.include_label = QLabel("Counting:")
+        self.include_label.setObjectName("Muted")
+        self.include_row.addWidget(self.include_label)
+        self.account_boxes: dict[str, QCheckBox] = {}
+        self.include_row.addStretch(1)
+        layout.addLayout(self.include_row)
 
         self.net_card = StatCard("Net worth", "-", tone="Accent")
         self.assets_card = StatCard("Assets", "-")
@@ -151,9 +168,47 @@ class NetWorthView(QWidget):
         self.footnote.setWordWrap(True)
         layout.addWidget(self.footnote)
 
+        self._build_account_toggles()
+        self.refresh()
+
+    def _build_account_toggles(self) -> None:
+        """One checkbox per account, so the total can be recut on the spot."""
+        for box in self.account_boxes.values():
+            self.include_row.removeWidget(box)
+            box.deleteLater()
+        self.account_boxes = {}
+
+        excluded = self.ledger.excluded_accounts
+        # Only accounts with a balance can affect the total, so offering the
+        # others would be a control that does nothing.
+        for account in self.ledger.accounts:
+            if account.id not in self.ledger.balances:
+                continue
+            box = QCheckBox(account.name[:22])
+            box.setChecked(account.id not in excluded)
+            box.setCursor(Qt.CursorShape.PointingHandCursor)
+            box.setToolTip(f"{account.name} — {account.institution or account.type}")
+            box.toggled.connect(
+                lambda checked, account_id=account.id: self._toggle_account(account_id, checked)
+            )
+            self.account_boxes[account.id] = box
+            self.include_row.insertWidget(self.include_row.count() - 1, box)
+
+        if not self.account_boxes:
+            self.include_label.setText("")
+
+    def _toggle_account(self, account_id: str, included: bool) -> None:
+        excluded = self.ledger.excluded_accounts
+        if included:
+            excluded.discard(account_id)
+        else:
+            excluded.add(account_id)
+        self.ledger.save_setting("networth_excluded_accounts", sorted(excluded))
         self.refresh()
 
     def refresh(self) -> None:
+        # Remember the zoom between sessions; it is a preference, not a mode.
+        self.ledger.save_setting("networth_granularity", self.granularity.currentText())
         points = self.ledger.networth_points(self.granularity.currentText())
         self.chart.set_points(points)
 
@@ -205,6 +260,12 @@ class NetWorthView(QWidget):
             notes.append(f"{summary.percent_change:+.1f}% over the period")
         if summary.best_month:
             notes.append(f"best month {summary.best_month[0]} ({summary.best_month[1].format()})")
+        excluded = self.ledger.excluded_accounts
+        if excluded:
+            by_id = {a.id: a.name for a in self.ledger.accounts}
+            left_out = [by_id.get(i, i) for i in sorted(excluded)]
+            notes.append("not counted: " + ", ".join(left_out))
+
         missing = self.ledger.accounts_without_balances()
         if missing:
             # Ids come back, not accounts, so they are resolved to names here:

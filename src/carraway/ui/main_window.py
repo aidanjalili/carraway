@@ -23,19 +23,21 @@ from .data import Ledger
 from .views.budget import BudgetView
 from .views.dashboard import DashboardView
 from .views.networth import NetWorthView
+from .views.settings import SettingsView
 from .views.spending import SpendingView
 from .views.subscriptions import SubscriptionsView
 from .views.transactions import TransactionsView
 
-# Subscriptions comes first on purpose: it is the screen the app exists for,
-# and it is what someone opening Carraway for the first time should meet.
+# Net worth first: it is the one number that answers "how am I doing", and it
+# is what someone opening the app wants before any breakdown of it.
 _SCREENS = [
-    ("Subscriptions", SubscriptionsView),
     ("Net worth", NetWorthView),
+    ("Subscriptions", SubscriptionsView),
     ("Budget", BudgetView),
     ("Spending", SpendingView),
     ("Overview", DashboardView),
     ("Transactions", TransactionsView),
+    ("Settings", SettingsView),
 ]
 
 

@@ -32,17 +32,42 @@ class Slice:
     fraction: float
 
 
-def _shade(index: int, count: int) -> QColor:
-    """A colour for slice `index` of `count`, biggest first.
+# A categorical palette: distinct hues, deliberately not evenly spaced around
+# the wheel. Even spacing puts adjacent categories at similar lightness, which
+# is where colour-blind viewers lose the distinction; these are picked so no
+# two neighbours share both hue family and lightness.
+#
+# Saturation and lightness are held in a narrow band so every slice reads at
+# the same weight on both a dark and a light background — a fully saturated
+# yellow beside a deep blue makes the yellow look like the important one.
+_HUES: tuple[tuple[float, float, float], ...] = (
+    (0.39, 0.52, 0.52),  # green
+    (0.58, 0.55, 0.55),  # blue
+    (0.08, 0.62, 0.56),  # amber
+    (0.78, 0.45, 0.60),  # violet
+    (0.02, 0.58, 0.58),  # coral
+    (0.48, 0.48, 0.46),  # teal
+    (0.92, 0.50, 0.62),  # pink
+    (0.13, 0.45, 0.48),  # olive
+    (0.66, 0.50, 0.62),  # periwinkle
+    (0.05, 0.40, 0.45),  # rust
+    (0.33, 0.42, 0.45),  # moss
+    (0.85, 0.38, 0.52),  # plum
+)
 
-    Lightness steps from strong to faint so the ordering is visible without a
-    legend, and every step stays above the contrast floor for small text.
+
+def _shade(index: int, count: int) -> QColor:
+    """A colour for slice `index`.
+
+    Cycles the palette, darkening each time round so a thirteenth category is
+    distinguishable from the first rather than identical to it.
     """
-    if count <= 1:
-        return QColor(theme.ACTIVE.accent)
-    span = 34
-    lightness = 44 + int(span * index / max(count - 1, 1))
-    return QColor.fromHslF(0.39, 0.48, lightness / 100.0)
+    hue, saturation, lightness = _HUES[index % len(_HUES)]
+    cycle = index // len(_HUES)
+    if cycle:
+        # Each lap is meaningfully darker; clamped so it never reaches black.
+        lightness = max(0.22, lightness - 0.13 * cycle)
+    return QColor.fromHslF(hue, saturation, lightness)
 
 
 class _ChartBase(QWidget):
@@ -334,6 +359,8 @@ class TrendChart(_ChartBase):
             rect = QRectF(left, margin + height - column_height, column_width, column_height)
             self._columns.append(QRectF(left, margin, column_width, height))
 
+            # One series across time, so one colour: varying it by period
+            # would imply the periods are different kinds of thing.
             colour = QColor(palette.accent)
             if index == self._hovered:
                 colour = colour.lighter(130)

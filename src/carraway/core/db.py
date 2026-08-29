@@ -11,6 +11,7 @@ means an old database always knows how to catch up.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import date
 from pathlib import Path
@@ -113,6 +114,15 @@ MIGRATIONS: list[str] = [
         source     TEXT NOT NULL DEFAULT '',  -- where it came from
         added_on   TEXT NOT NULL,
         done_on    TEXT
+    );
+    """,
+    # v7 - user preferences. Kept in the database rather than a config file
+    # because they are about this ledger — which accounts to leave out of net
+    # worth, say — and would be meaningless beside a different one.
+    """
+    CREATE TABLE settings (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL      -- JSON, so a setting can hold a list
     );
     """,
 ]
@@ -421,6 +431,55 @@ def remove_manual_subscription(conn: sqlite3.Connection, subscription_id: str) -
 
 
 # -- money to-dos ---------------------------------------------------------
+
+
+# -- settings ------------------------------------------------------------
+
+# Defaults live here rather than being scattered through the UI, so a setting
+# has one answer whether it has ever been written or not.
+DEFAULT_SETTINGS: dict[str, object] = {
+    # Account ids left out of net worth. Retirement and brokerage accounts are
+    # the usual case: money you have but cannot spend, which makes the total
+    # answer a different question from "how am I doing this month".
+    "networth_excluded_accounts": [],
+    "networth_granularity": "monthly",
+    "spending_granularity": "monthly",
+    "spending_chart": "Pie",
+    "budget_target": "5000",
+    "budget_months": 6,
+    "budget_period": "monthly",
+    "theme": "system",
+}
+
+
+def get_setting(conn: sqlite3.Connection, key: str) -> object:
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    if row is None:
+        return DEFAULT_SETTINGS.get(key)
+    try:
+        return json.loads(row["value"])
+    except json.JSONDecodeError:
+        return DEFAULT_SETTINGS.get(key)
+
+
+def set_setting(conn: sqlite3.Connection, key: str, value: object) -> None:
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, json.dumps(value)),
+    )
+    conn.commit()
+
+
+def all_settings(conn: sqlite3.Connection) -> dict[str, object]:
+    """Every setting, with defaults filled in for anything never written."""
+    stored = dict(DEFAULT_SETTINGS)
+    for row in conn.execute("SELECT key, value FROM settings"):
+        try:
+            stored[row["key"]] = json.loads(row["value"])
+        except json.JSONDecodeError:
+            continue
+    return stored
 
 
 def add_todo(

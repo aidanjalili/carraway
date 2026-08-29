@@ -6,11 +6,15 @@ numeric sorting, card chrome — are written once.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLayout,
+    QLayoutItem,
+    QPushButton,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
@@ -83,3 +87,149 @@ class SortableItem(QTableWidgetItem):
                 # Mixed key types in one column should not crash a sort.
                 return str(self._sort_key) < str(other._sort_key)
         return super().__lt__(other)
+
+
+class FlowLayout(QLayout):
+    """A layout that wraps its children onto as many rows as it needs.
+
+    Qt's tab bars scroll horizontally when they run out of room, which puts
+    little arrows in front of half the tabs. With ten accounts that is most of
+    them. Wrapping shows everything at once instead, which is what a strip of
+    filters wants to do.
+    """
+
+    def __init__(self, parent=None, spacing: int = 6) -> None:
+        super().__init__(parent)
+        self._items: list[QLayoutItem] = []
+        self.setSpacing(spacing)
+
+    def addItem(self, item: QLayoutItem) -> None:  # noqa: N802
+        self._items.append(item)
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, index: int):  # noqa: N802
+        return self._items[index] if 0 <= index < len(self._items) else None
+
+    def takeAt(self, index: int):  # noqa: N802
+        return self._items.pop(index) if 0 <= index < len(self._items) else None
+
+    def expandingDirections(self) -> Qt.Orientations:  # noqa: N802
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802
+        return True
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802
+        return self._arrange(QRect(0, 0, width, 0), apply=False)
+
+    def setGeometry(self, rect: QRect) -> None:  # noqa: N802
+        super().setGeometry(rect)
+        self._arrange(rect, apply=True)
+
+    def sizeHint(self) -> QSize:
+        return self.minimumSize()
+
+    def minimumSize(self) -> QSize:
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        margins = self.contentsMargins()
+        return size + QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
+
+    def _arrange(self, rect: QRect, *, apply: bool) -> int:
+        """Place items left to right, wrapping. Returns the height used."""
+        margins = self.contentsMargins()
+        left = rect.x() + margins.left()
+        right = rect.right() - margins.right()
+        x, y = left, rect.y() + margins.top()
+        row_height = 0
+
+        for item in self._items:
+            hint = item.sizeHint()
+            if x > left and x + hint.width() > right:
+                x = left
+                y += row_height + self.spacing()
+                row_height = 0
+            if apply:
+                item.setGeometry(QRect(QPoint(x, y), hint))
+            x += hint.width() + self.spacing()
+            row_height = max(row_height, hint.height())
+
+        return y + row_height - rect.y() + margins.bottom()
+
+
+class FilterStrip(QWidget):
+    """A wrapping row of exclusive filter buttons.
+
+    A drop-in replacement for the parts of QTabBar these screens actually use,
+    minus the horizontal scrolling: every option stays visible at once, which
+    is the point of a filter strip.
+    """
+
+    currentChanged = Signal(int)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._layout = FlowLayout(self, spacing=6)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
+        self._buttons: list[QPushButton] = []
+        self._data: list[object] = []
+        self._group.idClicked.connect(self.currentChanged.emit)
+
+    def addTab(self, label: str) -> int:  # noqa: N802
+        button = QPushButton(label)
+        button.setObjectName("FilterChip")
+        button.setCheckable(True)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        index = len(self._buttons)
+        button.setChecked(index == 0)
+        self._group.addButton(button, index)
+        self._buttons.append(button)
+        self._data.append(None)
+        self._layout.addWidget(button)
+        return index
+
+    def removeTab(self, index: int) -> None:  # noqa: N802
+        if not 0 <= index < len(self._buttons):
+            return
+        button = self._buttons.pop(index)
+        self._data.pop(index)
+        self._group.removeButton(button)
+        self._layout.removeWidget(button)
+        button.deleteLater()
+        # Ids must stay equal to positions, or tabData looks up the wrong row.
+        for position, remaining in enumerate(self._buttons):
+            self._group.setId(remaining, position)
+
+    def count(self) -> int:
+        return len(self._buttons)
+
+    def tabText(self, index: int) -> str:  # noqa: N802
+        return self._buttons[index].text() if 0 <= index < len(self._buttons) else ""
+
+    def setTabData(self, index: int, value: object) -> None:  # noqa: N802
+        if 0 <= index < len(self._data):
+            self._data[index] = value
+
+    def tabData(self, index: int) -> object:  # noqa: N802
+        return self._data[index] if 0 <= index < len(self._data) else None
+
+    def setTabToolTip(self, index: int, text: str) -> None:  # noqa: N802
+        if 0 <= index < len(self._buttons):
+            self._buttons[index].setToolTip(text)
+
+    def currentIndex(self) -> int:  # noqa: N802
+        return max(self._group.checkedId(), 0)
+
+    def setCurrentIndex(self, index: int) -> None:  # noqa: N802
+        if 0 <= index < len(self._buttons):
+            self._buttons[index].setChecked(True)
+            self.currentChanged.emit(index)
+
+    def blockSignals(self, block: bool) -> bool:  # noqa: N802
+        self._group.blockSignals(block)
+        return super().blockSignals(block)

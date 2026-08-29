@@ -34,6 +34,7 @@ class Ledger:
     price_changes: list = field(default_factory=list)
     balances: dict = field(default_factory=dict)
     manual: list = field(default_factory=list)
+    settings: dict = field(default_factory=dict)
     decided: dict[str, date] = field(default_factory=dict)  # merchant -> when answered
 
     def load(self) -> None:
@@ -47,6 +48,7 @@ class Ledger:
         pairs = transfers.find_transfers(self.transactions)
         transfers.apply_transfer_groups(self.transactions, pairs)
 
+        self.settings = db.all_settings(conn)
         self.balances = db.latest_balances(conn)
         self.manual = db.list_manual_subscriptions(conn)
         self.verdicts = db.get_verdicts(conn)
@@ -103,6 +105,19 @@ class Ledger:
         names = [self.categories.get(t.id, "Uncategorized") for t in self.transactions]
         return spending_mod.buckets(self.transactions, period=period, categories=names)
 
+    def setting(self, key: str):
+        return self.settings.get(key, db.DEFAULT_SETTINGS.get(key))
+
+    def save_setting(self, key: str, value) -> None:
+        conn = db.connect(self.path)
+        db.set_setting(conn, key, value)
+        conn.close()
+        self.settings[key] = value
+
+    @property
+    def excluded_accounts(self) -> set[str]:
+        return set(self.setting("networth_excluded_accounts") or [])
+
     def networth_points(self, granularity: str = "monthly") -> list:
         """Reconstructed net worth history, or empty when no balance is known.
 
@@ -112,9 +127,16 @@ class Ledger:
         """
         if not self.balances:
             return []
-        return networth_mod.reconstruct(
-            self.accounts, self.transactions, self.balances, granularity=granularity
-        )
+        # Excluded accounts are dropped from the inputs rather than subtracted
+        # afterwards: a retirement account's transactions must not move the
+        # line either, or the total and its shape disagree.
+        excluded = self.excluded_accounts
+        accounts = [a for a in self.accounts if a.id not in excluded]
+        transactions = [t for t in self.transactions if t.account_id not in excluded]
+        balances = {k: v for k, v in self.balances.items() if k not in excluded}
+        if not balances:
+            return []
+        return networth_mod.reconstruct(accounts, transactions, balances, granularity=granularity)
 
     def accounts_without_balances(self) -> list[Account]:
         return networth_mod.accounts_missing_balances(self.accounts, self.balances)
