@@ -408,8 +408,17 @@ def cmd_subscriptions(args: argparse.Namespace) -> int:
     decided = db.get_verdict_dates(conn)
     series = recurring.detect(transactions, include_inflows=True)
     # Detected, but the next charge never came. Might be cancelled, might be a
-    # bill that moved with the user; either way it is not current.
+    # bill that moved with the user; either way it is not current. Computed
+    # before the tracked entries are added, since those have no observations
+    # and so can never be overdue.
     overdue = {id(s) for s in recurring.stale(series, date.today())}
+
+    # A subscription paid through Venmo is no less real for being invisible to
+    # detection, so tracked entries are counted alongside the found ones.
+    tracked = db.list_manual_subscriptions(conn)
+    series += subscriptions.as_series(tracked, series)
+    # A tracked entry carries its own kind; the user already answered.
+    verdicts = {**subscriptions.manual_kinds(tracked), **verdicts}
 
     grouped: dict[str, list] = {}
     revived: list[str] = []

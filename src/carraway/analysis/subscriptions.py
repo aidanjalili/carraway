@@ -22,8 +22,11 @@ again — see `core.db.set_verdict`.
 from __future__ import annotations
 
 import re
+from datetime import date
 from functools import lru_cache
 from typing import Literal
+
+from ..core.models import RecurringSeries
 
 # At this length a catalog name is specific enough that finding it inside a
 # longer run of characters is a match rather than a coincidence. Chosen so
@@ -438,3 +441,82 @@ def resolve(
         if stored in ANSWERABLE:
             return stored  # type: ignore[return-value]
     return classify(merchant, is_inflow=is_inflow)
+
+
+# Below this length a merchant name is too generic to match on: "AAA" would
+# collide with any description containing those letters in sequence.
+_MATCHABLE_LENGTH = 5
+
+
+def _already_detected(merchant: str, detected: list[RecurringSeries]) -> bool:
+    """Whether detection already found this merchant under some other name.
+
+    A user tracks "DashPass" while the bank calls it "DD DOORDASHDASHPASS";
+    counted separately that is one subscription billed twice. Matched by
+    containment in either direction, since neither name is reliably the longer
+    one, and only for names long enough that a coincidence is implausible.
+    """
+    needle = merchant.upper()
+    if len(needle) < _MATCHABLE_LENGTH:
+        return False
+    for series in detected:
+        found = series.merchant.upper()
+        if needle in found or found in needle:
+            return True
+    return False
+
+
+def as_series(
+    tracked: list[dict[str, object]], detected: list[RecurringSeries] | None = None
+) -> list[RecurringSeries]:
+    """Turn manually tracked subscriptions into RecurringSeries.
+
+    Shaped like detected ones so every view, total and sort treats them
+    identically — the distinction matters for provenance, not for what the
+    thing costs. `occurrences` is zero and `transaction_ids` empty precisely
+    because nothing was observed: that is what marks an entry as told-to-us
+    rather than found, and `is_manual` reads it back.
+
+    Lives here rather than in the UI so the CLI and the GUI cannot disagree
+    about what the user is paying for.
+    """
+    today = date.today()
+    out: list[RecurringSeries] = []
+    for item in tracked:
+        # Skip anything detection already covers, or the same subscription is
+        # counted twice in every total.
+        if detected and _already_detected(str(item["merchant"]), detected):
+            continue
+        amount = item["amount"]
+        out.append(
+            RecurringSeries(
+                merchant=str(item["merchant"]),
+                account_id="",
+                cadence=str(item["cadence"]),
+                typical_amount=amount,  # type: ignore[arg-type]
+                occurrences=0,
+                first_seen=today,
+                last_seen=today,
+                next_expected=None,
+                confidence=1.0,  # the user's own word, not an inference
+                amount_varies=False,
+                transaction_ids=[],
+            )
+        )
+    return out
+
+
+def is_manual(series: RecurringSeries) -> bool:
+    """True for a series the user entered rather than one detection found."""
+    return series.occurrences == 0 and not series.transaction_ids
+
+
+def manual_kinds(tracked: list[dict[str, object]]) -> dict[str, str]:
+    """What the user said each tracked entry is, keyed for the verdict lookup.
+
+    Tracked entries carry their own kind, so they should not fall through to
+    the catalog and come back unknown — the user already answered.
+    """
+    return {
+        str(item["merchant"]).upper(): str(item.get("kind") or SUBSCRIPTION) for item in tracked
+    }

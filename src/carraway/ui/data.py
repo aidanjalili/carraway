@@ -55,6 +55,9 @@ class Ledger:
         # payments are visible; the views split them out by kind.
         self.series = recurring.detect(self.transactions, include_inflows=True)
         self.series = self.series + self.manual_series()
+        # A tracked entry carries its own kind, so it must not fall through
+        # to the catalog and come back unknown.
+        self.verdicts = {**subscriptions.manual_kinds(self.manual), **self.verdicts}
         self.price_changes = price_changes.find_price_changes(self.transactions, series=self.series)
         assigned = cat.categorize_all(self.transactions)
         self.categories = {
@@ -65,35 +68,10 @@ class Ledger:
     # -- derived views the screens ask for --------------------------------
 
     def manual_series(self) -> list[RecurringSeries]:
-        """Tracked subscriptions, shaped like detected ones.
-
-        Presented as RecurringSeries so every view, total and sort treats a
-        subscription the user told us about exactly like one the app found —
-        the distinction matters for provenance, not for what it costs.
-        """
-        today = date.today()
-        out: list[RecurringSeries] = []
-        for item in self.manual:
-            amount = item["amount"]
-            out.append(
-                RecurringSeries(
-                    merchant=str(item["merchant"]),
-                    account_id="",
-                    cadence=str(item["cadence"]),
-                    typical_amount=amount,
-                    occurrences=0,  # nothing was observed; this was told to us
-                    first_seen=today,
-                    last_seen=today,
-                    next_expected=None,
-                    confidence=1.0,  # the user's own word, not an inference
-                    amount_varies=False,
-                    transaction_ids=[],
-                )
-            )
-        return out
+        return subscriptions.as_series(self.manual, self.series)
 
     def is_manual(self, series: RecurringSeries) -> bool:
-        return series.occurrences == 0 and not series.transaction_ids
+        return subscriptions.is_manual(series)
 
     def add_manual(self, values: dict) -> None:
         conn = db.connect(self.path)

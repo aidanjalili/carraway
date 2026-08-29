@@ -152,3 +152,78 @@ def test_cancelled_is_an_answerable_kind():
     # A stored cancellation wins over the catalog, which would still say
     # "subscription" for a merchant it recognises.
     assert resolve("Netflix", {"NETFLIX": CANCELLED}) == CANCELLED
+
+
+def _tracked(merchant, amount="9.99", cadence="monthly", kind="subscription"):
+    from carraway.core.money import Money
+
+    return {
+        "id": "x",
+        "merchant": merchant,
+        "amount": Money.parse(f"-{amount}"),
+        "cadence": cadence,
+        "kind": kind,
+        "paid_via": "",
+        "notes": "",
+        "active": True,
+    }
+
+
+def _detected(merchant, amount="9.99"):
+    from datetime import date
+
+    from carraway.core.models import RecurringSeries
+    from carraway.core.money import Money
+
+    return RecurringSeries(
+        merchant=merchant,
+        account_id="a1",
+        cadence="monthly",
+        typical_amount=Money.parse(f"-{amount}"),
+        occurrences=6,
+        first_seen=date(2026, 1, 1),
+        last_seen=date(2026, 6, 1),
+        next_expected=date(2026, 7, 1),
+        confidence=0.9,
+        amount_varies=False,
+        transaction_ids=["t1"],
+    )
+
+
+def test_a_tracked_entry_detection_already_found_is_dropped():
+    from carraway.analysis.subscriptions import as_series
+
+    # The user tracks "DashPass"; the bank calls it "DD DOORDASHDASHPASS".
+    # Counted separately that is one subscription billed twice.
+    kept = as_series([_tracked("DashPass")], [_detected("Dd Doordashdashpass")])
+    assert kept == []
+
+    # Something detection genuinely missed still comes through.
+    kept = as_series([_tracked("T-Mobile", "35.00")], [_detected("Netflix")])
+    assert [s.merchant for s in kept] == ["T-Mobile"]
+
+
+def test_short_names_are_not_matched_by_containment():
+    from carraway.analysis.subscriptions import as_series
+
+    # "AAA" appearing inside an unrelated description is a coincidence, not
+    # the same subscription.
+    kept = as_series([_tracked("AAA", "67.00", "yearly")], [_detected("MAAAGIC CARPETS")])
+    assert [s.merchant for s in kept] == ["AAA"]
+
+
+def test_tracked_entries_keep_the_kind_the_user_gave_them():
+    from carraway.analysis.subscriptions import BILL, manual_kinds, resolve
+
+    kinds = manual_kinds([_tracked("T-Mobile"), _tracked("Rent Share", kind="bill")])
+    assert kinds["RENT SHARE"] == BILL
+    # And it wins over the catalog, which would not recognise either name.
+    assert resolve("Rent Share", kinds) == BILL
+
+
+def test_a_tracked_series_is_marked_manual():
+    from carraway.analysis.subscriptions import as_series, is_manual
+
+    series = as_series([_tracked("T-Mobile", "35.00")])[0]
+    assert is_manual(series)
+    assert not is_manual(_detected("Netflix"))
