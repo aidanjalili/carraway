@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
 import json
 import urllib.error
 import urllib.parse
@@ -30,6 +31,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
+from .. import __version__
 from ..analysis.recurring import normalise_merchant
 from ..core.models import Account, AccountType, Transaction, assign_occurrences
 from ..core.money import Money
@@ -39,6 +41,26 @@ from .base import SyncResult
 # the institution reports. A wrong guess only affects presentation, and the
 # user can correct it, whereas refusing to guess would leave everything
 # looking like a chequing account.
+# Cloudflare sits in front of SimpleFIN Bridge and rejects urllib's default
+# User-Agent by signature, returning "error code: 1010" before the request ever
+# reaches SimpleFIN. The symptom is a 403 that looks exactly like an
+# already-claimed token, so identifying the app by name is not politeness here
+# — without it nothing works at all.
+_USER_AGENT = f"Carraway/{__version__} (+https://github.com/aidanjalili/carraway)"
+
+# Cloudflare's edge-block codes. Seeing one means the request was stopped
+# before SimpleFIN saw it, which is a completely different problem from
+# anything SimpleFIN itself would report.
+_CLOUDFLARE_CODES = ("1010", "1020", "1015", "1006", "1009")
+
+
+def _is_edge_block(body: str) -> bool:
+    lowered = body.lower()
+    if "cloudflare" in lowered or "attention required" in lowered:
+        return True
+    return "error code:" in lowered and any(code in body for code in _CLOUDFLARE_CODES)
+
+
 _TYPE_HINTS: list[tuple[tuple[str, ...], AccountType]] = [
     (("credit card", "credit ", "visa", "mastercard", "amex"), AccountType.CREDIT_CARD),
     (("savings", "save", "money market"), AccountType.SAVINGS),
@@ -97,17 +119,24 @@ def claim_setup_token(setup_token: str) -> str:
 
     request = urllib.request.Request(claim_url, data=b"", method="POST")
     request.add_header("Content-Length", "0")
+    request.add_header("User-Agent", _USER_AGENT)
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             access_url = response.read().decode("utf-8").strip()
     except urllib.error.HTTPError as exc:
-        detail = ""
-        try:
+        detail, body = "", ""
+        with contextlib.suppress(Exception):
             body = exc.read().decode("utf-8", errors="replace").strip()
-            if body:
-                detail = f" SimpleFIN said: {body[:200]}"
-        except Exception:
-            pass
+        if body:
+            detail = f" Server said: {body[:200]}"
+        if exc.code == 403 and _is_edge_block(body):
+            raise SimpleFinError(
+                "Blocked by Cloudflare before reaching SimpleFIN."
+                f"{detail}\n\n"
+                "Your token was not used and is still valid. This is a network "
+                "or client problem rather than anything wrong with the token — "
+                "if it persists, a VPN or proxy in the path is the usual cause."
+            ) from exc
         if exc.code == 403:
             raise SimpleFinError(
                 "SimpleFIN rejected this token as already claimed."
@@ -141,12 +170,21 @@ def _get(access_url: str, params: dict[str, str]) -> dict[str, Any]:
     url = f"{base}/accounts"
     if params:
         url += "?" + urllib.parse.urlencode(params)
+    request = urllib.request.Request(url)
+    request.add_header("User-Agent", _USER_AGENT)
     try:
-        with urllib.request.urlopen(url, timeout=60) as response:
+        with urllib.request.urlopen(request, timeout=60) as response:
             # parse_float=Decimal keeps balances and amounts exact; a float
             # would already have lost precision by the time we saw it.
             return json.loads(response.read().decode("utf-8"), parse_float=Decimal)
     except urllib.error.HTTPError as exc:
+        body = ""
+        with contextlib.suppress(Exception):
+            body = exc.read().decode("utf-8", errors="replace").strip()
+        if exc.code == 403 and _is_edge_block(body):
+            raise SimpleFinError(
+                f"Blocked by Cloudflare before reaching SimpleFIN: {body[:120]}"
+            ) from exc
         if exc.code == 403:
             raise SimpleFinError(
                 "SimpleFIN rejected the stored access URL. It may have been "

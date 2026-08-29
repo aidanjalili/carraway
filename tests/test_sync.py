@@ -180,3 +180,42 @@ def test_useless_pastes_say_what_is_wrong():
         decode_setup_token("this is clearly not base64 !!")
     with pytest.raises(SimpleFinError, match="No setup token given"):
         decode_setup_token("   ")
+
+
+def test_every_request_identifies_the_app():
+    # Cloudflare fronts SimpleFIN Bridge and bans urllib's default User-Agent
+    # by signature, returning "error code: 1010" before SimpleFIN ever sees the
+    # request. The symptom is a 403 indistinguishable from an already-claimed
+    # token, so this header is load-bearing rather than cosmetic.
+    import base64
+    from unittest.mock import MagicMock
+
+    from carraway.sync import simplefin
+
+    captured = {}
+
+    def fake_urlopen(request, timeout=None):
+        captured["headers"] = {k.lower(): v for k, v in request.header_items()}
+        response = MagicMock()
+        response.__enter__ = lambda s: s
+        response.__exit__ = lambda *a: False
+        response.read.return_value = b"https://user:pass@bridge.example.org/simplefin"
+        return response
+
+    token = base64.b64encode(b"https://bridge.example.org/claim/ABC").decode()
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        simplefin.claim_setup_token(token)
+
+    assert "carraway" in captured["headers"]["user-agent"].lower()
+
+
+def test_an_edge_block_is_not_reported_as_a_claimed_token():
+    # These are opposite problems: one means the token is spent, the other
+    # means it was never seen and is still good. Conflating them sends the user
+    # to generate tokens that were never the issue.
+    from carraway.sync.simplefin import _is_edge_block
+
+    assert _is_edge_block("error code: 1010")
+    assert _is_edge_block("Attention Required! | Cloudflare")
+    assert not _is_edge_block("Forbidden (was it already claimed?)")
+    assert not _is_edge_block("")
