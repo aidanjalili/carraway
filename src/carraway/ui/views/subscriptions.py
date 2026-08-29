@@ -13,10 +13,13 @@ from __future__ import annotations
 from datetime import date
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
     QLabel,
+    QMenu,
+    QPushButton,
     QTableWidget,
     QVBoxLayout,
     QWidget,
@@ -26,6 +29,7 @@ from ...core.models import RecurringSeries
 from ...core.money import total
 from ..data import Ledger
 from ..widgets import SortableItem, StatCard, StatRow
+from .classify_dialog import ClassifyDialog
 
 _HEADERS = [
     "Merchant",
@@ -104,7 +108,17 @@ class SubscriptionsView(QWidget):
 
         self.footnote = QLabel("")
         self.footnote.setObjectName("Muted")
+        self.footnote.setWordWrap(True)
         layout.addWidget(self.footnote)
+
+        self.review_button = QPushButton("Classify the unclassified…")
+        self.review_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.review_button.clicked.connect(self._review_unclassified)
+        layout.addWidget(self.review_button, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._context_menu)
+        self.table.doubleClicked.connect(lambda _: self._classify_selected())
 
         self.refresh()
 
@@ -131,6 +145,9 @@ class SubscriptionsView(QWidget):
         # loop and land in the wrong places.
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(series))
+        # Row order changes when the table sorts, so the series a row shows
+        # is carried on the row itself rather than inferred from its index.
+        self._rows: dict[int, object] = {}
         stale_ids = {id(s) for s in stale}
 
         for row, item in enumerate(series):
@@ -153,6 +170,8 @@ class SubscriptionsView(QWidget):
                 SortableItem(str(item.occurrences), item.occurrences),
                 SortableItem(f"{item.confidence:.0%}", item.confidence),
             ]
+            self._rows[id(item)] = item
+            cells[0].setData(Qt.ItemDataRole.UserRole, id(item))
             for column, cell in enumerate(cells):
                 if column >= 3:
                     cell.setTextAlignment(
@@ -174,3 +193,64 @@ class SubscriptionsView(QWidget):
         if stale:
             notes.append(f"{len(stale)} greyed out — expected charge never arrived")
         self.footnote.setText("   ·   ".join(notes))
+        pending = len(unknown)
+        self.review_button.setText(
+            f"Classify {pending} unclassified…" if pending else "Reclassify a merchant…"
+        )
+        self.review_button.setEnabled(bool(series))
+
+    # -- classification --------------------------------------------------
+
+    def _series_at(self, row: int):
+        """The series a table row is showing, or None."""
+        item = self.table.item(row, 0)
+        if item is None:
+            return None
+        return self._rows.get(item.data(Qt.ItemDataRole.UserRole))
+
+    def _context_menu(self, position) -> None:
+        row = self.table.rowAt(position.y())
+        if row < 0:
+            return
+        series = self._series_at(row)
+        if series is None:
+            return
+        menu = QMenu(self)
+        action = QAction(f"What is {series.merchant}?", self)
+        action.triggered.connect(lambda: self._classify(series))
+        menu.addAction(action)
+        menu.exec(self.table.viewport().mapToGlobal(position))
+
+    def _classify_selected(self) -> None:
+        rows = self.table.selectionModel().selectedRows()
+        if not rows:
+            return
+        series = self._series_at(rows[0].row())
+        if series is not None:
+            self._classify(series)
+
+    def _classify(self, series) -> bool:
+        """Ask about one merchant. Returns False if the user cancelled."""
+        dialog = ClassifyDialog(series, self.ledger.kind_of(series), self)
+        if dialog.exec() != ClassifyDialog.DialogCode.Accepted:
+            return False
+        self.ledger.set_kind(series, dialog.chosen)
+        self.refresh()
+        return True
+
+    def _review_unclassified(self) -> None:
+        """Walk the unclassified merchants, most expensive first.
+
+        Ordered by annual cost so the first question asked is always the one
+        worth the most, and stops as soon as the user cancels rather than
+        marching them through a queue they wanted out of.
+        """
+        pending = [s for s in self.ledger.series if self.ledger.kind_of(s) == "unknown"]
+        pending.sort(key=lambda s: -abs(s.annualised.minor))
+        if not pending:
+            # Nothing outstanding, so offer to revisit the selected row instead.
+            self._classify_selected()
+            return
+        for series in pending:
+            if not self._classify(series):
+                break

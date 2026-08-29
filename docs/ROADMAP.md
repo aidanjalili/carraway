@@ -44,6 +44,8 @@ useful — no six-month stretch with nothing to show.
       it costs annually, and what looks cancelled
 - [x] Overview: spending by category with proportional bars
 - [x] Transaction list: model-backed, sortable, searchable across columns
+- [x] Classify a merchant from the GUI — double-click, right-click, or the
+      button that walks the unclassified queue
 - [ ] Inline editing and bulk recategorise
 - [ ] Month-over-month trends and net worth
 - [x] Recurring income and person-to-person payments surfaced for review

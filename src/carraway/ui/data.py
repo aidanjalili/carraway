@@ -54,6 +54,18 @@ class Ledger:
 
     # -- derived views the screens ask for --------------------------------
 
+    def set_kind(self, series: RecurringSeries, kind: str) -> None:
+        """Store the user's answer and update what is already in memory.
+
+        Writes straight through rather than deferring, because an answer the
+        user gave and the app then lost would be worse than not asking.
+        """
+        conn = db.connect(self.path)
+        db.set_verdict(conn, series.merchant, kind)
+        conn.close()
+        self.verdicts[series.merchant.upper()] = kind
+        self.decided[series.merchant.upper()] = date.today()
+
     def kind_of(self, series: RecurringSeries) -> str:
         """What this series is. The user's own answer always wins.
 
