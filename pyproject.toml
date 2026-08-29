@@ -27,6 +27,7 @@ dev = ["pytest>=8.0", "ruff>=0.6"]
 
 [project.scripts]
 carraway = "carraway.cli:main"
+carraway-gui = "carraway.ui.app:main"
 
 [project.urls]
 Homepage = "https://github.com/aidanjalili/carraway"
@@ -37,7 +38,7 @@ packages = ["src/carraway"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "src"]
-addopts = "-q --doctest-modules --ignore=src/carraway/cli.py"
+addopts = "-q --doctest-modules --ignore=src/carraway/cli.py --ignore=src/carraway/ui"
 pythonpath = ["src"]
 
 [tool.ruff]

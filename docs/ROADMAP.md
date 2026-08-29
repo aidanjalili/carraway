@@ -29,12 +29,17 @@ useful — no six-month stretch with nothing to show.
 
 ## v0.3 — The GUI
 
-- [ ] PySide6/Qt shell with a proper KDE-native feel
-- [ ] Transaction list: fast, sortable, inline editing, bulk recategorise
-- [ ] Dashboard: spending by category, month over month, net worth
-- [ ] **Subscriptions view** — the flagship screen. Everything recurring, what
-      it costs annually, what looks cancelled, what quietly went up in price
+- [x] PySide6/Qt shell, theme-aware, sidebar navigation
+- [x] **Subscriptions view** — the flagship screen. Everything recurring, what
+      it costs annually, and what looks cancelled
+- [x] Overview: spending by category with proportional bars
+- [x] Transaction list: model-backed, sortable, searchable across columns
+- [ ] Inline editing and bulk recategorise
+- [ ] Month-over-month trends and net worth
+- [ ] Price-increase detection ("Netflix went from $15.49 to $17.99")
 - [ ] Import wizard with a column-mapping UI for banks the guesser misses
+- [ ] Load in a worker thread — 2,261 transactions is instant, but a decade of
+      history on a slow disk should not freeze the window
 
 ## v0.4 — Bank sync (opt-in, bring your own key)
 

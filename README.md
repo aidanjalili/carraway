@@ -9,9 +9,9 @@ paying for — without uploading your financial life to anybody's server.
 > Named for Nick Carraway, the narrator who watches the money and tells you
 > what really happened.
 
-⚠️ **Status: pre-alpha.** The core engine and CLI work today, and have been
-run against real multi-year bank exports. The desktop GUI has not been built
-yet. See the [roadmap](docs/ROADMAP.md).
+⚠️ **Status: pre-alpha.** The engine, CLI and desktop GUI all work today, and
+have been run against real multi-year bank exports. See the
+[roadmap](docs/ROADMAP.md).
 
 ---
 
@@ -56,6 +56,17 @@ Domain Renewal Llc    yearly     $109.00  2027-03-03  4     71%
 Total annualised: $2,296.64/year
 * amount varies between charges
 ```
+
+## The desktop app
+
+```bash
+pip install -e '.[gui]'
+carraway-gui
+```
+
+Three screens: **Subscriptions** (what recurs, what it costs a year, what looks
+cancelled), **Overview** (spending by category), and **Transactions** (sortable,
+searchable). The window follows your system light/dark theme.
 
 ## Install
 
