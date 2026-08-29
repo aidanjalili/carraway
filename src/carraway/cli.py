@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import sys
 import uuid
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from . import __version__
@@ -642,6 +642,122 @@ def cmd_schedule(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_networth(args: argparse.Namespace) -> int:
+    from .analysis import networth
+
+    conn = db.connect(args.database)
+    accounts = db.list_accounts(conn)
+    transactions = db.list_transactions(conn)
+    balances = db.latest_balances(conn)
+    if not balances:
+        print("No account balances recorded yet.", file=sys.stderr)
+        print("Net worth needs a starting point; run 'carraway sync simplefin'.", file=sys.stderr)
+        return 1
+
+    points = networth.reconstruct(accounts, transactions, balances, granularity=args.granularity)
+    if not points:
+        print("Not enough history to chart net worth yet.")
+        return 0
+
+    missing = networth.accounts_missing_balances(accounts, balances)
+    print(f"{'DATE':<12}{'ASSETS':>14}{'OWED':>13}{'NET':>14}")
+    print("-" * 53)
+    for point in points[-args.limit :]:
+        print(
+            f"{point.date.isoformat():<12}{point.assets.format():>14}"
+            f"{point.liabilities.format():>13}{point.net.format():>14}"
+        )
+
+    summary = networth.summarise(points)
+    direction = "up" if summary.change.minor >= 0 else "down"
+    print(f"\n{direction} {abs(summary.change).format()} since {summary.start}")
+    if summary.percent_change is not None:
+        print(f"  {summary.percent_change:+.1f}% over the period")
+    else:
+        # Undefined when the period began at or below zero: there is no
+        # meaningful percentage change from nothing, or from debt.
+        print("  (percentage change is undefined from a zero or negative start)")
+    if summary.best_month:
+        month, amount = summary.best_month
+        print(f"  best month : {month}  {amount.format()}")
+    if summary.worst_month:
+        month, amount = summary.worst_month
+        print(f"  worst month: {month}  {amount.format()}")
+    if missing:
+        print(f"\nExcluded, no balance known: {', '.join(a.name for a in missing)}")
+    return 0
+
+
+def cmd_budget(args: argparse.Namespace) -> int:
+    from .analysis import budget as budget_mod
+    from .analysis import recurring
+
+    conn = db.connect(args.database)
+    transactions = db.list_transactions(conn)
+    if not transactions:
+        print("No transactions yet.")
+        return 0
+
+    horizon = date.today() + timedelta(days=30 * args.months)
+    goal = budget_mod.Goal(
+        target=Money.parse(str(args.target)), horizon=horizon, period=args.period
+    )
+    series = recurring.detect(transactions, include_inflows=True)
+    plan = budget_mod.plan(goal, transactions, series=series, period=args.period)
+
+    verdict = "REACHABLE" if plan.feasible else "NOT REACHABLE"
+    print(f"Goal: save {goal.target.format()} by {horizon}  [{verdict}]\n")
+    print(plan.explanation)
+
+    changed = [c for c in plan.categories if c.allowance != c.baseline]
+    rows = changed or plan.categories
+    if rows:
+        heading = "Per-category allowances" + ("" if changed else " (no cuts needed)")
+        print(f"\n{heading}, per {args.period[:-2]}:")
+        print(f"  {'CATEGORY':<20}{'SPENDING NOW':>14}{'ALLOWED':>12}{'CHANGE':>10}")
+        print("  " + "-" * 54)
+        for item in rows:
+            delta = item.allowance.minor - item.baseline.minor
+            change = f"{delta / 100:+,.0f}" if delta else "-"
+            print(
+                f"  {item.category[:18]:<20}{item.baseline.format():>14}"
+                f"{item.allowance.format():>12}{change:>10}"
+            )
+    return 0
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    from .analysis import categorize as cat
+    from .analysis import recurring
+    from .exporters.ods import export_csv, export_ods
+
+    conn = db.connect(args.database)
+    transactions = db.list_transactions(conn)
+    if not transactions:
+        print("Nothing to export yet.")
+        return 0
+
+    # Categories are computed rather than stored, so an export that read only
+    # the saved column would file every row as Uncategorized.
+    categories = cat.categorize_all(transactions)
+    accounts = db.list_accounts(conn)
+    series = recurring.detect(transactions, include_inflows=True)
+
+    target = Path(args.file).expanduser()
+    if args.format == "csv" or target.suffix.lower() == ".csv":
+        written = export_csv(target, transactions, categories=categories)
+    else:
+        written = export_ods(
+            target, transactions, accounts=accounts, series=series, categories=categories
+        )
+
+    size = written.stat().st_size
+    print(f"Exported {len(transactions):,} transactions to {written} ({size / 1024:.0f} KB)")
+    if written.suffix.lower() == ".ods":
+        print("Open it with:  libreoffice --calc " + str(written))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="carraway",
@@ -754,6 +870,38 @@ def build_parser() -> argparse.ArgumentParser:
     from .sync.cli import register as register_sync
 
     register_sync(sub, parser.get_default("database"))
+
+    p_networth = sub.add_parser("networth", help="net worth over time")
+    p_networth.add_argument(
+        "--granularity",
+        default="monthly",
+        choices=["daily", "weekly", "monthly"],
+        help="sampling interval (default: %(default)s)",
+    )
+    p_networth.add_argument(
+        "--limit", type=int, default=24, help="how many points to show (default: %(default)s)"
+    )
+    p_networth.set_defaults(func=cmd_networth)
+
+    p_budget = sub.add_parser("budget", help="work out what you can spend to hit a savings goal")
+    p_budget.add_argument("target", help="how much to save, e.g. 5000")
+    p_budget.add_argument(
+        "--months", type=int, default=6, help="by when, in months (default: %(default)s)"
+    )
+    p_budget.add_argument(
+        "--period",
+        default="monthly",
+        choices=["weekly", "monthly"],
+        help="budget period (default: %(default)s)",
+    )
+    p_budget.set_defaults(func=cmd_budget)
+
+    p_export = sub.add_parser("export", help="export to a spreadsheet for LibreOffice Calc")
+    p_export.add_argument("file", help="output path, .ods or .csv")
+    p_export.add_argument(
+        "--format", choices=["ods", "csv"], help="override the format implied by the extension"
+    )
+    p_export.set_defaults(func=cmd_export)
 
     p_backup = sub.add_parser("backup", help="snapshot the database, or list snapshots")
     p_backup.add_argument("--list", action="store_true", help="list existing snapshots")

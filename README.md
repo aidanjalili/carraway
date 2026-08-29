@@ -67,6 +67,9 @@ carraway subscriptions                         # split into subscriptions, bills
 carraway review                                # answer what it could not place
 carraway known                                 # recognised, but too little history to detect
 carraway prices                                # what quietly went up in price
+carraway networth                              # net worth over time
+carraway budget 5000 --months 6                # what you can spend to save $5,000
+carraway export ~/carraway.ods                 # open it in LibreOffice Calc
 ```
 
 Recurring is not the same as cancellable. Rent, utilities and insurance repeat

@@ -47,7 +47,9 @@ useful — no six-month stretch with nothing to show.
 - [x] Classify a merchant from the GUI — double-click, right-click, or the
       button that walks the unclassified queue
 - [ ] Inline editing and bulk recategorise
-- [ ] Month-over-month trends and net worth
+- [x] Net worth over time, reconstructed from balances and transactions
+- [x] Goal-driven budgeting: state a savings target, get per-category allowances
+- [x] Export to LibreOffice Calc (.ods) and CSV
 - [x] Recurring income and person-to-person payments surfaced for review
 - [x] A cancelled subscription stays visible but stops counting as money paid
 - [x] Price-increase detection ("Netflix went from $15.49 to $17.99")
@@ -71,7 +73,7 @@ useful — no six-month stretch with nothing to show.
 - [ ] Price-increase alerts ("Netflix went from $15.49 to $17.99")
 - [ ] Budgets and goals — deliberately *last*, so budgeting is optional rather
       than the price of entry
-- [ ] CSV/JSON export, because your data should never be hostage
+- [x] Spreadsheet export, because your data should never be hostage
 
 ## Explicitly not planned
 

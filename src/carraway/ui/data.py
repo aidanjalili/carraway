@@ -11,7 +11,9 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
+from ..analysis import budget as budget_mod
 from ..analysis import categorize as cat
+from ..analysis import networth as networth_mod
 from ..analysis import price_changes, recurring, subscriptions, transfers
 from ..core import db
 from ..core.models import Account, RecurringSeries, Transaction
@@ -29,6 +31,7 @@ class Ledger:
     categories: dict[str, str] = field(default_factory=dict)  # transaction id -> category
     verdicts: dict[str, str] = field(default_factory=dict)  # merchant -> user's answer
     price_changes: list = field(default_factory=list)
+    balances: dict = field(default_factory=dict)
     decided: dict[str, date] = field(default_factory=dict)  # merchant -> when answered
 
     def load(self) -> None:
@@ -42,6 +45,7 @@ class Ledger:
         pairs = transfers.find_transfers(self.transactions)
         transfers.apply_transfer_groups(self.transactions, pairs)
 
+        self.balances = db.latest_balances(conn)
         self.verdicts = db.get_verdicts(conn)
         self.decided = db.get_verdict_dates(conn)
         # Inflows included so recurring income and person-to-person
@@ -55,6 +59,37 @@ class Ledger:
         conn.close()
 
     # -- derived views the screens ask for --------------------------------
+
+    def networth_points(self, granularity: str = "monthly") -> list:
+        """Reconstructed net worth history, or empty when no balance is known.
+
+        Reconstruction walks transactions backwards from a balance the provider
+        reported, so without at least one balance there is no anchor and the
+        honest answer is nothing rather than a line starting at zero.
+        """
+        if not self.balances:
+            return []
+        return networth_mod.reconstruct(
+            self.accounts, self.transactions, self.balances, granularity=granularity
+        )
+
+    def accounts_without_balances(self) -> list[Account]:
+        return networth_mod.accounts_missing_balances(self.accounts, self.balances)
+
+    def budget_plan(self, goal, period: str = "monthly"):
+        return budget_mod.plan(goal, self.transactions, series=self.series, period=period)
+
+    def budget_progress(self, plan):
+        """(spent, allowed, on track) for the period in progress, or None."""
+        if plan is None or not plan.categories:
+            return None
+        start = budget_mod.start_of_period(date.today(), plan.period)
+        report = budget_mod.progress(plan, self.transactions, start)
+        spent = getattr(report, "spent", None)
+        allowed = getattr(report, "allowance", None) or getattr(report, "allowed", None)
+        if spent is None or allowed is None:
+            return None
+        return spent, allowed, bool(getattr(report, "on_track", True))
 
     def price_change_for(self, series: RecurringSeries):
         """The most recent price change for this merchant, if any."""

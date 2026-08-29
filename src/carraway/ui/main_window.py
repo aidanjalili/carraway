@@ -19,7 +19,9 @@ from PySide6.QtWidgets import (
 
 from ..core import db
 from .data import Ledger
+from .views.budget import BudgetView
 from .views.dashboard import DashboardView
+from .views.networth import NetWorthView
 from .views.subscriptions import SubscriptionsView
 from .views.transactions import TransactionsView
 
@@ -27,6 +29,8 @@ from .views.transactions import TransactionsView
 # and it is what someone opening Carraway for the first time should meet.
 _SCREENS = [
     ("Subscriptions", SubscriptionsView),
+    ("Net worth", NetWorthView),
+    ("Budget", BudgetView),
     ("Overview", DashboardView),
     ("Transactions", TransactionsView),
 ]
@@ -85,6 +89,12 @@ class MainWindow(QMainWindow):
 
         layout.addStretch(1)
 
+        export = QPushButton("Export to Calc…")
+        export.setObjectName("NavButton")
+        export.setCursor(Qt.CursorShape.PointingHandCursor)
+        export.clicked.connect(self._export)
+        layout.addWidget(export)
+
         accounts = QLabel(f"{len(self.ledger.accounts)} accounts")
         accounts.setObjectName("Muted")
         accounts.setStyleSheet("padding: 0 8px; font-size: 12px;")
@@ -94,3 +104,41 @@ class MainWindow(QMainWindow):
         layout.addWidget(accounts)
         layout.addWidget(privacy)
         return sidebar
+
+    def _export(self) -> None:
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+        from ..analysis import categorize as cat
+        from ..exporters.ods import export_csv, export_ods
+
+        default = str(Path.home() / "carraway.ods")
+        chosen, _ = QFileDialog.getSaveFileName(
+            self, "Export for LibreOffice Calc", default, "Spreadsheet (*.ods);;CSV (*.csv)"
+        )
+        if not chosen:
+            return
+
+        target = Path(chosen)
+        # Categories are computed rather than stored, so an export reading only
+        # the saved column would file every row as Uncategorized.
+        categories = cat.categorize_all(self.ledger.transactions)
+        try:
+            if target.suffix.lower() == ".csv":
+                written = export_csv(target, self.ledger.transactions, categories=categories)
+            else:
+                written = export_ods(
+                    target.with_suffix(".ods") if not target.suffix else target,
+                    self.ledger.transactions,
+                    accounts=self.ledger.accounts,
+                    series=self.ledger.series,
+                    categories=categories,
+                )
+        except Exception as exc:
+            QMessageBox.warning(self, "Export failed", str(exc))
+            return
+
+        QMessageBox.information(
+            self,
+            "Exported",
+            f"{len(self.ledger.transactions):,} transactions written to\n{written}",
+        )
