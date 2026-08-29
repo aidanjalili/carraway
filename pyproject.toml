@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "carraway"
+version = "0.1.0"
+description = "A local-first, open source money manager and subscription tracker"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "GPL-3.0-only"
+authors = [{ name = "aidanjalili" }]
+keywords = ["finance", "budgeting", "subscriptions", "personal-finance", "privacy"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: End Users/Desktop",
+    "Programming Language :: Python :: 3",
+    "Topic :: Office/Business :: Financial",
+]
+# The core deliberately has zero runtime dependencies: standard library only.
+dependencies = []
+
+[project.optional-dependencies]
+gui = ["PySide6>=6.6"]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[project.scripts]
+carraway = "carraway.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/aidanjalili/carraway"
+Issues = "https://github.com/aidanjalili/carraway/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/carraway"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "src"]
+addopts = "-q --doctest-modules --ignore=src/carraway/cli.py"
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

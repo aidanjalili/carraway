@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Carraway data - never commit real financial data
+*.db
+*.db-wal
+*.db-shm
+*.csv
+*.ofx
+*.qfx
+!tests/**/*.csv
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
