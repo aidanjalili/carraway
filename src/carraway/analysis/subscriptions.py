@@ -252,11 +252,18 @@ _SUBSCRIPTIONS: tuple[str, ...] = (
     "ROBLOX",
     "TWITCH",
     # phone and connectivity, which behave like subscriptions
+    "T-MOBILE",
+    "VERIZON WIRELESS",
+    "AT&T WIRELESS",
     "MINT MOBILE",
     "GOOGLE FI",
     "VISIBLE",
     "CRICKET WIRELESS",
     "BOOST MOBILE",
+    "TRACFONE",
+    "US MOBILE",
+    "TELLO",
+    "MEET MOBILE",
 )
 
 # Recurring, but cancelling is not the user's next move.
@@ -323,7 +330,9 @@ _PERIODICAL_HINTS = re.compile(r"\b(MAGAZINE|MAGAZINES|SUBSCRIPTION|SUBSCR|PERIO
 
 
 @lru_cache(maxsize=4)
-def _ordered(names: tuple[str, ...]) -> tuple[tuple[str, re.Pattern[str]], ...]:
+def _ordered(
+    names: tuple[str, ...],
+) -> tuple[tuple[str, re.Pattern[str], re.Pattern[str]], ...]:
     """Catalog names longest-first, each as a word-boundary pattern.
 
     Longest first so "AMAZON PRIME" wins over a hypothetical "AMAZON".
@@ -336,6 +345,7 @@ def _ordered(names: tuple[str, ...]) -> tuple[tuple[str, re.Pattern[str]], ...]:
     """
     ordered = []
     for name in sorted(names, key=len, reverse=True):
+        flat_name = _flatten(name)
         # \b does not fire next to punctuation like "+" or ".", so anchor on a
         # non-word character instead of relying on it at both ends.
         #
@@ -346,9 +356,11 @@ def _ordered(names: tuple[str, ...]) -> tuple[tuple[str, re.Pattern[str]], ...]:
         # boundaries, which is the whole point of the rule.
         if len(name) >= _UNAMBIGUOUS_LENGTH:
             pattern = re.compile(re.escape(name))
+            flat_pattern = re.compile(re.escape(flat_name))
         else:
             pattern = re.compile(rf"(?<![A-Z0-9]){re.escape(name)}(?![A-Z0-9])")
-        ordered.append((name, pattern))
+            flat_pattern = re.compile(rf"(?<![A-Z0-9]){re.escape(flat_name)}(?![A-Z0-9])")
+        ordered.append((name, pattern, flat_pattern))
     return tuple(ordered)
 
 
@@ -381,8 +393,12 @@ def is_person_to_person(merchant: str) -> bool:
 
 def _matches(merchant: str, names: tuple[str, ...]) -> str | None:
     upper = merchant.upper()
-    for name, pattern in _ordered(names):
-        if pattern.search(upper):
+    # Also matched against a punctuation-flattened form, because a catalogue
+    # cannot list every spelling: "T-MOBILE" has to meet "T MOBILE PAYMENT"
+    # from a hand-written note and "T MOBILE" from a bank descriptor.
+    flat = _flatten(merchant)
+    for name, pattern, flat_pattern in _ordered(names):
+        if pattern.search(upper) or flat_pattern.search(flat):
             return name
     return None
 
@@ -448,6 +464,16 @@ def resolve(
 _MATCHABLE_LENGTH = 5
 
 
+def _flatten(name: str) -> str:
+    """A name reduced to letters, digits and single spaces.
+
+    Punctuation cannot be trusted to agree across sources: a user tracks
+    "T-Mobile" while a note says "T mobile payment". Comparing the flattened
+    forms is what lets those meet.
+    """
+    return " ".join(re.sub(r"[^A-Z0-9]+", " ", name.upper()).split())
+
+
 def _already_detected(merchant: str, detected: list[RecurringSeries]) -> bool:
     """Whether detection already found this merchant under some other name.
 
@@ -456,11 +482,11 @@ def _already_detected(merchant: str, detected: list[RecurringSeries]) -> bool:
     containment in either direction, since neither name is reliably the longer
     one, and only for names long enough that a coincidence is implausible.
     """
-    needle = merchant.upper()
+    needle = _flatten(merchant)
     if len(needle) < _MATCHABLE_LENGTH:
         return False
     for series in detected:
-        found = series.merchant.upper()
+        found = _flatten(series.merchant)
         if needle in found or found in needle:
             return True
     return False

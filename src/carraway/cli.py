@@ -55,14 +55,34 @@ def cmd_accounts(args: argparse.Namespace) -> int:
 def cmd_import(args: argparse.Namespace) -> int:
     from .importers.csv_importer import ImportError_, import_csv
     from .importers.ofx_importer import import_ofx
+    from .importers.venmo import import_venmo, looks_like_venmo
 
     conn = db.connect(args.database)
     accounts = {a.id: a for a in db.list_accounts(conn)}
 
     if not args.account:
-        print("Which account? Pass --account <id>.", file=sys.stderr)
-        print("Run 'carraway accounts' to list them.", file=sys.stderr)
-        return 1
+        # A statement from a payment app belongs in its own account and
+        # nowhere else, so rather than making the user create one and copy an
+        # id across, find it or make it. Bank formats stay ambiguous and ask.
+        if Path(args.file).suffix.lower() == ".csv" and looks_like_venmo(args.file):
+            existing = next(
+                (a for a in accounts.values() if a.institution.lower() == "venmo"), None
+            )
+            if existing is None:
+                existing = Account(
+                    id=uuid.uuid4().hex[:12],
+                    name="Venmo",
+                    type=AccountType.CASH,
+                    institution="Venmo",
+                )
+                db.upsert_account(conn, existing)
+                print(f"Created a Venmo account ({existing.id}).")
+                accounts[existing.id] = existing
+            args.account = existing.id
+        else:
+            print("Which account? Pass --account <id>.", file=sys.stderr)
+            print("Run 'carraway accounts' to list them.", file=sys.stderr)
+            return 1
 
     if args.account not in accounts:
         print(f"Unknown account id {args.account!r}.", file=sys.stderr)
@@ -72,13 +92,27 @@ def cmd_import(args: argparse.Namespace) -> int:
     # Dispatch on extension. OFX is structured and unambiguous where CSV is
     # guesswork, so it is always preferred when the file offers it.
     suffix = Path(args.file).suffix.lower()
-    reader = import_ofx if suffix in (".ofx", ".qfx") else import_csv
+    if suffix in (".ofx", ".qfx"):
+        reader = import_ofx
+    elif suffix == ".csv" and looks_like_venmo(args.file):
+        # Venmo's export is a CSV, but with preamble, trailer rows and its own
+        # column names, so it is sniffed rather than left to the generic reader.
+        reader = import_venmo
+    else:
+        reader = import_csv
 
     currency = accounts[args.account].currency
     try:
-        transactions, warnings = reader(
-            args.file, args.account, currency=currency, flip_sign=args.flip_sign
-        )
+        if reader is import_venmo:
+            # Venmo states the direction of every transaction explicitly, so
+            # there is no ambiguous sign for --flip-sign to resolve.
+            if args.flip_sign:
+                print("--flip-sign does not apply to this format; ignoring.", file=sys.stderr)
+            transactions, warnings = reader(args.file, args.account, currency=currency)
+        else:
+            transactions, warnings = reader(
+                args.file, args.account, currency=currency, flip_sign=args.flip_sign
+            )
     except ImportError_ as exc:
         print(f"Could not read {args.file}: {exc}", file=sys.stderr)
         return 1

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -91,6 +92,12 @@ class MainWindow(QMainWindow):
 
         layout.addStretch(1)
 
+        import_button = QPushButton("Import statements…")
+        import_button.setObjectName("NavButton")
+        import_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        import_button.clicked.connect(self._import)
+        layout.addWidget(import_button)
+
         export = QPushButton("Export to Calc…")
         export.setObjectName("NavButton")
         export.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -106,6 +113,106 @@ class MainWindow(QMainWindow):
         layout.addWidget(accounts)
         layout.addWidget(privacy)
         return sidebar
+
+    def _import(self) -> None:
+        """Import one or more statement files, then reload everything."""
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+        from ..core.models import Account, AccountType
+        from ..importers.csv_importer import ImportError_, import_csv
+        from ..importers.ofx_importer import import_ofx
+        from ..importers.venmo import import_venmo, looks_like_venmo
+
+        chosen, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Import statements",
+            str(Path.home() / "Downloads"),
+            "Statements (*.csv *.ofx *.qfx);;All files (*)",
+        )
+        if not chosen:
+            return
+
+        conn = db.connect(self.ledger.path)
+        accounts = {a.id: a for a in db.list_accounts(conn)}
+        lines: list[str] = []
+        total_new = total_skipped = 0
+
+        # Several files at once, because an export capped at 90 days means a
+        # year of history arrives as a stack of them.
+        for name in sorted(chosen):
+            path = Path(name)
+            suffix = path.suffix.lower()
+            if suffix in (".ofx", ".qfx"):
+                reader, account_id = import_ofx, None
+            elif suffix == ".csv" and looks_like_venmo(path):
+                reader = import_venmo
+                existing = next(
+                    (a for a in accounts.values() if a.institution.lower() == "venmo"), None
+                )
+                if existing is None:
+                    existing = Account(
+                        id=uuid.uuid4().hex[:12],
+                        name="Venmo",
+                        type=AccountType.CASH,
+                        institution="Venmo",
+                    )
+                    db.upsert_account(conn, existing)
+                    accounts[existing.id] = existing
+                    lines.append(f"Created a Venmo account for {path.name}")
+                account_id = existing.id
+            else:
+                reader, account_id = import_csv, None
+
+            if account_id is None:
+                account_id = self._ask_for_account(accounts, path)
+                if account_id is None:
+                    lines.append(f"{path.name}: skipped")
+                    continue
+
+            try:
+                if reader is import_venmo:
+                    transactions, _ = reader(path, account_id)
+                else:
+                    transactions, _ = reader(path, account_id)
+            except ImportError_ as exc:
+                lines.append(f"{path.name}: {exc}")
+                continue
+
+            inserted, skipped = db.insert_transactions(conn, transactions)
+            total_new += inserted
+            total_skipped += skipped
+            lines.append(f"{path.name}: {inserted} new, {skipped} already present")
+
+        conn.close()
+        self.ledger.load()
+        self.refresh_all()
+
+        QMessageBox.information(
+            self,
+            "Import complete",
+            f"{total_new} new transaction(s), {total_skipped} already present.\n\n"
+            + "\n".join(lines[:12]),
+        )
+
+    def _ask_for_account(self, accounts: dict, path: Path) -> str | None:
+        """Which account does this file belong to? Bank formats never say."""
+        from PySide6.QtWidgets import QInputDialog
+
+        if not accounts:
+            return None
+        labels = [f"{a.name} ({a.institution or a.type})" for a in accounts.values()]
+        ids = list(accounts)
+        choice, ok = QInputDialog.getItem(
+            self, "Which account?", f"{path.name} belongs to:", labels, 0, False
+        )
+        return ids[labels.index(choice)] if ok else None
+
+    def refresh_all(self) -> None:
+        """Reload every screen after the ledger changes underneath them."""
+        for index in range(self.stack.count()):
+            view = self.stack.widget(index)
+            if hasattr(view, "refresh"):
+                view.refresh()
 
     def _export(self) -> None:
         from PySide6.QtWidgets import QFileDialog, QMessageBox
