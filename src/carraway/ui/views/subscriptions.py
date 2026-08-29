@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 from ...core.models import RecurringSeries
 from ...core.money import Money, total
 from ..data import Ledger
-from ..widgets import FilterStrip, SortableItem, StatCard, StatRow
+from ..widgets import FilterStrip, SortableItem, StatCard, StatRow, enable_row_hover
 from . import add_subscription, edit_series
 from .classify_dialog import ClassifyDialog
 
@@ -137,7 +137,8 @@ class SubscriptionsView(QWidget):
         self.table.setAlternatingRowColors(True)
         # Mouse tracking so the row under the cursor repaints without a
         # click; without it Qt only updates on press.
-        self.table.setMouseTracking(True)
+        # Row-wide hover; Qt's stylesheet :hover only covers one cell.
+        self._hover = enable_row_hover(self.table)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSortingEnabled(True)

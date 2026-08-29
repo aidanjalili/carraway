@@ -31,7 +31,7 @@ from ...core.models import Transaction
 from ...core.money import Money
 from .. import theme
 from ..data import Ledger
-from ..widgets import FilterStrip
+from ..widgets import FilterStrip, enable_row_hover
 
 _COLUMNS = ["Date", "Description", "Category", "Account", "Amount"]
 
@@ -235,7 +235,8 @@ class TransactionsView(QWidget):
         self.table.sortByColumn(0, Qt.SortOrder.DescendingOrder)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
-        self.table.setMouseTracking(True)
+        # Row-wide hover; Qt's stylesheet :hover only covers one cell.
+        self._hover = enable_row_hover(self.table)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)

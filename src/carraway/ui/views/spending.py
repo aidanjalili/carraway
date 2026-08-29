@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 from ...analysis import spending
 from ...core.money import Money
 from ..data import Ledger
-from ..widgets import Card, SortableItem, StatCard, StatRow
+from ..widgets import Card, SortableItem, StatCard, StatRow, enable_row_hover
 from .charts import BarChart, PieChart, Slice, TrendChart
 
 _HEADERS = ["Category", "Spent", "Share", "Transactions"]
@@ -107,7 +107,8 @@ class SpendingView(QWidget):
         self.table.setAlternatingRowColors(True)
         # Mouse tracking so the row under the cursor repaints without a
         # click; without it Qt only updates on press.
-        self.table.setMouseTracking(True)
+        # Row-wide hover; Qt's stylesheet :hover only covers one cell.
+        self._hover = enable_row_hover(self.table)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSortingEnabled(True)
         head = self.table.horizontalHeader()

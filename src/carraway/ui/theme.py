@@ -20,6 +20,9 @@ class Palette:
     bg: str
     surface: str
     surface_alt: str
+    # Distinct from both surface and surface_alt on purpose: a hover that
+    # reuses the alternating-row colour is invisible on every other row.
+    hover: str
     border: str
     text: str
     muted: str
@@ -32,6 +35,7 @@ DARK = Palette(
     bg="#14161a",
     surface="#1c1f26",
     surface_alt="#232730",
+    hover="#2e3542",
     border="#2c313c",
     text="#e6e8ec",
     muted="#8b93a3",
@@ -44,6 +48,7 @@ LIGHT = Palette(
     bg="#f6f7f9",
     surface="#ffffff",
     surface_alt="#f0f2f5",
+    hover="#e4e8ee",
     border="#e2e5ea",
     text="#171a1f",
     muted="#6b7280",
@@ -149,7 +154,7 @@ def stylesheet(p: Palette) -> str:
        amount. Row-wide hover is enabled per view with setSelectionBehavior
        and this rule. */
     QTableView::item:hover, QTableWidget::item:hover {{
-        background: {p.surface_alt};
+        background: {p.hover};
         color: {p.text};
     }}
     QScrollBar:vertical {{

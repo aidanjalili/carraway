@@ -30,7 +30,7 @@ from ...analysis import subscriptions
 from ...core.money import Money, total
 from .. import theme
 from ..data import Ledger
-from ..widgets import SortableItem, StatCard, StatRow
+from ..widgets import SortableItem, StatCard, StatRow, enable_row_hover
 
 _HEADERS = ["When", "What", "Kind", "Amount", "Confidence", "Why we think so"]
 
@@ -88,7 +88,8 @@ class UpcomingView(QWidget):
         self.table.setAlternatingRowColors(True)
         # Mouse tracking so the row under the cursor repaints without a
         # click; without it Qt only updates on press.
-        self.table.setMouseTracking(True)
+        # Row-wide hover; Qt's stylesheet :hover only covers one cell.
+        self._hover = enable_row_hover(self.table)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSortingEnabled(True)

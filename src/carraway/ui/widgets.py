@@ -6,7 +6,8 @@ numeric sorting, card chrome — are written once.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -15,10 +16,14 @@ from PySide6.QtWidgets import (
     QLayout,
     QLayoutItem,
     QPushButton,
+    QStyle,
+    QStyledItemDelegate,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
+
+from . import theme
 
 
 class Card(QFrame):
@@ -233,3 +238,46 @@ class FilterStrip(QWidget):
     def blockSignals(self, block: bool) -> bool:  # noqa: N802
         self._group.blockSignals(block)
         return super().blockSignals(block)
+
+
+class HoverRowDelegate(QStyledItemDelegate):
+    """Paints the whole row under the cursor, not just the cell.
+
+    Qt's `::item:hover` stylesheet rule applies per cell, so on a wide table
+    only the one cell beneath the pointer changes and the eye still loses the
+    line between a merchant and its amount. Tracking the row in a delegate is
+    the supported way to highlight all of it.
+    """
+
+    def __init__(self, view) -> None:
+        super().__init__(view)
+        self._view = view
+        self._row = -1
+        view.setMouseTracking(True)
+        view.viewport().installEventFilter(self)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if event.type() == QEvent.Type.MouseMove:
+            index = self._view.indexAt(event.position().toPoint())
+            row = index.row() if index.isValid() else -1
+            if row != self._row:
+                self._row = row
+                self._view.viewport().update()
+        elif event.type() == QEvent.Type.Leave:
+            if self._row != -1:
+                self._row = -1
+                self._view.viewport().update()
+        return False
+
+    def paint(self, painter, option, index) -> None:
+        if index.row() == self._row and not (option.state & QStyle.StateFlag.State_Selected):
+            # Under the text, so foreground colours set per cell survive.
+            painter.fillRect(option.rect, QColor(theme.ACTIVE.hover))
+        super().paint(painter, option, index)
+
+
+def enable_row_hover(view) -> HoverRowDelegate:
+    """Attach row highlighting to a table, keeping the delegate alive."""
+    delegate = HoverRowDelegate(view)
+    view.setItemDelegate(delegate)
+    return delegate
