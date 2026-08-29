@@ -40,6 +40,14 @@ CADENCES: dict[str, tuple[float, float]] = {
 }
 
 MIN_OCCURRENCES = 3  # two charges is a coincidence, three is a pattern
+
+# ...except when they are a year apart. An annual subscription cannot reach
+# three charges inside a two-year statement history, so requiring three makes
+# every yearly magazine, domain and insurance renewal structurally invisible.
+# Two charges 365 days apart is not a coincidence in the way two charges a week
+# apart is, so long cadences are allowed to qualify on a single interval.
+LONG_CADENCE_MIN_OCCURRENCES = 2
+LONG_CADENCES = frozenset({"yearly", "quarterly"})
 MIN_CONFIDENCE = 0.55  # below this we assume noise rather than a subscription
 
 # Payment-processor prefixes, store numbers, dates and reference codes that
@@ -220,7 +228,9 @@ def _build_series(
     min_confidence: float,
 ) -> RecurringSeries | None:
     """Score one candidate group of charges, or None if it does not recur."""
-    if len(txs) < min_occurrences:
+    # Deliberately the lower of the two floors: which one actually applies
+    # depends on the cadence, which is not known until the gaps are measured.
+    if len(txs) < min(min_occurrences, LONG_CADENCE_MIN_OCCURRENCES):
         return None
     txs = sorted(txs, key=lambda t: t.date)
 
@@ -230,13 +240,24 @@ def _build_series(
         for a, b in zip(txs, txs[1:], strict=False)
         if (b.date - a.date).days > 0  # same-day repeats are not a cadence
     ]
-    if len(gaps) < min_occurrences - 1:
+    # A single interval is enough to identify a long cadence, but never a
+    # short one — see LONG_CADENCE_MIN_OCCURRENCES.
+    floor = min(min_occurrences, LONG_CADENCE_MIN_OCCURRENCES)
+    if len(gaps) < floor - 1 or not gaps:
         return None
 
     match = _classify_gaps([float(g) for g in gaps])
     if match is None:
         return None
     cadence, regularity = match
+
+    required = (
+        min(min_occurrences, LONG_CADENCE_MIN_OCCURRENCES)
+        if cadence in LONG_CADENCES
+        else min_occurrences
+    )
+    if len(txs) < required:
+        return None
 
     minors = [t.amount.minor for t in txs]
     stability, varies = _amount_stability(minors)
@@ -245,6 +266,10 @@ def _build_series(
     # it. More observations also make the pattern more credible.
     evidence = min(len(txs) / 6.0, 1.0)
     confidence = 0.6 * regularity + 0.25 * stability + 0.15 * evidence
+    # A two-charge series is real but thinly evidenced, and the confidence
+    # figure should say so rather than presenting one interval as proof.
+    if len(txs) == 2:
+        confidence *= 0.85
     if confidence < min_confidence:
         return None
 

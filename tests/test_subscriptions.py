@@ -63,3 +63,28 @@ def test_stored_verdict_overrides_the_catalog():
 def test_resolve_without_any_verdicts():
     assert resolve("Netflix") == SUBSCRIPTION
     assert resolve("Netflix", {}) == SUBSCRIPTION
+
+
+def test_magazines_and_publishers():
+    # Magazines bill yearly, so they are the easiest recurring charge to
+    # forget — and the publisher on the statement rarely matches the title.
+    for merchant in [
+        "Inst Xfer Conde Nast Web",
+        "Natgeo Mag",
+        "Tim Time Magazine",
+        "The Atlantic Www.Theatlantdc",
+        "The Free Press",
+        "Hearst Magazines",
+        "Consumer Reports",
+    ]:
+        assert classify(merchant) == SUBSCRIPTION, merchant
+
+
+def test_periodical_hint_catches_unnamed_publishers():
+    # No catalog of publishers can be complete, but a descriptor saying
+    # "MAGAZINE" or "SUBSCRIPTION" is the merchant telling us outright.
+    assert classify("Some Local Magazine Co") == SUBSCRIPTION
+    assert classify("Obscure Quarterly Subscription") == SUBSCRIPTION
+    # The hint must not drag in businesses that merely sound similar.
+    assert classify("Crescendo Espresso Bar Madison") == UNKNOWN
+    assert classify("Holiday Inn Express Suites") == UNKNOWN

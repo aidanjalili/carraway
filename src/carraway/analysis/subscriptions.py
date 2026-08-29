@@ -21,6 +21,7 @@ again — see `core.db.set_verdict`.
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 Kind = Literal["subscription", "bill", "habit", "unknown"]
@@ -150,7 +151,36 @@ _SUBSCRIPTIONS: tuple[str, ...] = (
     "PATREON",
     "MEDIUM",
     "GHOST",
-    # news and reading
+    # news, magazines and reading. Magazines are worth naming individually:
+    # they bill yearly, so they are easy to forget and easy to miss, and the
+    # publisher's name on a statement is often nothing like the title.
+    "THEATLANT",
+    "THE FREE PRESS",
+    "CONDE NAST",
+    "CONDENAST",
+    "HEARST",
+    "MEREDITH",
+    "TIME MAGAZINE",
+    "NATGEO",
+    "NATIONAL GEOGRAPHIC",
+    "SMITHSONIAN MAG",
+    "NEW YORKER",
+    "WIRED",
+    "VOGUE",
+    "ESQUIRE",
+    "HARPERS",
+    "BON APPETIT",
+    "ROLLING STONE",
+    "SPORTS ILLUSTRATED",
+    "SCIENTIFIC AMERICAN",
+    "NEWSWEEK",
+    "FORBES",
+    "BLOOMBERG",
+    "BARRONS",
+    "THE NATION",
+    "HARVARD BUSINESS",
+    "READERS DIGEST",
+    "CONSUMER REPORTS",
     "NEW YORK TIMES",
     "NYTIMES",
     "WASHINGTON POST",
@@ -262,6 +292,12 @@ _BILLS: tuple[str, ...] = (
 )
 
 
+# Words that mark a periodical even when the publisher is unknown. Applied
+# only after the named catalogs miss, since a bare "PRESS" or "MEDIA" appears
+# in plenty of businesses that are not subscriptions.
+_PERIODICAL_HINTS = re.compile(r"\b(MAGAZINE|MAGAZINES|SUBSCRIPTION|SUBSCR|PERIODICAL)\b")
+
+
 def _matches(merchant: str, names: tuple[str, ...]) -> str | None:
     upper = merchant.upper()
     # Longest first, so "AMAZON PRIME" wins over a hypothetical "AMAZON".
@@ -290,6 +326,10 @@ def classify(merchant: str) -> Kind:
         return SUBSCRIPTION
     if _matches(merchant, _BILLS):
         return BILL
+    # No list of publishers can ever be complete, but "MAGAZINE" or
+    # "SUBSCRIPTION" in the descriptor is the merchant telling us outright.
+    if _PERIODICAL_HINTS.search(merchant.upper()):
+        return SUBSCRIPTION
     return UNKNOWN
 
 

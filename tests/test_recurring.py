@@ -214,3 +214,50 @@ def test_usage_triggered_charges_are_still_rejected():
         for offset in days
     ]
     assert detect(txs) == []
+
+
+def test_yearly_subscription_detected_from_two_charges():
+    # An annual subscription cannot reach three charges inside a two-year
+    # statement history, so requiring three made every yearly magazine, domain
+    # and insurance renewal structurally invisible. Real data had five such
+    # magazines, none of them detected.
+    txs = [
+        make_tx(date(2024, 12, 30), "-121.98", "INST XFER CONDE NAST WEB"),
+        make_tx(date(2025, 12, 30), "-121.97", "INST XFER CONDE NAST WEB"),
+    ]
+    series = detect(txs)
+
+    assert len(series) == 1
+    assert series[0].cadence == "yearly"
+    assert series[0].occurrences == 2
+    assert series[0].next_expected == date(2026, 12, 30)
+
+
+def test_two_short_interval_charges_are_still_a_coincidence():
+    # The relaxation is only for long cadences. Two charges a month apart, or a
+    # week apart, remain exactly the coincidence they always were.
+    monthly = [
+        make_tx(date(2026, 1, 14), "-15.49", "SOME SHOP"),
+        make_tx(date(2026, 2, 14), "-15.49", "SOME SHOP"),
+    ]
+    assert detect(monthly) == []
+
+    weekly = [
+        make_tx(date(2026, 1, 5), "-11.00", "ANOTHER SHOP"),
+        make_tx(date(2026, 1, 12), "-11.00", "ANOTHER SHOP"),
+    ]
+    assert detect(weekly) == []
+
+
+def test_two_charge_series_scores_below_a_well_evidenced_one():
+    # A single interval is real evidence but thin, and the confidence figure
+    # should say so rather than presenting one gap as proof.
+    thin = detect(
+        [
+            make_tx(date(2024, 3, 2), "-99.00", "DOMAIN RENEWAL"),
+            make_tx(date(2025, 3, 2), "-99.00", "DOMAIN RENEWAL"),
+        ]
+    )
+    thick = detect([make_tx(date(2023 + i, 3, 2), "-99.00", "OTHER RENEWAL") for i in range(4)])
+    assert thin and thick
+    assert thin[0].confidence < thick[0].confidence
