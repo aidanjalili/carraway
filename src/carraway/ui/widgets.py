@@ -70,12 +70,16 @@ class SortableItem(QTableWidgetItem):
     strings, which makes every money column in the app quietly wrong.
     """
 
-    def __init__(self, text: str, sort_key: float | int | str) -> None:
+    def __init__(self, text: str, sort_key: float | int | str | tuple) -> None:
         super().__init__(text)
         self._sort_key = sort_key
         self.setFlags(self.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
     def __lt__(self, other: QTableWidgetItem) -> bool:
         if isinstance(other, SortableItem):
-            return self._sort_key < other._sort_key
+            try:
+                return self._sort_key < other._sort_key
+            except TypeError:
+                # Mixed key types in one column should not crash a sort.
+                return str(self._sort_key) < str(other._sort_key)
         return super().__lt__(other)

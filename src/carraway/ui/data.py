@@ -28,6 +28,7 @@ class Ledger:
     series: list[RecurringSeries] = field(default_factory=list)
     categories: dict[str, str] = field(default_factory=dict)  # transaction id -> category
     verdicts: dict[str, str] = field(default_factory=dict)  # merchant -> user's answer
+    decided: dict[str, date] = field(default_factory=dict)  # merchant -> when answered
 
     def load(self) -> None:
         conn = db.connect(self.path)
@@ -41,7 +42,10 @@ class Ledger:
         transfers.apply_transfer_groups(self.transactions, pairs)
 
         self.verdicts = db.get_verdicts(conn)
-        self.series = recurring.detect(self.transactions)
+        self.decided = db.get_verdict_dates(conn)
+        # Inflows included so recurring income and person-to-person
+        # payments are visible; the views split them out by kind.
+        self.series = recurring.detect(self.transactions, include_inflows=True)
         assigned = cat.categorize_all(self.transactions)
         self.categories = {
             tx.id: name for tx, name in zip(self.transactions, assigned, strict=True)
@@ -51,8 +55,18 @@ class Ledger:
     # -- derived views the screens ask for --------------------------------
 
     def kind_of(self, series: RecurringSeries) -> str:
-        """subscription, bill, habit or unknown — the user's answer wins."""
-        return subscriptions.resolve(series.merchant, self.verdicts)
+        """What this series is. The user's own answer always wins.
+
+        A cancellation that has charged again since is treated as out of date
+        rather than wrong, so the merchant returns to the unclassified pile
+        instead of silently staying off the books.
+        """
+        inflow = series.typical_amount.minor > 0
+        kind = subscriptions.resolve(series.merchant, self.verdicts, is_inflow=inflow)
+        when = self.decided.get(series.merchant.upper())
+        if kind == subscriptions.CANCELLED and when and series.last_seen > when:
+            return subscriptions.UNKNOWN
+        return kind
 
     def series_by_kind(self, kind: str) -> list[RecurringSeries]:
         return [s for s in self.series if self.kind_of(s) == kind]

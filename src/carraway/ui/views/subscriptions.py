@@ -40,7 +40,14 @@ _HEADERS = [
 
 # Sort order for the Kind column: what you can cancel first, what you have
 # not yet decided about last, since that is the row needing an action.
-_KIND_ORDER = {"subscription": 0, "bill": 1, "habit": 2, "unknown": 3}
+_KIND_ORDER = {
+    "subscription": 0,
+    "bill": 1,
+    "income": 2,
+    "habit": 3,
+    "cancelled": 4,
+    "unknown": 5,
+}
 
 
 def _cadence_label(series: RecurringSeries) -> str:
@@ -110,6 +117,8 @@ class SubscriptionsView(QWidget):
         # The headline is what the user could actually cancel. Rent and
         # utilities recur just as reliably and belong in a different column of
         # someone's thinking, so they are counted separately.
+        # Only what is both cancellable and still charging: a subscription the
+        # user has already cancelled is not money they are paying.
         cancellable = [s for s in active if self.ledger.kind_of(s) == "subscription"]
         unknown = [s for s in self.ledger.series if self.ledger.kind_of(s) == "unknown"]
 
@@ -130,7 +139,10 @@ class SubscriptionsView(QWidget):
             kind = self.ledger.kind_of(item)
             cells = [
                 SortableItem(name, item.merchant.lower()),
-                SortableItem(kind, _KIND_ORDER.get(kind, 9)),
+                # Sorted by kind, then by cost within a kind, so the
+                # default view reads as grouped sections rather than one
+                # list with a $59k payroll sitting on top of Netflix.
+                SortableItem(kind, (_KIND_ORDER.get(kind, 9), -abs(item.annualised.minor))),
                 SortableItem(_cadence_label(item), item.annualised.minor),
                 SortableItem(abs(item.typical_amount).format(), abs(item.typical_amount.minor)),
                 SortableItem(item.annualised.format(), item.annualised.minor),
@@ -151,7 +163,7 @@ class SubscriptionsView(QWidget):
                 self.table.setItem(row, column, cell)
 
         self.table.setSortingEnabled(True)
-        self.table.sortItems(4, Qt.SortOrder.DescendingOrder)
+        self.table.sortItems(1, Qt.SortOrder.AscendingOrder)
 
         varies = sum(1 for s in series if s.amount_varies)
         notes = [f"{len(series)} series detected as of {today.isoformat()}"]

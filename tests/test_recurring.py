@@ -261,3 +261,21 @@ def test_two_charge_series_scores_below_a_well_evidenced_one():
     thick = detect([make_tx(date(2023 + i, 3, 2), "-99.00", "OTHER RENEWAL") for i in range(4)])
     assert thin and thick
     assert thin[0].confidence < thick[0].confidence
+
+
+def test_refunds_are_not_part_of_the_series_they_reverse():
+    # Real data: three quarterly charges, then three refunds on the day the
+    # user cancelled. Pooled into one series the median amount is $0.00 and a
+    # genuine subscription disappears behind a zero.
+    charges = [
+        make_tx(date(2024, 11, 4), "-48.93", "MOJOCH.COM LONDON"),
+        make_tx(date(2025, 2, 4), "-48.93", "MOJOCH.COM LONDON"),
+        make_tx(date(2025, 5, 5), "-48.93", "MOJOCH.COM LONDON"),
+    ]
+    refunds = [make_tx(date(2025, 7, 10), "48.93", "MOJOCH.COM LONDON") for _ in range(3)]
+
+    series = detect(charges + refunds, include_inflows=True)
+    spending = [s for s in series if s.typical_amount.minor < 0]
+    assert len(spending) == 1
+    assert spending[0].typical_amount == Money.parse("-48.93")
+    assert spending[0].occurrences == 3

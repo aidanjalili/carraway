@@ -232,6 +232,18 @@ def get_verdicts(conn: sqlite3.Connection) -> dict[str, str]:
     }
 
 
+def get_verdict_dates(conn: sqlite3.Connection) -> dict[str, date]:
+    """When each answer was given, keyed by uppercased merchant.
+
+    Used to notice that a merchant marked cancelled has charged again since,
+    which means the answer is out of date rather than wrong.
+    """
+    return {
+        r["merchant"]: date.fromisoformat(r["decided_at"])
+        for r in conn.execute("SELECT merchant, decided_at FROM merchant_verdicts")
+    }
+
+
 def clear_verdict(conn: sqlite3.Connection, merchant: str) -> int:
     """Forget one answer, so the review flow asks about it again."""
     cur = conn.execute("DELETE FROM merchant_verdicts WHERE merchant = ?", (merchant.upper(),))

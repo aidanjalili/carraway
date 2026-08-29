@@ -325,7 +325,12 @@ def detect(
     show up as a subscription. Pass `include_inflows=True` to detect income
     streams too, which is how the income view will eventually be built.
     """
-    groups: dict[tuple[str, str], list[Transaction]] = defaultdict(list)
+    # Grouped by direction as well as merchant, because a refund is not part of
+    # the series it reverses. A cancelled subscription typically produces a
+    # cluster of refunds at the same merchant for the same amount; pooled with
+    # the charges they cancel out and the median lands on zero, hiding a real
+    # subscription behind a $0.00 series.
+    groups: dict[tuple[str, str, bool], list[Transaction]] = defaultdict(list)
     for tx in transactions:
         if tx.is_transfer or tx.pending:
             continue
@@ -334,10 +339,10 @@ def detect(
         key = tx.merchant.upper() if tx.merchant else normalise_merchant(tx.description)
         if not key:
             continue
-        groups[(key, tx.account_id)].append(tx)
+        groups[(key, tx.account_id, tx.is_outflow)].append(tx)
 
     results: list[RecurringSeries] = []
-    for (merchant, account_id), txs in groups.items():
+    for (merchant, account_id, _), txs in groups.items():
         whole = _build_series(txs, merchant, account_id, min_occurrences, min_confidence)
         if whole is not None:
             results.append(whole)

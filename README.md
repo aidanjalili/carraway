@@ -9,6 +9,29 @@ paying for — without uploading your financial life to anybody's server.
 > Named for Nick Carraway, the narrator who watches the money and tells you
 > what really happened.
 
+### 🤖 This project was written by AI
+
+Essentially all of the code, tests and documentation in this repository were
+written by Claude (Anthropic's Claude Code), working from a human's direction,
+review and real bank data. That is stated up front because you are about to
+point this software at your financial life and you deserve to know how it was
+made.
+
+What that means in practice:
+
+- **Read the code before you trust it.** That is good advice for any finance
+  tool and better advice here. The engine is deliberately small and heavily
+  commented for exactly this reason.
+- **It has been exercised against real statements**, not only synthetic
+  fixtures: several bugs in this history were found by running it over two
+  years of actual bank exports, and each one has a regression test.
+- **The design decisions are documented**, in
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and in the commit history, so
+  you can audit the reasoning rather than only the result.
+- **Nothing is uploaded anywhere.** Your data stays in a SQLite file on your
+  machine, which is the one property that matters most and the easiest to
+  verify: there is no network code in the core at all.
+
 ⚠️ **Status: pre-alpha.** The engine, CLI and desktop GUI all work today, and
 have been run against real multi-year bank exports. See the
 [roadmap](docs/ROADMAP.md).

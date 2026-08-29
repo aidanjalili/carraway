@@ -115,3 +115,40 @@ def test_long_names_match_inside_run_together_descriptors():
     assert classify("Dd Doordashdashpass") == SUBSCRIPTION
     assert classify("SPOTIFYUSA") == SUBSCRIPTION
     assert classify("NETFLIXCOM") == SUBSCRIPTION
+
+
+def test_income_only_when_the_money_is_arriving():
+    from carraway.analysis.subscriptions import INCOME
+
+    # The same word means different things by direction: a payroll line on an
+    # inflow is the user's salary; on an outflow it is a business paying staff.
+    assert classify("Epic Systems Cor Payroll Ppd", is_inflow=True) == INCOME
+    assert classify("Cash Back Redemption Ref", is_inflow=True) == INCOME
+    assert classify("Epic Systems Cor Payroll Ppd", is_inflow=False) != INCOME
+
+
+def test_person_to_person_is_never_guessed():
+    from carraway.analysis.subscriptions import is_person_to_person
+
+    # Whether a recurring Zelle is income, a housemate's rent share or a habit
+    # depends on who is at the other end, and only the user knows that.
+    for merchant in [
+        "Zelle Payment From Ali Jalili",
+        "Venmo Payment Web",
+        "Cash App Transfer",
+        "Paypal Instant Transfer",
+    ]:
+        assert is_person_to_person(merchant), merchant
+        assert classify(merchant, is_inflow=True) == UNKNOWN, merchant
+
+    assert not is_person_to_person("Netflix")
+
+
+def test_cancelled_is_an_answerable_kind():
+    from carraway.analysis.subscriptions import ANSWERABLE, CANCELLED, INCOME
+
+    assert CANCELLED in ANSWERABLE
+    assert INCOME in ANSWERABLE
+    # A stored cancellation wins over the catalog, which would still say
+    # "subscription" for a merchant it recognises.
+    assert resolve("Netflix", {"NETFLIX": CANCELLED}) == CANCELLED

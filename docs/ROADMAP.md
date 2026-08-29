@@ -46,6 +46,8 @@ useful — no six-month stretch with nothing to show.
 - [x] Transaction list: model-backed, sortable, searchable across columns
 - [ ] Inline editing and bulk recategorise
 - [ ] Month-over-month trends and net worth
+- [x] Recurring income and person-to-person payments surfaced for review
+- [x] A cancelled subscription stays visible but stops counting as money paid
 - [ ] Price-increase detection ("Netflix went from $15.49 to $17.99")
 - [ ] Import wizard with a column-mapping UI for banks the guesser misses
 - [ ] Load in a worker thread — 2,261 transactions is instant, but a decade of

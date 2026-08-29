@@ -30,12 +30,20 @@ from typing import Literal
 # "DASHPASS" qualifies and "AWS", "MAX" and "BOX" do not.
 _UNAMBIGUOUS_LENGTH = 7
 
-Kind = Literal["subscription", "bill", "habit", "unknown"]
+Kind = Literal["subscription", "bill", "habit", "income", "cancelled", "unknown"]
 
 SUBSCRIPTION: Kind = "subscription"
 BILL: Kind = "bill"
 HABIT: Kind = "habit"
+INCOME: Kind = "income"
+# Something the user has told us they have stopped paying for. Kept visible
+# rather than deleted — knowing you cancelled a $195/yr magazine is useful —
+# but excluded from what the app says you currently pay.
+CANCELLED: Kind = "cancelled"
 UNKNOWN: Kind = "unknown"
+
+# Kinds a user may assign in the review flow.
+ANSWERABLE: tuple[Kind, ...] = (SUBSCRIPTION, BILL, HABIT, INCOME, CANCELLED)
 
 # Matched against the normalised merchant on word boundaries. Names are held in
 # the form normalisation leaves them in: uppercase, no ".COM", no corporate
@@ -341,6 +349,33 @@ def _ordered(names: tuple[str, ...]) -> tuple[tuple[str, re.Pattern[str]], ...]:
     return tuple(ordered)
 
 
+# Money arriving on a schedule: salary, benefits, dividends, refunds. Only
+# ever consulted for inflows, so "PAYROLL" on an outgoing charge (a business
+# paying its own staff) is not mistaken for the user's income.
+_INCOME_HINTS = re.compile(
+    r"\b(PAYROLL|DIRECT\s?DEP(OSIT)?|SALARY|PAYCHECK|DIVIDEND|INTEREST\s+PAID"
+    r"|TAX\s+REF(UND)?|REIMBURSE\w*|CASH\s?BACK|REDEMPTION|PENSION|ANNUITY"
+    r"|SOCIAL\s+SECURITY|UNEMPLOYMENT|BENEFIT|REBATE|SETTLEMENT|ROYALT\w+)\b"
+)
+
+# A person-to-person payment rail. Whether one of these is income, a bill split
+# with a housemate, or a habit depends entirely on who is at the other end, and
+# only the user knows that — so a recurring one is surfaced for review rather
+# than guessed at.
+_P2P_RAILS = re.compile(r"\b(ZELLE|VENMO|CASH\s?APP|SQUARE\s?CASH|PAYPAL|WISE|REVOLUT)\b")
+
+
+def is_person_to_person(merchant: str) -> bool:
+    """True for Zelle, Venmo and friends, whichever direction the money went.
+
+    >>> is_person_to_person("Zelle Payment From Ali Jalili")
+    True
+    >>> is_person_to_person("Netflix")
+    False
+    """
+    return _P2P_RAILS.search(merchant.upper()) is not None
+
+
 def _matches(merchant: str, names: tuple[str, ...]) -> str | None:
     upper = merchant.upper()
     for name, pattern in _ordered(names):
@@ -349,7 +384,7 @@ def _matches(merchant: str, names: tuple[str, ...]) -> str | None:
     return None
 
 
-def classify(merchant: str) -> Kind:
+def classify(merchant: str, *, is_inflow: bool = False) -> Kind:
     """What kind of recurring thing this merchant is, from the catalog alone.
 
     >>> classify("Netflix")
@@ -358,12 +393,21 @@ def classify(merchant: str) -> Kind:
     'bill'
     >>> classify("Down Town Tobacco Northfield")
     'unknown'
+    >>> classify("Epic Systems Cor Payroll Ppd", is_inflow=True)
+    'income'
 
     Subscriptions are checked first: a gym is a subscription even though
     "MEMBERSHIP" reads like a bill, and Spectrum is a bill even though it
     streams. Anything unmatched is `unknown`, which is what the review flow
     exists to resolve.
     """
+    # Direction first: money arriving is never a subscription, and a
+    # person-to-person rail is never classifiable without knowing the person.
+    if is_inflow and _INCOME_HINTS.search(merchant.upper()):
+        return INCOME
+    if is_person_to_person(merchant):
+        return UNKNOWN
+
     if _matches(merchant, _SUBSCRIPTIONS):
         return SUBSCRIPTION
     if _matches(merchant, _BILLS):
@@ -380,7 +424,9 @@ def catalog_size() -> tuple[int, int]:
     return len(_SUBSCRIPTIONS), len(_BILLS)
 
 
-def resolve(merchant: str, verdicts: dict[str, str] | None = None) -> Kind:
+def resolve(
+    merchant: str, verdicts: dict[str, str] | None = None, *, is_inflow: bool = False
+) -> Kind:
     """The kind of a merchant, preferring the user's own answer to the catalog.
 
     A stored verdict always wins. The catalog is a starting guess, and being
@@ -389,6 +435,6 @@ def resolve(merchant: str, verdicts: dict[str, str] | None = None) -> Kind:
     """
     if verdicts:
         stored = verdicts.get(merchant.upper())
-        if stored in (SUBSCRIPTION, BILL, HABIT):
+        if stored in ANSWERABLE:
             return stored  # type: ignore[return-value]
-    return classify(merchant)
+    return classify(merchant, is_inflow=is_inflow)

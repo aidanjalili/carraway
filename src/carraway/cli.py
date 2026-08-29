@@ -265,18 +265,29 @@ def cmd_review(args: argparse.Namespace) -> int:
         return 0
 
     verdicts = db.get_verdicts(conn)
+    decided = db.get_verdict_dates(conn)
 
     # Cast wider than the normal view on purpose: the whole point is to not
     # miss anything, and a series the detector is only 40% sure about is
     # exactly the kind a person can settle in one second.
     threshold = args.min_confidence if args.include_uncertain else recurring.MIN_CONFIDENCE
-    series = recurring.detect(transactions, min_confidence=threshold)
+    # Inflows are included here even though the subscriptions view excludes
+    # them: a recurring Zelle from a relative or a housemate's share of the
+    # rent is exactly the kind of thing only the user can identify, and
+    # never asking means never finding out.
+    series = recurring.detect(transactions, min_confidence=threshold, include_inflows=True)
+
+    def needs_answer(item) -> bool:
+        inflow = item.typical_amount.minor > 0
+        kind = subscriptions.resolve(item.merchant, verdicts, is_inflow=inflow)
+        if kind == subscriptions.UNKNOWN:
+            return True
+        # A cancellation that has charged again since is out of date.
+        when = decided.get(item.merchant.upper())
+        return kind == subscriptions.CANCELLED and when is not None and item.last_seen > when
 
     pending = [
-        s
-        for s in series
-        if subscriptions.resolve(s.merchant, verdicts) == subscriptions.UNKNOWN
-        and abs(s.annualised.minor) >= args.min_value * 100
+        s for s in series if needs_answer(s) and abs(s.annualised.minor) >= args.min_value * 100
     ]
     pending.sort(key=lambda s: -abs(s.annualised.minor))
 
@@ -297,13 +308,18 @@ def cmd_review(args: argparse.Namespace) -> int:
     batch = pending[: args.limit]
     print(f"{len(series)} recurring series - {known} already classified, {len(pending)} unknown.")
     print(f"Reviewing the {len(batch)} most expensive.\n")
-    print("  [s] subscription   [b] bill   [h] habit / one-off   [enter] skip   [q] quit\n")
+    print(
+        "  [s] subscription   [b] bill      [h] habit / one-off\n"
+        "  [i] income         [c] cancelled  [enter] skip   [q] quit\n"
+    )
 
     answered = 0
     for index, item in enumerate(batch, start=1):
-        print(f"({index}/{len(batch)}) {item.merchant}")
+        direction = "in " if item.typical_amount.minor > 0 else "out"
+        hint = "  (person-to-person)" if subscriptions.is_person_to_person(item.merchant) else ""
+        print(f"({index}/{len(batch)}) {item.merchant}{hint}")
         print(
-            f"    {abs(item.typical_amount).format()} {item.cadence}"
+            f"    {direction} {abs(item.typical_amount).format()} {item.cadence}"
             f"  ·  {item.annualised.format()}/yr"
             f"  ·  seen {item.occurrences}x since {item.first_seen}"
             f"  ·  {item.confidence:.0%} confident"
@@ -318,6 +334,8 @@ def cmd_review(args: argparse.Namespace) -> int:
             "s": subscriptions.SUBSCRIPTION,
             "b": subscriptions.BILL,
             "h": subscriptions.HABIT,
+            "i": subscriptions.INCOME,
+            "c": subscriptions.CANCELLED,
         }.get(answer[:1] if answer else "")
         if kind is None:
             print("    skipped\n")
@@ -334,7 +352,7 @@ def cmd_review(args: argparse.Namespace) -> int:
 
 
 def cmd_subscriptions(args: argparse.Namespace) -> int:
-    """The cull list: recurring things that are actually cancellable."""
+    """Recurring money, split by what the user can actually do about it."""
     from .analysis import recurring
 
     conn = db.connect(args.database)
@@ -344,15 +362,31 @@ def cmd_subscriptions(args: argparse.Namespace) -> int:
         return 0
 
     verdicts = db.get_verdicts(conn)
-    series = recurring.detect(transactions)
+    decided = db.get_verdict_dates(conn)
+    series = recurring.detect(transactions, include_inflows=True)
+    # Detected, but the next charge never came. Might be cancelled, might be a
+    # bill that moved with the user; either way it is not current.
+    overdue = {id(s) for s in recurring.stale(series, date.today())}
+
     grouped: dict[str, list] = {}
+    revived: list[str] = []
     for item in series:
-        grouped.setdefault(subscriptions.resolve(item.merchant, verdicts), []).append(item)
+        inflow = item.typical_amount.minor > 0
+        kind = subscriptions.resolve(item.merchant, verdicts, is_inflow=inflow)
+        # A cancellation that has charged again since is out of date rather
+        # than wrong, so the merchant goes back into the review queue.
+        when = decided.get(item.merchant.upper())
+        if kind == subscriptions.CANCELLED and when and item.last_seen > when:
+            revived.append(item.merchant)
+            kind = subscriptions.UNKNOWN
+        grouped.setdefault(kind, []).append(item)
 
     order = [
         (subscriptions.SUBSCRIPTION, "Subscriptions", "cancellable"),
         (subscriptions.BILL, "Bills", "recurring, but not optional"),
+        (subscriptions.INCOME, "Income", "money arriving on a schedule"),
         (subscriptions.HABIT, "Habits", "regular spending, not a commitment"),
+        (subscriptions.CANCELLED, "Cancelled", "no longer paying"),
         (subscriptions.UNKNOWN, "Unclassified", "run 'carraway review' to sort these"),
     ]
     for kind, heading, note in order:
@@ -365,17 +399,33 @@ def cmd_subscriptions(args: argparse.Namespace) -> int:
         print("-" * 66)
         for item in items:
             flag = "*" if item.amount_varies else " "
+            stopped = "  (stopped?)" if id(item) in overdue else ""
             print(
                 f"  {item.merchant[:30]:<32}{abs(item.typical_amount).format():>10}"
-                f" {item.cadence:<10}{flag} {item.annualised.format():>11}/yr"
+                f" {item.cadence:<10}{flag} {item.annualised.format():>11}/yr{stopped}"
             )
 
     cancellable = grouped.get(subscriptions.SUBSCRIPTION, [])
     if cancellable:
+        live = [s for s in cancellable if id(s) not in overdue]
         print(
-            f"\n{len(cancellable)} cancellable subscription(s) costing "
-            f"{total([s.annualised for s in cancellable]).format()}/yr."
+            f"\n{len(cancellable)} cancellable subscription(s); "
+            f"{total([s.annualised for s in live]).format()}/yr still charging."
         )
+        if len(live) != len(cancellable):
+            print(
+                f"  {len(cancellable) - len(live)} marked (stopped?) - the expected charge "
+                "never arrived.\n  Answer [c] in 'carraway review' to confirm a cancellation."
+            )
+    stopped = grouped.get(subscriptions.CANCELLED, [])
+    if stopped:
+        print(f"Cancelled: {total([s.annualised for s in stopped]).format()}/yr no longer paid.")
+    if revived:
+        print(
+            f"\n{len(revived)} merchant(s) marked cancelled have charged again: "
+            + ", ".join(revived)
+        )
+        print("They are back in 'carraway review' to be answered afresh.")
     unknown = grouped.get(subscriptions.UNKNOWN, [])
     if unknown:
         print(f"{len(unknown)} unclassified - 'carraway review' will ask about them.")
