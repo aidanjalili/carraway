@@ -3,7 +3,7 @@
 import uuid
 from datetime import date, timedelta
 
-from carraway.analysis.recurring import detect, normalise_merchant, stale
+from carraway.analysis.recurring import _build_series, detect, normalise_merchant, stale
 from carraway.core.models import Transaction
 from carraway.core.money import Money
 
@@ -159,3 +159,58 @@ def test_real_merchant_names_survive_order_code_stripping():
     # The order-code rule must not eat legitimate names that contain digits.
     assert normalise_merchant("7-ELEVEN 33412 SAN JOSE CA") == "7-ELEVEN SAN JOSE"
     assert normalise_merchant("MACYS EAST 0234") == "MACYS EAST"
+
+
+def test_one_merchant_billing_several_things():
+    # Found on real data: a letting agent takes rent every month and parking
+    # and one-off fees under the same descriptor. Pooled together the gaps look
+    # chaotic, the whole merchant scores below threshold, and a perfectly
+    # regular $948 rent vanishes from the results entirely.
+    rent = [
+        make_tx(date(2026, month, 3), "-948.00", "MILL DISTRICT AP RENT") for month in range(1, 13)
+    ]
+    extras = [
+        make_tx(day, amount, "MILL DISTRICT AP RENT")
+        for day, amount in [
+            (date(2026, 1, 4), "-45.00"),
+            (date(2026, 1, 26), "-100.00"),
+            (date(2026, 3, 2), "-1624.00"),
+            (date(2026, 3, 25), "-45.00"),
+            (date(2026, 5, 11), "-100.00"),
+            (date(2026, 6, 19), "-45.00"),
+            (date(2026, 8, 14), "-260.00"),
+            (date(2026, 9, 27), "-45.00"),
+            (date(2026, 11, 8), "-100.00"),
+        ]
+    ]
+    # The merchant as a whole must genuinely fail, or this tests nothing.
+    assert _build_series(rent + extras, "MILL DISTRICT AP RENT", "acct1", 3, 0.55) is None
+
+    found = [s for s in detect(rent + extras) if s.typical_amount == Money.parse("-948.00")]
+    assert len(found) == 1
+    assert found[0].cadence == "monthly"
+    assert found[0].occurrences == 12
+    assert found[0].confidence > 0.8
+
+
+def test_clustering_does_not_split_a_merchant_that_already_scores_well():
+    # Netflix changed price partway through. The whole-merchant pass succeeds,
+    # so clustering must never run and split it into two weaker series.
+    txs = monthly_series("NETFLIX.COM", "-15.49", date(2026, 1, 14), 5)
+    txs += monthly_series("NETFLIX.COM", "-17.99", date(2026, 6, 14), 5)
+
+    series = detect(txs)
+    assert len(series) == 1
+    assert series[0].occurrences == 10
+
+
+def test_usage_triggered_charges_are_still_rejected():
+    # An E-ZPass auto-replenish is a fixed $10 every time, but it fires when
+    # the balance runs low rather than on a schedule. Identical amounts must
+    # not be enough on their own to call something recurring.
+    days = [4, 6, 14, 169, 277, 472, 480, 528, 533, 574]
+    txs = [
+        make_tx(date(2025, 1, 1) + timedelta(days=offset), "-10.00", "E-ZPASS MA PPD")
+        for offset in days
+    ]
+    assert detect(txs) == []

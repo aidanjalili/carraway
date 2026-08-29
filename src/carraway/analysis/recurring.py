@@ -212,6 +212,81 @@ def _days_in_month(year: int, month: int) -> int:
     return calendar.monthrange(year, month)[1]
 
 
+def _build_series(
+    txs: list[Transaction],
+    merchant: str,
+    account_id: str,
+    min_occurrences: int,
+    min_confidence: float,
+) -> RecurringSeries | None:
+    """Score one candidate group of charges, or None if it does not recur."""
+    if len(txs) < min_occurrences:
+        return None
+    txs = sorted(txs, key=lambda t: t.date)
+
+    gaps = [
+        (b.date - a.date).days
+        # Ragged by design: pairing each item with its successor.
+        for a, b in zip(txs, txs[1:], strict=False)
+        if (b.date - a.date).days > 0  # same-day repeats are not a cadence
+    ]
+    if len(gaps) < min_occurrences - 1:
+        return None
+
+    match = _classify_gaps([float(g) for g in gaps])
+    if match is None:
+        return None
+    cadence, regularity = match
+
+    minors = [t.amount.minor for t in txs]
+    stability, varies = _amount_stability(minors)
+
+    # Regularity of timing is the stronger signal; amount consistency refines
+    # it. More observations also make the pattern more credible.
+    evidence = min(len(txs) / 6.0, 1.0)
+    confidence = 0.6 * regularity + 0.25 * stability + 0.15 * evidence
+    if confidence < min_confidence:
+        return None
+
+    # Median resists a one-off price change skewing the typical amount.
+    typical = Money(int(statistics.median(sorted(minors))), txs[0].amount.currency)
+    day_of_month = (
+        int(statistics.median([t.date.day for t in txs])) if cadence == "monthly" else None
+    )
+
+    return RecurringSeries(
+        merchant=merchant.title(),
+        account_id=account_id,
+        cadence=cadence,
+        typical_amount=typical,
+        occurrences=len(txs),
+        first_seen=txs[0].date,
+        last_seen=txs[-1].date,
+        next_expected=_predict_next(txs[-1].date, cadence, day_of_month),
+        confidence=round(confidence, 3),
+        amount_varies=varies,
+        transaction_ids=[t.id for t in txs],
+    )
+
+
+def _fixed_amount_clusters(txs: list[Transaction], min_occurrences: int) -> list[list[Transaction]]:
+    """Split a merchant's charges into groups that bill the same amount.
+
+    One merchant often bills for several distinct things. A letting agent takes
+    rent every month and parking and fees alongside it; Apple bills every
+    subscription under one descriptor. Pooled together the dates look chaotic
+    and a perfectly regular charge is buried in the noise.
+
+    Only exact amounts are grouped. Anything whose amount drifts — a utility
+    bill, a subscription that changed price — is better served by scoring the
+    merchant as a whole, which the caller has already tried.
+    """
+    by_amount: dict[int, list[Transaction]] = defaultdict(list)
+    for tx in txs:
+        by_amount[tx.amount.minor].append(tx)
+    return [group for group in by_amount.values() if len(group) >= min_occurrences]
+
+
 def detect(
     transactions: list[Transaction],
     *,
@@ -238,55 +313,18 @@ def detect(
 
     results: list[RecurringSeries] = []
     for (merchant, account_id), txs in groups.items():
-        if len(txs) < min_occurrences:
-            continue
-        txs.sort(key=lambda t: t.date)
-
-        gaps = [
-            (b.date - a.date).days
-            # Ragged by design: pairing each item with its successor.
-            for a, b in zip(txs, txs[1:], strict=False)
-            if (b.date - a.date).days > 0  # same-day repeats are not a cadence
-        ]
-        if len(gaps) < min_occurrences - 1:
+        whole = _build_series(txs, merchant, account_id, min_occurrences, min_confidence)
+        if whole is not None:
+            results.append(whole)
             continue
 
-        match = _classify_gaps([float(g) for g in gaps])
-        if match is None:
-            continue
-        cadence, regularity = match
-
-        minors = [t.amount.minor for t in txs]
-        stability, varies = _amount_stability(minors)
-
-        # Regularity of timing is the stronger signal; amount consistency
-        # refines it. More observations also make the pattern more credible.
-        evidence = min(len(txs) / 6.0, 1.0)
-        confidence = 0.6 * regularity + 0.25 * stability + 0.15 * evidence
-        if confidence < min_confidence:
-            continue
-
-        # Median resists a one-off price change skewing the typical amount.
-        typical = Money(int(statistics.median(sorted(minors))), txs[0].amount.currency)
-        day_of_month = (
-            int(statistics.median([t.date.day for t in txs])) if cadence == "monthly" else None
-        )
-
-        results.append(
-            RecurringSeries(
-                merchant=merchant.title(),
-                account_id=account_id,
-                cadence=cadence,
-                typical_amount=typical,
-                occurrences=len(txs),
-                first_seen=txs[0].date,
-                last_seen=txs[-1].date,
-                next_expected=_predict_next(txs[-1].date, cadence, day_of_month),
-                confidence=round(confidence, 3),
-                amount_varies=varies,
-                transaction_ids=[t.id for t in txs],
-            )
-        )
+        # The merchant as a whole does not recur, but one of the things it
+        # bills for might. Only reached on failure, so a merchant that already
+        # scores well is never split.
+        for cluster in _fixed_amount_clusters(txs, min_occurrences):
+            found = _build_series(cluster, merchant, account_id, min_occurrences, min_confidence)
+            if found is not None:
+                results.append(found)
 
     results.sort(key=lambda s: (-s.confidence, -abs(s.annualised.minor)))
     return results

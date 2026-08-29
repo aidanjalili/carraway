@@ -30,6 +30,8 @@ useful — no six-month stretch with nothing to show.
       the rest is local businesses no shipped ruleset can ever name. The seam
       is already there: `categorize_all(..., fallback=)`.
 - [ ] Split transactions
+- [x] One merchant billing several things — rent plus fees under one
+      descriptor, or every Apple subscription under one name
 - [ ] Separate *subscriptions* from merely *periodic spending*. Real data
       flagged a weekly corner-shop habit and a monthly takeaway order as
       recurring. Both are true and neither is a subscription.
