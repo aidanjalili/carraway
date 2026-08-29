@@ -1,11 +1,11 @@
 """Record a subscription the app cannot possibly detect.
 
-Anything paid through Venmo, Zelle or PayPal reaches the bank as "VENMO
-PAYMENT", never as the service behind it, so no amount of pattern detection
-will ever find it. Comparing a real user's own list against detection showed
-this was most of what was missing — seven of ten misses were paid through an
-intermediary, and the rest were annual charges with too few occurrences to
-establish a pattern.
+Anything paid through a peer-to-peer app or an intermediary reaches the bank
+as the transfer, never as the service behind it, so no amount of pattern
+detection will ever find it. Comparing a real user's own list against detection
+showed this was most of what was missing — seven of ten misses were paid
+through an intermediary, and the rest were annual charges with too few
+occurrences to establish a pattern.
 
 The honest answer is to let the user say what they know.
 """
@@ -45,9 +45,9 @@ class AddSubscriptionDialog(QDialog):
         layout.addWidget(heading)
 
         blurb = QLabel(
-            "For anything paid through Venmo, Zelle or PayPal, your bank only "
-            "ever sees the transfer — never the service. Tell Carraway about it "
-            "and it will count towards your totals."
+            "When something is paid through another app or a family member, your "
+            "bank only ever sees the transfer — never the service. Tell Carraway "
+            "about it and it will count towards your totals."
         )
         blurb.setObjectName("Muted")
         blurb.setWordWrap(True)
@@ -73,7 +73,7 @@ class AddSubscriptionDialog(QDialog):
         form.addRow("Kind", self.kind)
 
         self.paid_via = QLineEdit()
-        self.paid_via.setPlaceholderText("venmo to dad")
+        self.paid_via.setPlaceholderText("paid by a family member")
         form.addRow("Paid via", self.paid_via)
 
         self.notes = QLineEdit()

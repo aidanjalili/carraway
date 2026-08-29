@@ -133,8 +133,8 @@ def test_person_to_person_is_never_guessed():
     # Whether a recurring Zelle is income, a housemate's rent share or a habit
     # depends on who is at the other end, and only the user knows that.
     for merchant in [
-        "Zelle Payment From Ali Jalili",
-        "Venmo Payment Web",
+        "Zelle Payment From A Relative",
+        "Wise Transfer To A Friend",
         "Cash App Transfer",
         "Paypal Instant Transfer",
     ]:

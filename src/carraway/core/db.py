@@ -83,10 +83,10 @@ MIGRATIONS: list[str] = [
     CREATE INDEX idx_balances_account ON balances(account_id, observed_on);
     """,
     # v5 - subscriptions the user knows about but no detector can find.
-    # Anything paid through Venmo, Zelle or PayPal reaches the statement as
-    # "VENMO PAYMENT", never as the merchant, so the service is structurally
-    # invisible. Comparing a real user's own list against detection showed
-    # this accounted for most of what was missing.
+    # Anything paid through another app or a family member reaches the
+    # statement as the transfer, never as the merchant, so the service is
+    # structurally invisible. Comparing a real user's own list against
+    # detection showed this accounted for most of what was missing.
     """
     CREATE TABLE manual_subscriptions (
         id          TEXT PRIMARY KEY,
@@ -95,7 +95,7 @@ MIGRATIONS: list[str] = [
         currency    TEXT NOT NULL DEFAULT 'USD',
         cadence     TEXT NOT NULL,       -- weekly | biweekly | monthly | quarterly | yearly
         kind        TEXT NOT NULL DEFAULT 'subscription',
-        paid_via    TEXT NOT NULL DEFAULT '',  -- "venmo to dad", "paypal", an account name
+        paid_via    TEXT NOT NULL DEFAULT '',  -- how it is paid; free text
         notes       TEXT NOT NULL DEFAULT '',
         active      INTEGER NOT NULL DEFAULT 1
     );

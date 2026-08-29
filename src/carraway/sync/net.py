@@ -1,6 +1,6 @@
 """HTTP for the sync providers, with a working address family.
 
-`api.venmo.com` publishes AAAA records that do not answer. Python resolves a
+Some providers publish AAAA records that do not answer. Python resolves a
 host and prefers IPv6, so every request hangs until it times out on a machine
 whose IPv6 is otherwise fine — which reads to the user as "the app is broken"
 rather than "one endpoint's IPv6 is broken".
@@ -79,13 +79,12 @@ _ipv4_opener = urllib.request.build_opener(_IPv4Handler)
 def urlopen(request, timeout: float = 30.0):
     """Open a request, trying IPv4 before falling back to normal resolution.
 
-    IPv4 first, which is the opposite of what Python does by default. Both
-    providers here publish AAAA records that do not answer, and the cost of
-    that is worse than it looks: `getaddrinfo` returns eight IPv6 addresses
-    for api.venmo.com, and `create_connection` tries each one with the full
-    timeout in turn. At even a modest per-attempt timeout that is a minute of
-    apparent hang before anything else is tried — which is exactly how it
-    reads to someone waiting at a password prompt.
+    IPv4 first, which is the opposite of what Python does by default. A host
+    with dead AAAA records costs more than it looks: `getaddrinfo` can return
+    a dozen IPv6 addresses, and `create_connection` tries each one with the
+    full timeout in turn. At even a modest per-attempt timeout that is a
+    minute of apparent hang before anything else is tried, which reads to a
+    waiting user as a broken application.
 
     The default path is still the fallback, so an IPv6-only network keeps
     working: it is tried second rather than not at all.

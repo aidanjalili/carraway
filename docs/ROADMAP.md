@@ -61,9 +61,6 @@ useful — no six-month stretch with nothing to show.
 
 - [x] Provider adapter interface
 - [x] SimpleFIN Bridge adapter (US, ~$15/yr, no business agreement needed)
-- [x] Venmo, via its CSV export. The mobile API is implemented but Venmo's
-      risk checks refuse it; a developer account cannot help, since new API
-      access closed in 2016, and SimpleFIN does not list Venmo.
 - [x] Credential storage in the system keyring, with a 0600 file fallback
 - [ ] GoCardless adapter (UK/EU open banking, free tier)
 - [ ] Background sync with conflict handling against manual edits

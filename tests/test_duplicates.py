@@ -33,11 +33,11 @@ def test_punctuation_and_spacing_do_not_make_two_charges():
 
 def test_different_reference_numbers_are_different_charges():
     # The false positive that made this module worth writing carefully: two
-    # Venmo payments on one day for one amount differ ONLY in their reference
+    # payments on one day for one amount differ ONLY in their reference
     # numbers. Stripping digits from both would delete a real payment.
     assert not same_charge(
-        "VENMO PAYMENT 1049991103000 WEB ID: 3264681992",
-        "VENMO PAYMENT 1050022817724 WEB ID: 3264681992",
+        "P2P PAYMENT 1049991103000 WEB ID: 3264681992",
+        "P2P PAYMENT 1050022817724 WEB ID: 3264681992",
     )
     assert not same_charge("ORCA*00X6ZLC 2063985346 WA", "ORCA*00X68Q5 2063985346 WA")
 

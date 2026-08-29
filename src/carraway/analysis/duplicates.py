@@ -48,9 +48,9 @@ def without_numbers(description: str) -> str:
     'CHASE CREDIT CRD AUTOPAY PPD ID'
 
     Only ever compared between a masked description and an unmasked one. Two
-    unmasked descriptions must never be compared this way: two Venmo payments
-    on one day for one amount differ *only* in their reference numbers, and
-    stripping those makes two real payments look like one.
+    unmasked descriptions must never be compared this way: two payments to
+    one payee on one day for one amount differ *only* in their reference
+    numbers, and stripping those makes two real payments look like one.
     """
     return " ".join(
         _PUNCT.sub(" ", re.sub(r"\d+", " ", _MASK.sub(" ", description.upper()))).split()

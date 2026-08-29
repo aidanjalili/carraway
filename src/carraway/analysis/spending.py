@@ -320,7 +320,7 @@ def top_merchants(
 
     Pass `categories` from `categorize_all` here too. Without it only a matched
     `transfer_group` can hide a transfer, and on real data that is not enough:
-    an unmatched card autopay and a Venmo repayment are large, frequent and
+    an unmatched card autopay and a repayment to a friend are large, frequent and
     unmistakably *not* purchases, and they take the top of the table away from
     the merchants the user is actually looking for.
 

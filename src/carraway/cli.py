@@ -55,35 +55,14 @@ def cmd_accounts(args: argparse.Namespace) -> int:
 def cmd_import(args: argparse.Namespace) -> int:
     from .importers.csv_importer import ImportError_, import_csv
     from .importers.ofx_importer import import_ofx
-    from .importers.venmo import import_venmo, looks_like_venmo
 
     conn = db.connect(args.database)
     accounts = {a.id: a for a in db.list_accounts(conn)}
 
     if not args.account:
-        # A Venmo statement belongs in a Venmo account and nowhere else, so
-        # rather than making the user create one and copy an id, find it or
-        # make it. Every other format is ambiguous and still asks.
-        if Path(args.file).suffix.lower() == ".csv" and looks_like_venmo(args.file):
-            existing = next(
-                (a for a in accounts.values() if a.institution.lower() == "venmo"), None
-            )
-            if existing is None:
-                account = Account(
-                    id=uuid.uuid4().hex[:12],
-                    name="Venmo",
-                    type=AccountType.CASH,
-                    institution="Venmo",
-                )
-                db.upsert_account(conn, account)
-                print(f"Created a Venmo account ({account.id}).")
-                accounts[account.id] = account
-                existing = account
-            args.account = existing.id
-        else:
-            print("Which account? Pass --account <id>.", file=sys.stderr)
-            print("Run 'carraway accounts' to list them.", file=sys.stderr)
-            return 1
+        print("Which account? Pass --account <id>.", file=sys.stderr)
+        print("Run 'carraway accounts' to list them.", file=sys.stderr)
+        return 1
 
     if args.account not in accounts:
         print(f"Unknown account id {args.account!r}.", file=sys.stderr)
@@ -93,27 +72,13 @@ def cmd_import(args: argparse.Namespace) -> int:
     # Dispatch on extension. OFX is structured and unambiguous where CSV is
     # guesswork, so it is always preferred when the file offers it.
     suffix = Path(args.file).suffix.lower()
-    if suffix in (".ofx", ".qfx"):
-        reader = import_ofx
-    elif suffix == ".csv" and looks_like_venmo(args.file):
-        # Venmo's export is a CSV, but with preamble, trailer rows and its own
-        # column names, so it is sniffed rather than left to the generic reader.
-        reader = import_venmo
-    else:
-        reader = import_csv
+    reader = import_ofx if suffix in (".ofx", ".qfx") else import_csv
 
     currency = accounts[args.account].currency
     try:
-        if reader is import_venmo:
-            # Venmo states the direction of every transaction explicitly, so
-            # there is no ambiguous sign for --flip-sign to resolve.
-            if args.flip_sign:
-                print("--flip-sign does not apply to Venmo exports; ignoring.", file=sys.stderr)
-            transactions, warnings = reader(args.file, args.account, currency=currency)
-        else:
-            transactions, warnings = reader(
-                args.file, args.account, currency=currency, flip_sign=args.flip_sign
-            )
+        transactions, warnings = reader(
+            args.file, args.account, currency=currency, flip_sign=args.flip_sign
+        )
     except ImportError_ as exc:
         print(f"Could not read {args.file}: {exc}", file=sys.stderr)
         return 1
@@ -413,8 +378,8 @@ def cmd_subscriptions(args: argparse.Namespace) -> int:
     # and so can never be overdue.
     overdue = {id(s) for s in recurring.stale(series, date.today())}
 
-    # A subscription paid through Venmo is no less real for being invisible to
-    # detection, so tracked entries are counted alongside the found ones.
+    # A subscription paid through someone else is no less real for being
+    # invisible to detection, so tracked entries count alongside found ones.
     tracked = db.list_manual_subscriptions(conn)
     series += subscriptions.as_series(tracked, series)
     # A tracked entry carries its own kind; the user already answered.
@@ -836,9 +801,9 @@ def cmd_dedupe(args: argparse.Namespace) -> int:
 def cmd_track(args: argparse.Namespace) -> int:
     """Record a subscription no detector can find, or list the ones recorded.
 
-    Anything paid through Venmo, Zelle or PayPal reaches the statement as
-    "VENMO PAYMENT", never as the service, so it cannot be detected at all.
-    The only way for the app to know is to be told.
+    Anything paid through another app or a family member reaches the statement
+    as the transfer, never as the service, so it cannot be detected at all. The
+    only way for the app to know is to be told.
     """
     conn = db.connect(args.database)
 
@@ -851,7 +816,7 @@ def cmd_track(args: argparse.Namespace) -> int:
         tracked = db.list_manual_subscriptions(conn)
         if not tracked:
             print("Nothing tracked manually yet.")
-            print("Add one with:  carraway track 'T-Mobile' 35 monthly --via 'venmo to dad'")
+            print("Add one with:  carraway track 'T-Mobile' 35 monthly --via 'paid by dad'")
             return 0
         print(f"{'ID':<14}{'SERVICE':<26}{'AMOUNT':>10}  {'CADENCE':<10}PAID VIA")
         for item in tracked:
@@ -945,7 +910,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_import.add_argument("file", help="path to the CSV file")
     p_import.add_argument(
         "--account",
-        help="account id to import into; a Venmo export makes its own account",
+        help="account id to import into",
     )
     p_import.add_argument(
         "--flip-sign",
@@ -1084,7 +1049,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["weekly", "biweekly", "monthly", "quarterly", "yearly"],
         help="how often it bills",
     )
-    p_track.add_argument("--via", help="how it is paid, e.g. 'venmo to dad'")
+    p_track.add_argument("--via", help="how it is paid, e.g. 'paid by dad'")
     p_track.add_argument("--kind", default="subscription", choices=["subscription", "bill"])
     p_track.add_argument("--notes", help="anything worth remembering")
     p_track.add_argument("--remove", metavar="ID", help="stop tracking one")
