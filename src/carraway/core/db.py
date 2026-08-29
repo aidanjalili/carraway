@@ -100,6 +100,21 @@ MIGRATIONS: list[str] = [
         active      INTEGER NOT NULL DEFAULT 1
     );
     """,
+    # v6 - money to-dos. Disputes, reimbursements owed, accounts to close: the
+    # things a ledger makes obvious but cannot act on. They live here rather
+    # than in a notes app because they are answers to questions the data
+    # raised, and they go stale the moment they are separated from it.
+    """
+    CREATE TABLE todos (
+        id         TEXT PRIMARY KEY,
+        task       TEXT NOT NULL,
+        amount_minor INTEGER,            -- nullable: not every task has a figure
+        currency   TEXT NOT NULL DEFAULT 'USD',
+        source     TEXT NOT NULL DEFAULT '',  -- where it came from
+        added_on   TEXT NOT NULL,
+        done_on    TEXT
+    );
+    """,
 ]
 
 
@@ -400,6 +415,61 @@ def remove_manual_subscription(conn: sqlite3.Connection, subscription_id: str) -
     remembering, and the user may have paid for it for years."""
     cur = conn.execute(
         "UPDATE manual_subscriptions SET active = 0 WHERE id = ?", (subscription_id,)
+    )
+    conn.commit()
+    return cur.rowcount
+
+
+# -- money to-dos ---------------------------------------------------------
+
+
+def add_todo(
+    conn: sqlite3.Connection,
+    task: str,
+    *,
+    amount: Money | None = None,
+    source: str = "",
+) -> str:
+    import uuid
+
+    todo_id = uuid.uuid4().hex[:8]
+    conn.execute(
+        "INSERT INTO todos (id, task, amount_minor, currency, source, added_on) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            todo_id,
+            task,
+            amount.minor if amount else None,
+            amount.currency if amount else "USD",
+            source,
+            date.today().isoformat(),
+        ),
+    )
+    conn.commit()
+    return todo_id
+
+
+def list_todos(conn: sqlite3.Connection, *, include_done: bool = False) -> list[dict[str, object]]:
+    where = "" if include_done else "WHERE done_on IS NULL"
+    rows = conn.execute(f"SELECT * FROM todos {where} ORDER BY added_on, id").fetchall()
+    return [
+        {
+            "id": r["id"],
+            "task": r["task"],
+            "amount": Money(r["amount_minor"], r["currency"]) if r["amount_minor"] else None,
+            "source": r["source"],
+            "added_on": date.fromisoformat(r["added_on"]),
+            "done_on": date.fromisoformat(r["done_on"]) if r["done_on"] else None,
+        }
+        for r in rows
+    ]
+
+
+def complete_todo(conn: sqlite3.Connection, todo_id: str) -> int:
+    """Mark done rather than delete, so a finished dispute stays on the record."""
+    cur = conn.execute(
+        "UPDATE todos SET done_on = ? WHERE id = ? AND done_on IS NULL",
+        (date.today().isoformat(), todo_id),
     )
     conn.commit()
     return cur.rowcount

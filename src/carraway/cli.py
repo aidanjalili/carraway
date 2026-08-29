@@ -846,6 +846,42 @@ def cmd_track(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_todo(args: argparse.Namespace) -> int:
+    """Money to-dos: disputes, reimbursements owed, accounts to close."""
+    conn = db.connect(args.database)
+
+    if args.done:
+        changed = db.complete_todo(conn, args.done)
+        print("Marked done." if changed else f"No open to-do with id {args.done!r}.")
+        return 0
+
+    if args.task:
+        amount = Money.parse(str(args.amount)) if args.amount else None
+        todo_id = db.add_todo(conn, args.task, amount=amount, source=args.source or "")
+        print(f"Added [{todo_id}] {args.task}")
+        return 0
+
+    todos = db.list_todos(conn, include_done=args.all)
+    if not todos:
+        print("Nothing outstanding.")
+        print("Add one with:  carraway todo 'Dispute the Tru by Hilton charge' --amount 120")
+        return 0
+
+    open_items = [t for t in todos if not t["done_on"]]
+    print(f"{len(open_items)} open money to-do(s):\n")
+    for item in todos:
+        mark = "x" if item["done_on"] else " "
+        money = f"  {item['amount'].format()}" if item["amount"] else ""
+        source = f"   ({item['source']})" if item["source"] else ""
+        print(f"  [{mark}] {item['id']}  {item['task']}{money}{source}")
+
+    owed = total([t["amount"] for t in open_items if t["amount"]])
+    if owed:
+        print(f"\n{owed.format()} of money named in open to-dos.")
+    print("\nMark one done with:  carraway todo --done <id>")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="carraway",
@@ -990,6 +1026,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--format", choices=["ods", "csv"], help="override the format implied by the extension"
     )
     p_export.set_defaults(func=cmd_export)
+
+    p_todo = sub.add_parser("todo", help="money to-dos: disputes, money owed, things to cancel")
+    p_todo.add_argument("task", nargs="?", help="what needs doing")
+    p_todo.add_argument("--amount", help="the sum involved, if there is one")
+    p_todo.add_argument("--source", help="where it came from, e.g. 'reminders 8/28'")
+    p_todo.add_argument("--done", metavar="ID", help="mark one done")
+    p_todo.add_argument("--all", action="store_true", help="include completed ones")
+    p_todo.set_defaults(func=cmd_todo)
 
     p_track = sub.add_parser(
         "track", help="record a subscription that never appears as itself on a statement"
