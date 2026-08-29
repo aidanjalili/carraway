@@ -758,6 +758,42 @@ def cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_dedupe(args: argparse.Namespace) -> int:
+    """Find one charge imported twice from two sources, and optionally drop it."""
+    from .analysis import duplicates
+    from .core import backup
+
+    conn = db.connect(args.database)
+    transactions = db.list_transactions(conn)
+    groups = duplicates.find_duplicates(transactions)
+    if not groups:
+        print(f"No cross-source duplicates found among {len(transactions):,} transactions.")
+        return 0
+
+    extra = total([g.wasted for g in groups])
+    print(f"{len(groups)} duplicate(s), overstating your totals by {abs(extra).format()}:\n")
+    for group in groups:
+        print(f"  {group.keep.date}  {group.keep.amount.format():>11}")
+        print(f"     keep : {group.keep.description[:60]}")
+        for row in group.remove:
+            print(f"     drop : {row.description[:60]}")
+
+    if not args.apply:
+        print("\nNothing removed. Re-run with --apply to delete the extra copies.")
+        return 0
+
+    # Deleting a real transaction is far worse than keeping a duplicate, so a
+    # snapshot goes first and the user can always go back to it.
+    saved = backup.snapshot(Path(args.database), tag="dedupe")
+    if saved:
+        print(f"\nBacked up to {saved.name}")
+
+    doomed = [row.id for group in groups for row in group.remove]
+    removed = db.delete_transactions(conn, doomed)
+    print(f"Removed {removed} duplicate row(s).")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="carraway",
@@ -902,6 +938,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--format", choices=["ods", "csv"], help="override the format implied by the extension"
     )
     p_export.set_defaults(func=cmd_export)
+
+    p_dedupe = sub.add_parser(
+        "dedupe", help="find one charge imported twice from two different sources"
+    )
+    p_dedupe.add_argument(
+        "--apply", action="store_true", help="delete the extra copies (default is a dry run)"
+    )
+    p_dedupe.set_defaults(func=cmd_dedupe)
 
     p_backup = sub.add_parser("backup", help="snapshot the database, or list snapshots")
     p_backup.add_argument("--list", action="store_true", help="list existing snapshots")

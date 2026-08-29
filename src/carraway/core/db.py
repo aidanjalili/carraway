@@ -319,6 +319,19 @@ def balance_history(conn: sqlite3.Connection, account_id: str) -> list[tuple[dat
     ]
 
 
+def delete_transactions(conn: sqlite3.Connection, ids: list[str]) -> int:
+    """Remove transactions by id. Returns how many rows went.
+
+    Only used by duplicate removal, which shows the user exactly what it will
+    delete first: nothing in Carraway deletes a transaction on its own.
+    """
+    removed = 0
+    for tx_id in ids:
+        removed += conn.execute("DELETE FROM transactions WHERE id = ?", (tx_id,)).rowcount
+    conn.commit()
+    return removed
+
+
 def update_categories(conn: sqlite3.Connection, assignments: list[tuple[str, str]]) -> int:
     """Persist `(transaction_id, category)` pairs. Returns rows changed.
 

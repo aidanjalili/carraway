@@ -70,6 +70,7 @@ carraway prices                                # what quietly went up in price
 carraway networth                              # net worth over time
 carraway budget 5000 --months 6                # what you can spend to save $5,000
 carraway export ~/carraway.ods                 # open it in LibreOffice Calc
+carraway dedupe                                # one charge imported from two sources
 ```
 
 Recurring is not the same as cancellable. Rent, utilities and insurance repeat

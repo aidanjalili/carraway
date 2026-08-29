@@ -16,15 +16,18 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
+    QTabBar,
     QTableView,
     QVBoxLayout,
     QWidget,
 )
 
 from ...core.models import Transaction
+from ...core.money import Money
 from .. import theme
 from ..data import Ledger
 
@@ -100,13 +103,31 @@ class _FilterProxy(QSortFilterProxyModel):
 
     Qt's default filter looks at one column, which is never what someone means
     when they type "netflix" into a search box.
+
+    Also narrows to a single account, so the account tabs and the search box
+    compose rather than overriding each other: searching inside one account is
+    the obvious thing to want and would be impossible if either reset the
+    other.
     """
 
+    def __init__(self) -> None:
+        super().__init__()
+        self.account_id: str | None = None
+
+    def set_account(self, account_id: str | None) -> None:
+        self.account_id = account_id
+        self.invalidateFilter()
+
     def filterAcceptsRow(self, row: int, parent: QModelIndex) -> bool:  # noqa: N802
+        model = self.sourceModel()
+        if self.account_id is not None:
+            transaction = model.rows[row]
+            if transaction.account_id != self.account_id:
+                return False
+
         needle = self.filterRegularExpression().pattern().lower()
         if not needle:
             return True
-        model = self.sourceModel()
         for column in (1, 2, 3):
             value = model.data(model.index(row, column, parent), Qt.ItemDataRole.DisplayRole)
             if needle in str(value).lower():
@@ -123,9 +144,25 @@ class TransactionsView(QWidget):
         layout.setContentsMargins(28, 24, 28, 24)
         layout.setSpacing(14)
 
+        header = QHBoxLayout()
         title = QLabel("Transactions")
         title.setObjectName("Title")
-        layout.addWidget(title)
+        header.addWidget(title)
+        header.addStretch(1)
+        self.balance_label = QLabel("")
+        self.balance_label.setObjectName("Muted")
+        header.addWidget(self.balance_label)
+        layout.addLayout(header)
+
+        # One tab per account, with "All accounts" first. Accounts carry very
+        # different volumes, so the count sits in the tab: it is the fastest
+        # way to see which account a run of transactions came from.
+        self.tabs = QTabBar()
+        self.tabs.setExpanding(False)
+        self.tabs.setDrawBase(False)
+        self.tabs.setUsesScrollButtons(True)
+        self.tabs.currentChanged.connect(self._account_changed)
+        layout.addWidget(self.tabs)
 
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search description, category or account…")
@@ -156,7 +193,74 @@ class TransactionsView(QWidget):
         self.count = QLabel("")
         self.count.setObjectName("Muted")
         layout.addWidget(self.count)
+
+        self._build_tabs()
         self._update_count()
+
+    def _build_tabs(self) -> None:
+        """Rebuild the tab bar from the ledger's accounts."""
+        # Signals off while rebuilding: removing tabs fires currentChanged and
+        # would filter to whichever account happens to be left mid-rebuild.
+        self.tabs.blockSignals(True)
+        while self.tabs.count():
+            self.tabs.removeTab(0)
+
+        counts: dict[str, int] = {}
+        for transaction in self.ledger.transactions:
+            counts[transaction.account_id] = counts.get(transaction.account_id, 0) + 1
+
+        self.tabs.addTab(f"All accounts  ({len(self.ledger.transactions):,})")
+        self.tabs.setTabData(0, None)
+        # Busiest first: an account with three transactions is rarely the one
+        # someone opened this screen to look at.
+        for account in sorted(self.ledger.accounts, key=lambda a: -counts.get(a.id, 0)):
+            index = self.tabs.addTab(f"{account.name[:26]}  ({counts.get(account.id, 0):,})")
+            self.tabs.setTabData(index, account.id)
+            self.tabs.setTabToolTip(
+                index, f"{account.name} — {account.institution or account.type}"
+            )
+
+        self.tabs.blockSignals(False)
+
+    def _account_changed(self, index: int) -> None:
+        account_id = self.tabs.tabData(index)
+        self.proxy.set_account(account_id)
+        # The account column says the same thing as the tab once one is
+        # chosen, so it only earns its place on "All accounts".
+        self.table.setColumnHidden(3, account_id is not None)
+        self._update_balance(account_id)
+        self._update_count()
+
+    def _update_balance(self, account_id: str | None) -> None:
+        """Show the account's balance, when one has been observed."""
+        balances = self.ledger.balances
+        if account_id is None:
+            if not balances:
+                self.balance_label.setText("")
+                return
+            net = sum(
+                (
+                    -abs(balance) if self._is_liability(aid) else balance
+                    for aid, balance in balances.items()
+                ),
+                Money.zero(),
+            )
+            self.balance_label.setText(f"Across all accounts: {net.format()}")
+            return
+
+        balance = balances.get(account_id)
+        if balance is None:
+            self.balance_label.setText("No balance recorded for this account")
+        else:
+            owed = self._is_liability(account_id)
+            label = "owed" if owed and balance.minor else "balance"
+            self.balance_label.setText(f"Current {label}: {abs(balance).format()}")
+
+    def _is_liability(self, account_id: str) -> bool:
+        for account in self.ledger.accounts:
+            if account.id == account_id:
+                return account.type.is_liability
+        return False
 
     def _update_count(self) -> None:
         shown, held = self.proxy.rowCount(), self.model.rowCount()
@@ -168,4 +272,6 @@ class TransactionsView(QWidget):
         self.model.beginResetModel()
         self.model.rows = list(self.ledger.transactions)
         self.model.endResetModel()
+        self._build_tabs()
+        self._update_balance(self.tabs.tabData(self.tabs.currentIndex()))
         self._update_count()
