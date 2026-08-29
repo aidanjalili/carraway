@@ -12,7 +12,7 @@ from datetime import date
 from pathlib import Path
 
 from ..analysis import categorize as cat
-from ..analysis import recurring, subscriptions, transfers
+from ..analysis import price_changes, recurring, subscriptions, transfers
 from ..core import db
 from ..core.models import Account, RecurringSeries, Transaction
 from ..core.money import Money, total
@@ -28,6 +28,7 @@ class Ledger:
     series: list[RecurringSeries] = field(default_factory=list)
     categories: dict[str, str] = field(default_factory=dict)  # transaction id -> category
     verdicts: dict[str, str] = field(default_factory=dict)  # merchant -> user's answer
+    price_changes: list = field(default_factory=list)
     decided: dict[str, date] = field(default_factory=dict)  # merchant -> when answered
 
     def load(self) -> None:
@@ -46,6 +47,7 @@ class Ledger:
         # Inflows included so recurring income and person-to-person
         # payments are visible; the views split them out by kind.
         self.series = recurring.detect(self.transactions, include_inflows=True)
+        self.price_changes = price_changes.find_price_changes(self.transactions, series=self.series)
         assigned = cat.categorize_all(self.transactions)
         self.categories = {
             tx.id: name for tx, name in zip(self.transactions, assigned, strict=True)
@@ -53,6 +55,37 @@ class Ledger:
         conn.close()
 
     # -- derived views the screens ask for --------------------------------
+
+    def price_change_for(self, series: RecurringSeries):
+        """The most recent price change for this merchant, if any."""
+        matches = [c for c in self.price_changes if c.merchant.upper() == series.merchant.upper()]
+        return max(matches, key=lambda c: c.changed_on) if matches else None
+
+    def current_amount(self, series: RecurringSeries) -> Money:
+        """What this series charges *now*, not its historical median.
+
+        RecurringSeries.typical_amount is a median over the whole history,
+        which is the right way to resist a one-off blip. After a price change
+        it is the wrong number to show: eleven charges at $8.43 and four at
+        $9.48 median to $8.43, so a view whose job is "what am I paying"
+        would understate the bill the user is actually getting.
+        """
+        change = self.price_change_for(series)
+        return change.new_amount if change is not None else series.typical_amount
+
+    def current_annual(self, series: RecurringSeries) -> Money:
+        """Annual cost at the current price."""
+        change = self.price_change_for(series)
+        if change is None:
+            return series.annualised
+        per_year = {
+            "weekly": 52,
+            "biweekly": 26,
+            "monthly": 12,
+            "quarterly": 4,
+            "yearly": 1,
+        }.get(series.cadence, 0)
+        return abs(change.new_amount) * per_year if per_year else series.annualised
 
     def set_kind(self, series: RecurringSeries, kind: str) -> None:
         """Store the user's answer and update what is already in memory.

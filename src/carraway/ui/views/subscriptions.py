@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...core.models import RecurringSeries
-from ...core.money import total
+from ...core.money import Money, total
 from ..data import Ledger
 from ..widgets import SortableItem, StatCard, StatRow
 from .classify_dialog import ClassifyDialog
@@ -87,6 +87,15 @@ class SubscriptionsView(QWidget):
             StatRow([self.count_card, self.monthly_card, self.yearly_card, self.stale_card])
         )
 
+        # A price rise is the single most actionable thing this app can tell
+        # someone, so it gets its own line above the table rather than being a
+        # column they have to notice.
+        self.price_notice = QLabel("")
+        self.price_notice.setObjectName("Danger")
+        self.price_notice.setWordWrap(True)
+        self.price_notice.setVisible(False)
+        layout.addWidget(self.price_notice)
+
         self.table = QTableWidget(0, len(_HEADERS))
         self.table.setHorizontalHeaderLabels(_HEADERS)
         # Headers must sit over their columns: text left, numbers right.
@@ -136,9 +145,12 @@ class SubscriptionsView(QWidget):
         cancellable = [s for s in active if self.ledger.kind_of(s) == "subscription"]
         unknown = [s for s in self.ledger.series if self.ledger.kind_of(s) == "unknown"]
 
+        # Headline totals use current prices too, or a subscription that went
+        # up in March would still be counted at its old rate.
+        yearly = total([self.ledger.current_annual(s) for s in cancellable])
         self.count_card.set_value(str(len(cancellable)))
-        self.monthly_card.set_value(self.ledger.monthly_cost(cancellable).format())
-        self.yearly_card.set_value(total([s.annualised for s in cancellable]).format())
+        self.monthly_card.set_value(Money(round(yearly.minor / 12), yearly.currency).format())
+        self.yearly_card.set_value(yearly.format())
         self.stale_card.set_value(str(len(unknown)))
 
         # Sorting has to be off while filling, or rows reorder underneath the
@@ -154,15 +166,22 @@ class SubscriptionsView(QWidget):
             gone = id(item) in stale_ids
             name = item.merchant + ("  (stopped?)" if gone else "")
             kind = self.ledger.kind_of(item)
+            change = self.ledger.price_change_for(item)
+            if change is not None:
+                name += "  ↑" if change.direction == "increase" else "  ↓"
+            # Show what the series costs now rather than its historical median,
+            # which is stale the moment a price changes.
+            amount = self.ledger.current_amount(item)
+            annual = self.ledger.current_annual(item)
             cells = [
                 SortableItem(name, item.merchant.lower()),
                 # Sorted by kind, then by cost within a kind, so the
                 # default view reads as grouped sections rather than one
                 # list with a $59k payroll sitting on top of Netflix.
                 SortableItem(kind, (_KIND_ORDER.get(kind, 9), -abs(item.annualised.minor))),
-                SortableItem(_cadence_label(item), item.annualised.minor),
-                SortableItem(abs(item.typical_amount).format(), abs(item.typical_amount.minor)),
-                SortableItem(item.annualised.format(), item.annualised.minor),
+                SortableItem(_cadence_label(item), annual.minor),
+                SortableItem(abs(amount).format(), abs(amount.minor)),
+                SortableItem(annual.format(), annual.minor),
                 SortableItem(
                     item.next_expected.isoformat() if item.next_expected else "-",
                     item.next_expected.toordinal() if item.next_expected else 0,
@@ -192,6 +211,22 @@ class SubscriptionsView(QWidget):
             notes.append(f"~ marks {varies} whose amount changes between charges")
         if stale:
             notes.append(f"{len(stale)} greyed out — expected charge never arrived")
+        rises = [c for c in self.ledger.price_changes if c.direction == "increase"]
+        if rises:
+            biggest = max(rises, key=lambda c: abs(c.annual_impact.minor))
+            extra = total([abs(c.annual_impact) for c in rises])
+            lead = (
+                f"{biggest.merchant} went from {abs(biggest.old_amount).format()} to "
+                f"{abs(biggest.new_amount).format()} on {biggest.changed_on}"
+            )
+            more = f" — and {len(rises) - 1} other rose too" if len(rises) > 1 else ""
+            self.price_notice.setText(
+                f"↑ {lead}{more}. Price rises are costing you {extra.format()}/year more."
+            )
+            self.price_notice.setVisible(True)
+        else:
+            self.price_notice.setVisible(False)
+
         self.footnote.setText("   ·   ".join(notes))
         pending = len(unknown)
         self.review_button.setText(
