@@ -132,7 +132,9 @@ class SpendingView(QWidget):
 
     def _reload(self) -> None:
         period = self.granularity.currentText()
-        self.buckets = self.ledger.spending_buckets(period)
+        self.buckets = self.ledger.spending_buckets(
+            period, include_guessed=bool(self.ledger.setting("include_guesses_in_totals"))
+        )
         # Land on the most recent period: that is what someone opening this
         # screen wants, not the oldest month in their history.
         self.index = len(self.buckets) - 1 if self.buckets else 0
@@ -221,7 +223,10 @@ class SpendingView(QWidget):
                 continue
             if not transaction.is_outflow or transaction.is_transfer:
                 continue
-            name = self.ledger.categories.get(transaction.id, "Uncategorized")
+            name = self.ledger.category_of(
+                transaction,
+                include_guessed=bool(self.ledger.setting("include_guesses_in_totals")),
+            )
             counts[name] = counts.get(name, 0) + 1
 
         self.table.setSortingEnabled(False)

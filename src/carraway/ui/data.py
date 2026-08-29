@@ -115,10 +115,10 @@ class Ledger:
         self.manual = db.list_manual_subscriptions(db.connect(self.path))
         return True
 
-    def spending_buckets(self, period: str = "monthly") -> list:
+    def spending_buckets(self, period: str = "monthly", *, include_guessed: bool = True) -> list:
         """Spending per period, with the computed categories rather than stored
         ones — nothing writes a category to the database."""
-        names = [self.categories.get(t.id, "Uncategorized") for t in self.transactions]
+        names = [self.category_of(t, include_guessed=include_guessed) for t in self.transactions]
         return spending_mod.buckets(self.transactions, period=period, categories=names)
 
     def is_guessed(self, transaction_id: str) -> bool:
@@ -325,14 +325,25 @@ class Ledger:
         yearly = total([s.annualised for s in series])
         return Money(round(yearly.minor / 12), yearly.currency)
 
-    def spending_by_category(self) -> list[tuple[str, Money, int]]:
+    def category_of(self, transaction: Transaction, *, include_guessed: bool = True) -> str:
+        """A transaction's category, optionally ignoring guessed ones.
+
+        With guesses excluded a guessed row reads as Uncategorized rather than
+        vanishing: it is still money spent, and dropping it would quietly make
+        every total smaller than the truth.
+        """
+        if not include_guessed and self.is_guessed(transaction.id):
+            return cat.UNCATEGORIZED
+        return self.categories.get(transaction.id, cat.UNCATEGORIZED)
+
+    def spending_by_category(self, *, include_guessed: bool = True) -> list[tuple[str, Money, int]]:
         """(category, total spent, transaction count), biggest spend first."""
         amounts: dict[str, list[Money]] = {}
         counts: dict[str, int] = {}
         for tx in self.transactions:
             if not tx.is_outflow or tx.is_transfer:
                 continue
-            name = self.categories.get(tx.id, cat.UNCATEGORIZED)
+            name = self.category_of(tx, include_guessed=include_guessed)
             # Brokerage and savings moves are categorised Transfer even when no
             # matching partner row was found, because the money is still the
             # user's. Counting them as spending inflates the chart and buries

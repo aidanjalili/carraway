@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QFrame,
     QGridLayout,
+    QHBoxLayout,
     QLabel,
     QScrollArea,
     QVBoxLayout,
@@ -20,6 +22,26 @@ from PySide6.QtWidgets import (
 from ...core.money import total
 from ..data import Ledger
 from ..widgets import Card, StatCard, StatRow
+
+
+def _clear(layout) -> None:
+    """Remove and destroy everything in a layout, immediately.
+
+    deleteLater() alone is not enough here: it defers destruction to the next
+    event-loop turn, so the rebuilt rows are drawn on top of the old ones and
+    the section renders as doubled, overlapping text. Reparenting to None
+    detaches a widget there and then; nested layouts are cleared first, or
+    their children are orphaned rather than removed.
+    """
+    while layout.count():
+        item = layout.takeAt(0)
+        widget = item.widget()
+        if widget is not None:
+            widget.setParent(None)
+            widget.deleteLater()
+        elif item.layout() is not None:
+            _clear(item.layout())
+            item.layout().deleteLater()
 
 
 class _Bar(QFrame):
@@ -54,9 +76,25 @@ class DashboardView(QWidget):
         self.tx_card = StatCard("Transactions", "-")
         outer.addWidget(StatRow([self.in_card, self.out_card, self.net_card, self.tx_card]))
 
+        heading_row = QHBoxLayout()
         heading = QLabel("Spending by category")
         heading.setObjectName("SectionHeading")
-        outer.addWidget(heading)
+        heading_row.addWidget(heading)
+        heading_row.addStretch(1)
+
+        # Only worth offering when guessing is on; otherwise it is a control
+        # that does nothing, which is worse than no control.
+        self.include_guesses = QCheckBox("Include guessed categories")
+        self.include_guesses.setChecked(bool(ledger.setting("include_guesses_in_totals")))
+        self.include_guesses.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.include_guesses.setToolTip(
+            "Guessed categories are marked with ? in Transactions. Untick to see "
+            "only what the rules matched; guessed rows fall back to Uncategorized "
+            "rather than disappearing."
+        )
+        self.include_guesses.toggled.connect(self._toggle_guesses)
+        heading_row.addWidget(self.include_guesses)
+        outer.addLayout(heading_row)
 
         self.categories_card = Card()
         self.categories_layout = QGridLayout(self.categories_card)
@@ -70,6 +108,10 @@ class DashboardView(QWidget):
         scroll.setWidget(self.categories_card)
         outer.addWidget(scroll, stretch=1)
 
+        self.refresh()
+
+    def _toggle_guesses(self, included: bool) -> None:
+        self.ledger.save_setting("include_guesses_in_totals", included)
         self.refresh()
 
     def refresh(self) -> None:
@@ -88,12 +130,17 @@ class DashboardView(QWidget):
         self.net_card.set_value((earned + spent).format())
         self.tx_card.set_value(f"{len(txs):,}")
 
-        while self.categories_layout.count():
-            item = self.categories_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        _clear(self.categories_layout)
 
-        rows = self.ledger.spending_by_category()
+        show_guesses = bool(self.ledger.setting("include_guesses_in_totals"))
+        # Hidden rather than disabled when guessing is off: the question it
+        # answers does not exist then.
+        self.include_guesses.setVisible(bool(self.ledger.setting("auto_categorize")))
+        self.include_guesses.blockSignals(True)
+        self.include_guesses.setChecked(show_guesses)
+        self.include_guesses.blockSignals(False)
+
+        rows = self.ledger.spending_by_category(include_guessed=show_guesses)
         if not rows:
             return
         largest = rows[0][1].minor or 1

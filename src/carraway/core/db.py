@@ -469,6 +469,10 @@ DEFAULT_SETTINGS: dict[str, object] = {
     # Off by default: a wrong category the user did not ask for is worse
     # than an honest "Uncategorized".
     "auto_categorize": False,
+    # Whether guessed categories shape the breakdowns, or only the rows the
+    # rules matched. On by default so turning guessing on has an effect,
+    # but separable because "what am I sure about" is a real question.
+    "include_guesses_in_totals": True,
     "networth_granularity": "monthly",
     "spending_granularity": "monthly",
     "spending_chart": "Pie",
