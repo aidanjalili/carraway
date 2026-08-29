@@ -10,8 +10,8 @@ and it keeps the promise that the only runtime dependency is Qt.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -32,18 +32,67 @@ from ..data import Ledger
 from ..widgets import Card, SortableItem, StatCard, StatRow
 
 
-class Sparkline(QWidget):
-    """A filled line chart of one money series."""
+class NetWorthChart(QWidget):
+    """A filled line of net worth over time, with axes and a hover readout.
+
+    Axes matter here in a way they do not on a sparkline: the question is
+    "when did that dip happen and how deep was it", which needs both scales
+    labelled. Hovering snaps to the nearest point rather than interpolating,
+    because every point is a real reconstructed balance and a value between
+    two of them is not.
+    """
+
+    # Room for the value labels on the left and date labels underneath.
+    LEFT = 74
+    BOTTOM = 26
+    PAD = 14
 
     def __init__(self) -> None:
         super().__init__()
         self.points: list[networth.NetWorthPoint] = []
-        self.setMinimumHeight(220)
+        self.setMinimumHeight(240)
+        self.setMouseTracking(True)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._hovered: int | None = None
+        self._plot = QRectF()
+        self._low = 0
+        self._span = 1
 
     def set_points(self, points: list[networth.NetWorthPoint]) -> None:
         self.points = points
+        self._hovered = None
         self.update()
+
+    # -- geometry --------------------------------------------------------
+
+    def _x(self, index: int) -> float:
+        if len(self.points) < 2:
+            return self._plot.left()
+        return self._plot.left() + self._plot.width() * index / (len(self.points) - 1)
+
+    def _y(self, value: int) -> float:
+        return self._plot.bottom() - self._plot.height() * (value - self._low) / self._span
+
+    def _nearest(self, x: float) -> int | None:
+        if len(self.points) < 2 or not self._plot.width():
+            return None
+        ratio = (x - self._plot.left()) / self._plot.width()
+        index = round(ratio * (len(self.points) - 1))
+        return max(0, min(len(self.points) - 1, index))
+
+    # -- interaction -----------------------------------------------------
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        index = self._nearest(event.position().x())
+        if index != self._hovered:
+            self._hovered = index
+            self.update()
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self._hovered = None
+        self.update()
+
+    # -- painting --------------------------------------------------------
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
@@ -57,28 +106,29 @@ class Sparkline(QWidget):
             )
             return
 
-        margin = 12
-        width = self.width() - margin * 2
-        height = self.height() - margin * 2
+        self._plot = QRectF(
+            self.LEFT,
+            self.PAD,
+            max(10.0, self.width() - self.LEFT - self.PAD),
+            max(10.0, self.height() - self.PAD - self.BOTTOM),
+        )
         values = [p.net.minor for p in self.points]
         low, high = min(values), max(values)
-        # A flat series would divide by zero; give it a band so the line sits
-        # in the middle rather than on an edge.
-        span = (high - low) or max(abs(high), 1)
+        # A little headroom, so the extremes are not drawn on the frame.
+        margin = max((high - low) // 12, 100)
+        self._low = low - margin
+        self._span = (high + margin) - self._low or 1
 
-        def place(index: int, value: int) -> QPointF:
-            x = margin + width * index / (len(values) - 1)
-            y = margin + height * (1 - (value - low) / span)
-            return QPointF(x, y)
+        self._draw_value_axis(painter, palette)
+        self._draw_date_axis(painter, palette)
 
-        line = QPainterPath(place(0, values[0]))
+        line = QPainterPath(QPointF(self._x(0), self._y(values[0])))
         for index, value in enumerate(values[1:], start=1):
-            line.lineTo(place(index, value))
+            line.lineTo(QPointF(self._x(index), self._y(value)))
 
-        # Fill under the line, so the eye reads volume rather than just slope.
         area = QPainterPath(line)
-        area.lineTo(QPointF(margin + width, margin + height))
-        area.lineTo(QPointF(margin, margin + height))
+        area.lineTo(QPointF(self._x(len(values) - 1), self._plot.bottom()))
+        area.lineTo(QPointF(self._x(0), self._plot.bottom()))
         area.closeSubpath()
 
         rising = values[-1] >= values[0]
@@ -89,11 +139,78 @@ class Sparkline(QWidget):
         painter.setPen(QPen(colour, 2))
         painter.drawPath(line)
 
-        # Zero matters on a net worth chart: above it is savings, below is debt.
-        if low < 0 < high:
-            zero_y = margin + height * (1 - (0 - low) / span)
-            painter.setPen(QPen(QColor(palette.border), 1, Qt.PenStyle.DashLine))
-            painter.drawLine(margin, int(zero_y), margin + width, int(zero_y))
+        if self._hovered is not None:
+            self._draw_hover(painter, palette, colour)
+
+    def _draw_value_axis(self, painter: QPainter, palette) -> None:
+        """Four gridlines with money labels, which is enough to read a level."""
+        font = QFont(painter.font())
+        font.setPointSize(8)
+        painter.setFont(font)
+        for step in range(5):
+            value = self._low + self._span * step / 4
+            y = self._y(int(value))
+            painter.setPen(QPen(QColor(palette.border), 1, Qt.PenStyle.DotLine))
+            painter.drawLine(int(self._plot.left()), int(y), int(self._plot.right()), int(y))
+            painter.setPen(QColor(palette.muted))
+            painter.drawText(
+                QRectF(0, y - 9, self.LEFT - 8, 18),
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                Money(int(value)).format(symbol=True),
+            )
+
+    def _draw_date_axis(self, painter: QPainter, palette) -> None:
+        """As many date labels as fit without colliding."""
+        font = QFont(painter.font())
+        font.setPointSize(8)
+        painter.setFont(font)
+        painter.setPen(QColor(palette.muted))
+
+        # One label per ~90px; a monthly series over two years is 26 points
+        # and every one labelled would be unreadable.
+        wanted = max(2, int(self._plot.width() // 90))
+        stride = max(1, (len(self.points) - 1) // wanted)
+        for index in range(0, len(self.points), stride):
+            when = self.points[index].date
+            painter.drawText(
+                QRectF(self._x(index) - 40, self._plot.bottom() + 4, 80, 18),
+                Qt.AlignmentFlag.AlignCenter,
+                when.strftime("%b %Y") if stride > 1 else when.isoformat(),
+            )
+
+    def _draw_hover(self, painter: QPainter, palette, colour: QColor) -> None:
+        """A crosshair, a marker and a readout for the point under the cursor."""
+        index = self._hovered
+        point = self.points[index]
+        x, y = self._x(index), self._y(point.net.minor)
+
+        painter.setPen(QPen(QColor(palette.muted), 1, Qt.PenStyle.DashLine))
+        painter.drawLine(int(x), int(self._plot.top()), int(x), int(self._plot.bottom()))
+
+        painter.setPen(QPen(QColor(palette.surface), 2))
+        painter.setBrush(colour)
+        painter.drawEllipse(QPointF(x, y), 5, 5)
+
+        change = ""
+        if index > 0:
+            delta = point.net.minor - self.points[index - 1].net.minor
+            change = f"   {'+' if delta >= 0 else '−'}{Money(abs(delta)).format()}"
+        label = f"{point.date.isoformat()}   {point.net.format()}{change}"
+
+        font = QFont(painter.font())
+        font.setPointSize(9)
+        painter.setFont(font)
+        width = painter.fontMetrics().horizontalAdvance(label) + 18
+        # Flip the box to the other side near the right edge, so it never runs
+        # off the widget.
+        left = x + 12 if x + 12 + width < self._plot.right() else x - 12 - width
+        box = QRectF(left, self._plot.top() + 6, width, 26)
+
+        painter.setPen(QPen(QColor(palette.border), 1))
+        painter.setBrush(QColor(palette.surface))
+        painter.drawRoundedRect(box, 6, 6)
+        painter.setPen(QColor(palette.text))
+        painter.drawText(box, Qt.AlignmentFlag.AlignCenter, label)
 
 
 _HEADERS = ["Date", "Assets", "Owed", "Net worth", "Change"]
@@ -146,7 +263,7 @@ class NetWorthView(QWidget):
         chart_card = Card()
         chart_layout = QVBoxLayout(chart_card)
         chart_layout.setContentsMargins(10, 10, 10, 10)
-        self.chart = Sparkline()
+        self.chart = NetWorthChart()
         chart_layout.addWidget(self.chart)
         layout.addWidget(chart_card, stretch=1)
 

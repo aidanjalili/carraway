@@ -39,6 +39,11 @@ Issues = "https://github.com/aidanjalili/carraway/issues"
 [tool.hatch.build.targets.wheel]
 packages = ["src/carraway"]
 
+# The window icon ships with the package, so an install without a desktop
+# entry still shows something in the taskbar.
+[tool.hatch.build.targets.wheel.force-include]
+"src/carraway/ui/assets" = "carraway/ui/assets"
+
 [tool.pytest.ini_options]
 testpaths = ["tests", "src"]
 addopts = "-q --doctest-modules --ignore=src/carraway/cli.py --ignore=src/carraway/ui --ignore=src/carraway/sync/cli.py"

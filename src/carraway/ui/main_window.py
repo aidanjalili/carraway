@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..core import db
+from .assets import app_icon
 from .data import Ledger
 from .views.budget import BudgetView
 from .views.dashboard import DashboardView
@@ -74,12 +75,22 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(14, 22, 14, 18)
         layout.setSpacing(4)
 
+        # The mark beside the name, so the sidebar matches the taskbar.
+        brand = QHBoxLayout()
+        brand.setContentsMargins(8, 0, 8, 0)
+        brand.setSpacing(8)
+        mark = QLabel()
+        mark.setPixmap(app_icon().pixmap(26, 26))
+        brand.addWidget(mark)
+
         wordmark = QLabel("Carraway")
-        wordmark.setStyleSheet("font-size: 19px; font-weight: 700; padding: 0 8px 4px 8px;")
+        wordmark.setStyleSheet("font-size: 19px; font-weight: 700;")
         tagline = QLabel("your money, locally")
         tagline.setObjectName("Muted")
         tagline.setStyleSheet("padding: 0 8px 18px 8px; font-size: 12px;")
-        layout.addWidget(wordmark)
+        brand.addWidget(wordmark)
+        brand.addStretch(1)
+        layout.addLayout(brand)
         layout.addWidget(tagline)
 
         group = QButtonGroup(self)

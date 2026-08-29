@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QApplication
 
 from .. import __version__
 from ..core import db
+from .assets import app_icon
 from .main_window import MainWindow
 from .theme import activate, stylesheet
 
@@ -28,6 +29,13 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication(sys.argv[:1])
     app.setApplicationName("Carraway")
     app.setOrganizationName("Carraway")
+    app.setApplicationDisplayName("Carraway")
+    # Wayland identifies a window by its desktop file rather than by a class
+    # name, and without this the compositor cannot match the running window to
+    # the installed launcher — so the taskbar shows a placeholder even when the
+    # icon is installed correctly.
+    app.setDesktopFileName("carraway")
+    app.setWindowIcon(app_icon())
 
     # Follow whichever theme the desktop is already in, rather than imposing
     # one: this is an app people leave open all day.
