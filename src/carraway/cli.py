@@ -59,6 +59,32 @@ def cmd_import(args: argparse.Namespace) -> int:
 
     conn = db.connect(args.database)
     accounts = {a.id: a for a in db.list_accounts(conn)}
+
+    if not args.account:
+        # A Venmo statement belongs in a Venmo account and nowhere else, so
+        # rather than making the user create one and copy an id, find it or
+        # make it. Every other format is ambiguous and still asks.
+        if Path(args.file).suffix.lower() == ".csv" and looks_like_venmo(args.file):
+            existing = next(
+                (a for a in accounts.values() if a.institution.lower() == "venmo"), None
+            )
+            if existing is None:
+                account = Account(
+                    id=uuid.uuid4().hex[:12],
+                    name="Venmo",
+                    type=AccountType.CASH,
+                    institution="Venmo",
+                )
+                db.upsert_account(conn, account)
+                print(f"Created a Venmo account ({account.id}).")
+                accounts[account.id] = account
+                existing = account
+            args.account = existing.id
+        else:
+            print("Which account? Pass --account <id>.", file=sys.stderr)
+            print("Run 'carraway accounts' to list them.", file=sys.stderr)
+            return 1
+
     if args.account not in accounts:
         print(f"Unknown account id {args.account!r}.", file=sys.stderr)
         print("Run 'carraway accounts' to list them.", file=sys.stderr)
@@ -908,7 +934,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_import = sub.add_parser("import", help="import transactions from a CSV export")
     p_import.add_argument("file", help="path to the CSV file")
-    p_import.add_argument("--account", required=True, help="account id to import into")
+    p_import.add_argument(
+        "--account",
+        help="account id to import into; a Venmo export makes its own account",
+    )
     p_import.add_argument(
         "--flip-sign",
         action="store_true",

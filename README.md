@@ -1,3 +1,30 @@
+### Venmo
+
+**Use the CSV export.** It is the only route that reliably works:
+
+```bash
+venmo.com -> Statements -> Download CSV     # 90 days at a time
+carraway import venmo-statement.csv         # makes its own Venmo account
+```
+
+`carraway import` recognises the format — preamble, trailer rows and
+`- $25.00` amounts included — and overlapping exports deduplicate against each
+other, which matters because of that 90-day cap.
+
+Three other routes were investigated and none of them work:
+
+| Route | Why not |
+|---|---|
+| Venmo developer account | New API access closed in 2016 and never reopened. Only businesses approved before then still have it, and that API was for *accepting* payments as a merchant, never for reading your own history. |
+| SimpleFIN | Venmo is not a supported institution. |
+| Venmo's mobile API | Implemented in `sync/venmo_api.py` and left in place, but Venmo's risk checks refuse the sign-in: `OAuth2 Exception: Unable to complete your request`. It also breaks Venmo's terms, and its token is not read-only. |
+
+⚠️ If you enable the mobile API anyway, know that the token Venmo issues can
+move money and never expires. Carraway keeps it in the system keyring, only
+ever issues `GET` requests with it, and `carraway venmo logout` revokes it at
+Venmo rather than merely forgetting it. Your password is used once and never
+written anywhere.
+
 # Carraway
 
 **A local-first, open source money manager and subscription tracker for Linux.**
