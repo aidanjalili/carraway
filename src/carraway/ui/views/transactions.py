@@ -7,8 +7,12 @@ every one of them. The model builds only what is on screen.
 
 from __future__ import annotations
 
+from datetime import date, timedelta
+from pathlib import Path
+
 from PySide6.QtCore import (
     QAbstractTableModel,
+    QDate,
     QModelIndex,
     QSortFilterProxyModel,
     Qt,
@@ -17,10 +21,12 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
+    QDateEdit,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
+    QPushButton,
     QTableView,
     QVBoxLayout,
     QWidget,
@@ -32,6 +38,16 @@ from ...core.money import Money
 from .. import theme
 from ..data import Ledger
 from ..widgets import FilterStrip, enable_row_hover
+
+# Ranges someone actually asks for, with None meaning "everything".
+_PRESETS: dict[str, int | None] = {
+    "All time": None,
+    "Last 30 days": 30,
+    "Last 90 days": 90,
+    "Last 6 months": 182,
+    "Last year": 365,
+    "Custom": None,
+}
 
 _COLUMNS = ["Date", "Description", "Category", "Account", "Amount"]
 
@@ -131,9 +147,16 @@ class _FilterProxy(QSortFilterProxyModel):
         super().__init__()
         self.account_id: str | None = None
         self.kind: str = "All"
+        self.since: date | None = None
+        self.until: date | None = None
 
     def set_account(self, account_id: str | None) -> None:
         self.account_id = account_id
+        self.invalidateFilter()
+
+    def set_range(self, since: date | None, until: date | None) -> None:
+        self.since = since
+        self.until = until
         self.invalidateFilter()
 
     def set_kind(self, kind: str) -> None:
@@ -145,6 +168,13 @@ class _FilterProxy(QSortFilterProxyModel):
         if self.account_id is not None:
             transaction = model.rows[row]
             if transaction.account_id != self.account_id:
+                return False
+
+        if self.since or self.until:
+            when = model.rows[row].date
+            if self.since and when < self.since:
+                return False
+            if self.until and when > self.until:
                 return False
 
         if self.kind != "All":
@@ -221,6 +251,41 @@ class TransactionsView(QWidget):
         search_row.addWidget(self.kind)
         layout.addLayout(search_row)
 
+        range_row = QHBoxLayout()
+        range_row.setSpacing(8)
+        range_row.addWidget(QLabel("Dates"))
+
+        # Named ranges first, because "last 3 months" is what someone actually
+        # wants nine times in ten; the exact dates are there for the tenth.
+        self.range_preset = QComboBox()
+        self.range_preset.addItems(list(_PRESETS))
+        self.range_preset.currentTextChanged.connect(self._preset_chosen)
+        range_row.addWidget(self.range_preset)
+
+        self.since = QDateEdit()
+        self.since.setCalendarPopup(True)
+        self.since.setDisplayFormat("yyyy-MM-dd")
+        self.since.dateChanged.connect(lambda _: self._dates_edited())
+        range_row.addWidget(self.since)
+
+        range_row.addWidget(QLabel("to"))
+        self.until = QDateEdit()
+        self.until.setCalendarPopup(True)
+        self.until.setDisplayFormat("yyyy-MM-dd")
+        self.until.dateChanged.connect(lambda _: self._dates_edited())
+        range_row.addWidget(self.until)
+
+        range_row.addStretch(1)
+        export = QPushButton("Export this view…")
+        export.setCursor(Qt.CursorShape.PointingHandCursor)
+        export.setToolTip(
+            "Writes exactly the rows shown, with the account, type, date range "
+            "and search all applied."
+        )
+        export.clicked.connect(self._export_view)
+        range_row.addWidget(export)
+        layout.addLayout(range_row)
+
         self.model = TransactionModel(ledger)
         self.proxy = _FilterProxy()
         self.proxy.setSourceModel(self.model)
@@ -249,7 +314,101 @@ class TransactionsView(QWidget):
         layout.addWidget(self.count)
 
         self._build_tabs()
+        self._reset_dates()
         self._update_count()
+
+    def _reset_dates(self) -> None:
+        """Set the pickers to the ledger's own span, without filtering yet."""
+        dates = [t.date for t in self.ledger.transactions]
+        first, last = (min(dates), max(dates)) if dates else (date.today(), date.today())
+        for picker, value in ((self.since, first), (self.until, last)):
+            picker.blockSignals(True)
+            picker.setDateRange(
+                QDate(first.year, first.month, first.day), QDate(last.year, last.month, last.day)
+            )
+            picker.setDate(QDate(value.year, value.month, value.day))
+            picker.blockSignals(False)
+
+    def _preset_chosen(self, name: str) -> None:
+        days = _PRESETS[name]
+        dates = [t.date for t in self.ledger.transactions]
+        last = max(dates) if dates else date.today()
+        first = min(dates) if dates else date.today()
+        since = first if days is None else max(first, last - timedelta(days=days))
+
+        for picker, value in ((self.since, since), (self.until, last)):
+            picker.blockSignals(True)
+            picker.setDate(QDate(value.year, value.month, value.day))
+            picker.blockSignals(False)
+        self._apply_range(since, last)
+
+    def _dates_edited(self) -> None:
+        """A hand-picked date means the preset no longer describes the range."""
+        self.range_preset.blockSignals(True)
+        self.range_preset.setCurrentText("Custom")
+        self.range_preset.blockSignals(False)
+        since = self.since.date().toPython()
+        until = self.until.date().toPython()
+        self._apply_range(since, until)
+
+    def _apply_range(self, since: date, until: date) -> None:
+        dates = [t.date for t in self.ledger.transactions]
+        widest = (min(dates), max(dates)) if dates else (since, until)
+        # Passing None when the range covers everything keeps the filter out
+        # of the hot path for the common case.
+        self.proxy.set_range(
+            None if since <= widest[0] else since,
+            None if until >= widest[1] else until,
+        )
+        self._update_count()
+
+    def _visible_transactions(self) -> list[Transaction]:
+        """The rows on screen, in the order they are shown."""
+        out = []
+        for row in range(self.proxy.rowCount()):
+            source = self.proxy.mapToSource(self.proxy.index(row, 0))
+            out.append(self.model.rows[source.row()])
+        return out
+
+    def _export_view(self) -> None:
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+        from ...exporters.ods import export_csv, export_ods
+
+        rows = self._visible_transactions()
+        if not rows:
+            QMessageBox.information(self, "Nothing to export", "No rows match these filters.")
+            return
+
+        default = str(Path.home() / "carraway-selection.ods")
+        chosen, _ = QFileDialog.getSaveFileName(
+            self, "Export these transactions", default, "Spreadsheet (*.ods);;CSV (*.csv)"
+        )
+        if not chosen:
+            return
+
+        target = Path(chosen)
+        categories = [self.ledger.categories.get(t.id, "Uncategorized") for t in rows]
+        try:
+            if target.suffix.lower() == ".csv":
+                written = export_csv(target, rows, categories=categories)
+            else:
+                # No balances, so no Net Worth sheet: that describes every
+                # account, and this file is meant to be the rows on screen.
+                # Accounts are still passed, to turn ids into names.
+                written = export_ods(
+                    target if target.suffix else target.with_suffix(".ods"),
+                    rows,
+                    accounts=self.ledger.accounts,
+                    categories=categories,
+                )
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "Export failed", str(exc))
+            return
+
+        QMessageBox.information(
+            self, "Exported", f"{len(rows):,} transaction(s) written to\n{written}"
+        )
 
     def _kind_changed(self, kind: str) -> None:
         self.proxy.set_kind(kind)
