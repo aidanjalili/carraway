@@ -21,6 +21,7 @@ again — see `core.db.set_verdict`.
 
 from __future__ import annotations
 
+import contextlib
 import re
 from datetime import date
 from functools import lru_cache
@@ -33,7 +34,7 @@ from ..core.models import RecurringSeries
 # "DASHPASS" qualifies and "AWS", "MAX" and "BOX" do not.
 _UNAMBIGUOUS_LENGTH = 7
 
-Kind = Literal["subscription", "bill", "habit", "income", "cancelled", "unknown"]
+Kind = Literal["subscription", "bill", "habit", "income", "cancelled", "dismissed", "unknown"]
 
 SUBSCRIPTION: Kind = "subscription"
 BILL: Kind = "bill"
@@ -43,10 +44,28 @@ INCOME: Kind = "income"
 # rather than deleted — knowing you cancelled a $195/yr magazine is useful —
 # but excluded from what the app says you currently pay.
 CANCELLED: Kind = "cancelled"
+# Detection was wrong: this is not a recurring thing at all. Distinct from
+# `cancelled`, which means it was real and has stopped — a dismissed series
+# never should have been listed, so it is hidden rather than counted as
+# something the user no longer pays. Stored rather than deleted, because the
+# detector will find the same pattern again on the next import and the user
+# should not have to dismiss it twice.
+DISMISSED: Kind = "dismissed"
 UNKNOWN: Kind = "unknown"
 
 # Kinds a user may assign in the review flow.
-ANSWERABLE: tuple[Kind, ...] = (SUBSCRIPTION, BILL, HABIT, INCOME, CANCELLED)
+ANSWERABLE: tuple[Kind, ...] = (
+    SUBSCRIPTION,
+    BILL,
+    HABIT,
+    INCOME,
+    CANCELLED,
+    DISMISSED,
+)
+
+# Kinds that represent money the user actually deals with. A dismissed
+# series is not one of them and must never reach a total.
+COUNTED: tuple[Kind, ...] = (SUBSCRIPTION, BILL, HABIT, INCOME, CANCELLED, UNKNOWN)
 
 # Matched against the normalised merchant on word boundaries. Names are held in
 # the form normalisation leaves them in: uppercase, no ".COM", no corporate
@@ -546,3 +565,55 @@ def manual_kinds(tracked: list[dict[str, object]]) -> dict[str, str]:
     return {
         str(item["merchant"]).upper(): str(item.get("kind") or SUBSCRIPTION) for item in tracked
     }
+
+
+def apply_overrides(
+    series: list[RecurringSeries], overrides: dict[str, dict[str, object]]
+) -> list[RecurringSeries]:
+    """Return `series` with the user's corrections applied.
+
+    Detection infers an amount, a cadence and a next date from history, and
+    history is sometimes a poor guide — a price rose last week, or the billing
+    day moved. A correction to one field leaves the others inferred, so the
+    rest keeps improving as more charges arrive.
+
+    Confidence is forced to 1.0 on any corrected series: the number describes
+    how sure the *detector* is, and once a person has said what the figure is,
+    reporting 57% would be describing the wrong thing.
+    """
+    if not overrides:
+        return series
+
+    from dataclasses import replace
+    from datetime import date as _date
+
+    from ..core.money import Money
+
+    out: list[RecurringSeries] = []
+    for item in series:
+        correction = overrides.get(item.merchant.upper())
+        if not correction:
+            out.append(item)
+            continue
+
+        changes: dict[str, object] = {}
+        if correction.get("display_name"):
+            changes["merchant"] = str(correction["display_name"])
+        if correction.get("amount_minor") is not None:
+            currency = str(correction.get("currency") or item.typical_amount.currency)
+            # Kept as an outflow when the original was, so a corrected
+            # subscription does not become income by being edited.
+            magnitude = abs(int(correction["amount_minor"]))
+            sign = -1 if item.typical_amount.minor < 0 else 1
+            changes["typical_amount"] = Money(sign * magnitude, currency)
+        if correction.get("cadence"):
+            changes["cadence"] = str(correction["cadence"])
+        if correction.get("next_expected"):
+            # A malformed stored date should not cost the other corrections.
+            with contextlib.suppress(ValueError):
+                changes["next_expected"] = _date.fromisoformat(str(correction["next_expected"]))
+
+        if changes:
+            changes["confidence"] = 1.0
+        out.append(replace(item, **changes) if changes else item)
+    return out

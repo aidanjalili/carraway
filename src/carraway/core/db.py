@@ -131,6 +131,23 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE transactions ADD COLUMN auto_categorized INTEGER NOT NULL DEFAULT 0;
     """,
+    # v9 - corrections to a detected series. Detection infers an amount, a
+    # cadence and a next date from history, and history is sometimes a poor
+    # guide: a price rose last week, or the billing day moved. Every field is
+    # nullable, so a correction to one leaves the rest inferred and keeps
+    # improving as more charges arrive.
+    """
+    CREATE TABLE series_overrides (
+        merchant      TEXT PRIMARY KEY,   -- uppercased, as verdicts are keyed
+        display_name  TEXT,
+        amount_minor  INTEGER,
+        currency      TEXT,
+        cadence       TEXT,
+        next_expected TEXT,               -- ISO-8601
+        note          TEXT,
+        updated_on    TEXT NOT NULL
+    );
+    """,
 ]
 
 
@@ -490,6 +507,69 @@ def all_settings(conn: sqlite3.Connection) -> dict[str, object]:
         except json.JSONDecodeError:
             continue
     return stored
+
+
+# -- corrections to a detected series -------------------------------------
+
+
+def set_series_override(conn: sqlite3.Connection, merchant: str, **fields: object) -> None:
+    """Record corrections for one merchant, merging with anything already set.
+
+    Passing None for a field clears that correction and lets detection infer
+    it again, which is how a user undoes a single edit without undoing all of
+    them.
+    """
+    existing = get_series_overrides(conn).get(merchant.upper(), {})
+    merged = {**existing, **fields}
+    conn.execute(
+        """
+        INSERT INTO series_overrides
+            (merchant, display_name, amount_minor, currency, cadence,
+             next_expected, note, updated_on)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(merchant) DO UPDATE SET
+            display_name  = excluded.display_name,
+            amount_minor  = excluded.amount_minor,
+            currency      = excluded.currency,
+            cadence       = excluded.cadence,
+            next_expected = excluded.next_expected,
+            note          = excluded.note,
+            updated_on    = excluded.updated_on
+        """,
+        (
+            merchant.upper(),
+            merged.get("display_name"),
+            merged.get("amount_minor"),
+            merged.get("currency"),
+            merged.get("cadence"),
+            merged.get("next_expected"),
+            merged.get("note"),
+            date.today().isoformat(),
+        ),
+    )
+    conn.commit()
+
+
+def get_series_overrides(conn: sqlite3.Connection) -> dict[str, dict[str, object]]:
+    """Every correction, keyed by uppercased merchant."""
+    out: dict[str, dict[str, object]] = {}
+    for row in conn.execute("SELECT * FROM series_overrides"):
+        out[row["merchant"]] = {
+            "display_name": row["display_name"],
+            "amount_minor": row["amount_minor"],
+            "currency": row["currency"],
+            "cadence": row["cadence"],
+            "next_expected": row["next_expected"],
+            "note": row["note"],
+        }
+    return out
+
+
+def clear_series_override(conn: sqlite3.Connection, merchant: str) -> int:
+    """Drop every correction for a merchant, returning it to what was detected."""
+    cur = conn.execute("DELETE FROM series_overrides WHERE merchant = ?", (merchant.upper(),))
+    conn.commit()
+    return cur.rowcount
 
 
 def add_todo(

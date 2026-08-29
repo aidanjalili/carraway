@@ -30,7 +30,7 @@ from ...core.models import RecurringSeries
 from ...core.money import Money, total
 from ..data import Ledger
 from ..widgets import FilterStrip, SortableItem, StatCard, StatRow
-from . import add_subscription
+from . import add_subscription, edit_series
 from .classify_dialog import ClassifyDialog
 
 _HEADERS = [
@@ -46,6 +46,17 @@ _HEADERS = [
 
 # Sort order for the Kind column: what you can cancel first, what you have
 # not yet decided about last, since that is the row needing an action.
+# Ordered by period length, so sorting runs weekly, biweekly, monthly,
+# quarterly, yearly rather than alphabetically — "biweekly, monthly, quarterly,
+# weekly, yearly" is alphabetical and useless.
+_CADENCE_ORDER = {
+    "weekly": 0,
+    "biweekly": 1,
+    "monthly": 2,
+    "quarterly": 3,
+    "yearly": 4,
+}
+
 _KIND_ORDER = {
     "subscription": 0,
     "bill": 1,
@@ -102,7 +113,7 @@ class SubscriptionsView(QWidget):
         # so they get their own tabs rather than one list the user must scan.
         tab_row = QHBoxLayout()
         self.tabs = FilterStrip()
-        for label in ("Subscriptions", "Bills", "Income", "Habits", "Stopped", "All"):
+        for label in ("Subscriptions", "Bills", "Income", "Habits", "Stopped", "All", "Hidden"):
             self.tabs.addTab(label)
         self.tabs.currentChanged.connect(lambda _: self.refresh())
         tab_row.addWidget(self.tabs)
@@ -124,6 +135,9 @@ class SubscriptionsView(QWidget):
             self.table.horizontalHeaderItem(column).setTextAlignment(align)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
+        # Mouse tracking so the row under the cursor repaints without a
+        # click; without it Qt only updates on press.
+        self.table.setMouseTracking(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSortingEnabled(True)
@@ -149,7 +163,7 @@ class SubscriptionsView(QWidget):
 
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._context_menu)
-        self.table.doubleClicked.connect(lambda _: self._classify_selected())
+        self.table.doubleClicked.connect(lambda _: self._edit_selected())
 
         self.refresh()
 
@@ -158,6 +172,10 @@ class SubscriptionsView(QWidget):
         chosen = self.tabs.tabText(self.tabs.currentIndex())
         stale = {id(s) for s in self.ledger.stale_series}
         everything = self.ledger.series
+        if chosen == "Hidden":
+            # The one tab that shows dismissed series, so a mistake is
+            # reversible rather than a one-way door.
+            return self.ledger.dismissed
         if chosen == "All":
             return everything
         if chosen == "Stopped":
@@ -211,6 +229,8 @@ class SubscriptionsView(QWidget):
             change = self.ledger.price_change_for(item)
             if change is not None:
                 name += "  ↑" if change.direction == "increase" else "  ↓"
+            if self.ledger.is_edited(item):
+                name += "  ✎"
             # Show what the series costs now rather than its historical median,
             # which is stale the moment a price changes.
             amount = self.ledger.current_amount(item)
@@ -221,7 +241,13 @@ class SubscriptionsView(QWidget):
                 # default view reads as grouped sections rather than one
                 # list with a $59k payroll sitting on top of Netflix.
                 SortableItem(kind, (_KIND_ORDER.get(kind, 9), -abs(item.annualised.minor))),
-                SortableItem(_cadence_label(item), annual.minor),
+                # Sorted by how often it bills, then by cost within a
+                # cadence. Sorting this column by annual cost — which it did —
+                # makes clicking the Cadence header do nothing visible.
+                SortableItem(
+                    _cadence_label(item),
+                    (_CADENCE_ORDER.get(item.cadence, 99), -abs(annual.minor)),
+                ),
                 SortableItem(abs(amount).format(), abs(amount.minor)),
                 SortableItem(annual.format(), annual.minor),
                 SortableItem(
@@ -307,6 +333,19 @@ class SubscriptionsView(QWidget):
         classify.triggered.connect(lambda: self._classify(series))
         menu.addAction(classify)
 
+        edit = QAction(f"Edit {series.merchant}…", self)
+        edit.triggered.connect(lambda: self._edit(series))
+        menu.addAction(edit)
+
+        menu.addSeparator()
+        dismiss = QAction("Not recurring — hide this", self)
+        dismiss.setToolTip(
+            "For when detection was wrong. It stays hidden through future "
+            "imports, and can be restored from the Hidden tab."
+        )
+        dismiss.triggered.connect(lambda: self._dismiss(series))
+        menu.addAction(dismiss)
+
         if self.ledger.is_manual(series):
             # Only a tracked entry can be removed. A detected one is a fact
             # about the ledger, and deleting it would just mean re-detecting it.
@@ -325,9 +364,36 @@ class SubscriptionsView(QWidget):
         self.ledger.add_manual(values)
         self.refresh()
 
+    def _edit(self, series) -> None:
+        corrections = edit_series.prompt(series, self.ledger.is_edited(series), self)
+        if corrections is None:
+            return
+        if corrections == {}:
+            self.ledger.reset_series(series)
+        else:
+            self.ledger.edit_series(series, **corrections)
+        self.refresh()
+
+    def _dismiss(self, series) -> None:
+        self.ledger.dismiss(series)
+        self.refresh()
+
+    def _restore(self, series) -> None:
+        self.ledger.restore(series)
+        self.ledger.load()
+        self.refresh()
+
     def _remove_manual(self, series) -> None:
         if self.ledger.remove_manual(series):
             self.refresh()
+
+    def _edit_selected(self) -> None:
+        rows = self.table.selectionModel().selectedRows()
+        if not rows:
+            return
+        series = self._series_at(rows[0].row())
+        if series is not None:
+            self._edit(series)
 
     def _classify_selected(self) -> None:
         rows = self.table.selectionModel().selectedRows()

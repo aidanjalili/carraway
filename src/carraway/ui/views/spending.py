@@ -105,6 +105,9 @@ class SpendingView(QWidget):
         self.table.setHorizontalHeaderLabels(_HEADERS)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
+        # Mouse tracking so the row under the cursor repaints without a
+        # click; without it Qt only updates on press.
+        self.table.setMouseTracking(True)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSortingEnabled(True)
         head = self.table.horizontalHeader()

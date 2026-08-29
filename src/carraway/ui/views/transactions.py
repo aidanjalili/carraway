@@ -235,6 +235,7 @@ class TransactionsView(QWidget):
         self.table.sortByColumn(0, Qt.SortOrder.DescendingOrder)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
+        self.table.setMouseTracking(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)

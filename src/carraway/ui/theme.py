@@ -144,6 +144,14 @@ def stylesheet(p: Palette) -> str:
         font-weight: 600;
     }}
     QTableView::item, QTableWidget::item {{ padding: 8px; border: none; }}
+    /* Qt highlights the cell under the cursor, not the row, which is useless
+       on a wide table — the eye loses the line between the merchant and the
+       amount. Row-wide hover is enabled per view with setSelectionBehavior
+       and this rule. */
+    QTableView::item:hover, QTableWidget::item:hover {{
+        background: {p.surface_alt};
+        color: {p.text};
+    }}
     QScrollBar:vertical {{
         background: transparent; width: 10px; margin: 0;
     }}

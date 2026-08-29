@@ -37,6 +37,8 @@ class Ledger:
     manual: list = field(default_factory=list)
     settings: dict = field(default_factory=dict)
     guesses: dict = field(default_factory=dict)  # transaction id -> Guess
+    dismissed: list = field(default_factory=list)
+    overrides: dict = field(default_factory=dict)
     decided: dict[str, date] = field(default_factory=dict)  # merchant -> when answered
 
     def load(self) -> None:
@@ -53,15 +55,19 @@ class Ledger:
         self.settings = db.all_settings(conn)
         self.balances = db.latest_balances(conn)
         self.manual = db.list_manual_subscriptions(conn)
+        self.overrides = db.get_series_overrides(conn)
         self.verdicts = db.get_verdicts(conn)
         self.decided = db.get_verdict_dates(conn)
         # Inflows included so recurring income and person-to-person
         # payments are visible; the views split them out by kind.
         self.series = recurring.detect(self.transactions, include_inflows=True)
-        self.series = self.series + self.manual_series()
+        self.series = subscriptions.apply_overrides(
+            self.series + self.manual_series(), self.overrides
+        )
         # A tracked entry carries its own kind, so it must not fall through
         # to the catalog and come back unknown.
         self.verdicts = {**subscriptions.manual_kinds(self.manual), **self.verdicts}
+        self._split_dismissed()
         self.price_changes = price_changes.find_price_changes(self.transactions, series=self.series)
         assigned = cat.categorize_all(self.transactions)
         self.categories = {
@@ -204,6 +210,63 @@ class Ledger:
         }.get(series.cadence, 0)
         return abs(change.new_amount) * per_year if per_year else series.annualised
 
+    def _split_dismissed(self) -> None:
+        """Move dismissed series out of `series` and into `dismissed`.
+
+        Dropped at the source rather than filtered in each view: a dismissed
+        series is one the detector got wrong, and a total that quietly
+        included it would be wrong in exactly the way the user just corrected.
+        """
+        everything = self.series + self.dismissed
+        self.dismissed = [s for s in everything if self.kind_of(s) == subscriptions.DISMISSED]
+        self.series = [s for s in everything if self.kind_of(s) != subscriptions.DISMISSED]
+
+    def override_key(self, series: RecurringSeries) -> str:
+        """The key a series' corrections are stored under.
+
+        Corrections are keyed on the merchant as *detected*, but renaming a
+        series changes the name every later lookup uses — so a renamed series
+        could never be found again, and reset silently did nothing. Where the
+        current name matches a stored display name, the original key is what
+        comes back.
+        """
+        current = series.merchant.upper()
+        if current in self.overrides:
+            return current
+        for key, correction in self.overrides.items():
+            if str(correction.get("display_name") or "").upper() == current:
+                return key
+        return current
+
+    def edit_series(self, series: RecurringSeries, **fields) -> None:
+        """Correct one or more fields of a series, then reload so it takes."""
+        conn = db.connect(self.path)
+        db.set_series_override(conn, self.override_key(series), **fields)
+        conn.close()
+        self.load()
+
+    def reset_series(self, series: RecurringSeries) -> None:
+        """Discard every correction, returning the series to what was detected."""
+        conn = db.connect(self.path)
+        db.clear_series_override(conn, self.override_key(series))
+        conn.close()
+        self.load()
+
+    def is_edited(self, series: RecurringSeries) -> bool:
+        return self.override_key(series) in self.overrides
+
+    def dismiss(self, series: RecurringSeries) -> None:
+        """Mark a detected series as something the detector got wrong."""
+        self.set_kind(series, subscriptions.DISMISSED)
+
+    def restore(self, series: RecurringSeries) -> None:
+        """Undo a dismissal, putting the series back to being unclassified."""
+        conn = db.connect(self.path)
+        db.clear_verdict(conn, series.merchant)
+        conn.close()
+        self.verdicts.pop(series.merchant.upper(), None)
+        self._split_dismissed()
+
     def set_kind(self, series: RecurringSeries, kind: str) -> None:
         """Store the user's answer and update what is already in memory.
 
@@ -215,6 +278,9 @@ class Ledger:
         conn.close()
         self.verdicts[series.merchant.upper()] = kind
         self.decided[series.merchant.upper()] = date.today()
+        # Re-split immediately, so dismissing something removes it from the
+        # totals now rather than at the next reload.
+        self._split_dismissed()
 
     def kind_of(self, series: RecurringSeries) -> str:
         """What this series is. The user's own answer always wins.

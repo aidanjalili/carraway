@@ -227,3 +227,61 @@ def test_a_tracked_series_is_marked_manual():
     series = as_series([_tracked("T-Mobile", "35.00")])[0]
     assert is_manual(series)
     assert not is_manual(_detected("Netflix"))
+
+
+def test_dismissed_is_answerable_but_never_counted():
+    from carraway.analysis.subscriptions import ANSWERABLE, COUNTED, DISMISSED, resolve
+
+    # A user can say "detection got this wrong", and that answer sticks — but
+    # a dismissed series must never reach a total.
+    assert DISMISSED in ANSWERABLE
+    assert DISMISSED not in COUNTED
+    assert resolve("Netflix", {"NETFLIX": DISMISSED}) == DISMISSED
+
+
+def test_corrections_replace_only_the_fields_given():
+    from datetime import date
+
+    from carraway.analysis.subscriptions import apply_overrides
+    from carraway.core.money import Money
+
+    original = _detected("Netflix", "8.43")
+    corrected = apply_overrides(
+        [original],
+        {"NETFLIX": {"amount_minor": 2499, "currency": "USD", "next_expected": "2026-10-01"}},
+    )[0]
+
+    assert corrected.typical_amount == Money.parse("-24.99")
+    assert corrected.next_expected == date(2026, 10, 1)
+    # Untouched fields stay inferred, so they keep improving with more charges.
+    assert corrected.cadence == original.cadence
+    assert corrected.merchant == original.merchant
+
+
+def test_a_corrected_amount_keeps_its_direction():
+    from carraway.analysis.subscriptions import apply_overrides
+
+    # Editing a subscription must not turn it into income.
+    corrected = apply_overrides(
+        [_detected("Netflix", "8.43")], {"NETFLIX": {"amount_minor": 2499}}
+    )[0]
+    assert corrected.typical_amount.minor < 0
+
+
+def test_correcting_a_series_makes_it_certain():
+    from carraway.analysis.subscriptions import apply_overrides
+
+    # Confidence describes how sure the detector is. Once a person has stated
+    # the figure, reporting 57% would be describing the wrong thing.
+    corrected = apply_overrides(
+        [_detected("Netflix", "8.43")], {"NETFLIX": {"amount_minor": 2499}}
+    )[0]
+    assert corrected.confidence == 1.0
+
+
+def test_a_series_with_no_correction_is_returned_untouched():
+    from carraway.analysis.subscriptions import apply_overrides
+
+    original = _detected("Netflix", "8.43")
+    assert apply_overrides([original], {"SPOTIFY": {"amount_minor": 100}})[0] is original
+    assert apply_overrides([original], {})[0] is original
