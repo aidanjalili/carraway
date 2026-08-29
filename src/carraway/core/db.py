@@ -125,6 +125,12 @@ MIGRATIONS: list[str] = [
         value TEXT NOT NULL      -- JSON, so a setting can hold a list
     );
     """,
+    # v8 - which categories were guessed rather than matched by a rule. A
+    # guess that cannot be told apart from a certainty is worse than no guess,
+    # so the flag travels with the row and the UI marks it.
+    """
+    ALTER TABLE transactions ADD COLUMN auto_categorized INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 
@@ -262,6 +268,7 @@ def _row_to_transaction(r: sqlite3.Row) -> Transaction:
         pending=bool(r["pending"]),
         transfer_group=r["transfer_group"],
         occurrence=r["occurrence"],
+        auto_categorized=bool(r["auto_categorized"]),
     )
 
 
@@ -442,6 +449,9 @@ DEFAULT_SETTINGS: dict[str, object] = {
     # the usual case: money you have but cannot spend, which makes the total
     # answer a different question from "how am I doing this month".
     "networth_excluded_accounts": [],
+    # Off by default: a wrong category the user did not ask for is worse
+    # than an honest "Uncategorized".
+    "auto_categorize": False,
     "networth_granularity": "monthly",
     "spending_granularity": "monthly",
     "spending_chart": "Pie",
@@ -547,7 +557,12 @@ def delete_transactions(conn: sqlite3.Connection, ids: list[str]) -> int:
     return removed
 
 
-def update_categories(conn: sqlite3.Connection, assignments: list[tuple[str, str]]) -> int:
+def update_categories(
+    conn: sqlite3.Connection,
+    assignments: list[tuple[str, str]],
+    *,
+    guessed: set[str] | None = None,
+) -> int:
     """Persist `(transaction_id, category)` pairs. Returns rows changed.
 
     Only writes rows whose category actually differs, so re-running
@@ -557,8 +572,15 @@ def update_categories(conn: sqlite3.Connection, assignments: list[tuple[str, str
     changed = 0
     for tx_id, category in assignments:
         cur = conn.execute(
-            "UPDATE transactions SET category = ? WHERE id = ? AND category IS NOT ?",
-            (category, tx_id, category),
+            "UPDATE transactions SET category = ?, auto_categorized = ? "
+            "WHERE id = ? AND (category IS NOT ? OR auto_categorized IS NOT ?)",
+            (
+                category,
+                int(bool(guessed and tx_id in guessed)),
+                tx_id,
+                category,
+                int(bool(guessed and tx_id in guessed)),
+            ),
         )
         changed += cur.rowcount
     conn.commit()

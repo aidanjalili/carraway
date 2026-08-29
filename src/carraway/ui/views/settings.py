@@ -51,6 +51,7 @@ class SettingsView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(16)
 
+        layout.addWidget(self._categorise_card())
         layout.addWidget(self._accounts_card())
         layout.addWidget(self._defaults_card())
         layout.addWidget(self._data_card())
@@ -63,6 +64,58 @@ class SettingsView(QWidget):
         outer.addWidget(scroll, stretch=1)
 
     # -- sections --------------------------------------------------------
+
+    def _categorise_card(self) -> Card:
+        card = Card()
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(8)
+
+        heading = QLabel("Guess categories for what the rules miss")
+        heading.setObjectName("SectionHeading")
+        layout.addWidget(heading)
+
+        self.auto_box = QCheckBox("Try to categorise the rest automatically")
+        self.auto_box.setChecked(bool(self.ledger.setting("auto_categorize")))
+        self.auto_box.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.auto_box.toggled.connect(self._toggle_auto)
+        layout.addWidget(self.auto_box)
+
+        blurb = QLabel(
+            "Built-in rules recognise named merchants and clear keywords, which "
+            "leaves the local businesses no list can cover. With this on, "
+            "Carraway guesses at those from the words in the description and "
+            "from categories you have set yourself.\n\n"
+            "Every guess is marked with a ? and shown in amber, and hovering it "
+            "says why. Guesses never train later guesses, so one wrong answer "
+            "cannot spread."
+        )
+        blurb.setObjectName("Muted")
+        blurb.setWordWrap(True)
+        layout.addWidget(blurb)
+
+        self.auto_summary = QLabel("")
+        self.auto_summary.setObjectName("Muted")
+        layout.addWidget(self.auto_summary)
+        self._update_auto_summary()
+        return card
+
+    def _toggle_auto(self, enabled: bool) -> None:
+        self.ledger.save_setting("auto_categorize", enabled)
+        self.ledger.load()
+        self._update_auto_summary()
+        window = self.window()
+        if hasattr(window, "refresh_all"):
+            window.refresh_all()
+
+    def _update_auto_summary(self) -> None:
+        if not self.ledger.setting("auto_categorize"):
+            uncategorised = sum(
+                1 for name in self.ledger.categories.values() if name == "Uncategorized"
+            )
+            self.auto_summary.setText(f"{uncategorised:,} transactions are uncategorised.")
+            return
+        self.auto_summary.setText(f"{len(self.ledger.guesses):,} categories are currently guesses.")
 
     def _accounts_card(self) -> Card:
         card = Card()
@@ -208,7 +261,12 @@ class SettingsView(QWidget):
         )
 
     def refresh(self) -> None:
-        """Re-sync the checkboxes after the net worth screen changed them."""
+        """Re-sync the checkboxes after another screen changed them."""
+        if hasattr(self, "auto_box"):
+            self.auto_box.blockSignals(True)
+            self.auto_box.setChecked(bool(self.ledger.setting("auto_categorize")))
+            self.auto_box.blockSignals(False)
+            self._update_auto_summary()
         excluded = self.ledger.excluded_accounts
         for account_id, box in getattr(self, "boxes", {}).items():
             box.blockSignals(True)

@@ -62,7 +62,7 @@ class TransactionModel(QAbstractTableModel):
             return [
                 tx.date.isoformat(),
                 tx.description,
-                "Transfer" if tx.is_transfer else self.ledger.categories.get(tx.id, ""),
+                self._category_label(tx),
                 self.ledger.account_name(tx.account_id),
                 tx.amount.format(),
             ][column]
@@ -85,7 +85,22 @@ class TransactionModel(QAbstractTableModel):
         # accent from whichever palette is actually running.
         if role == Qt.ItemDataRole.ForegroundRole and column == 4 and not tx.is_outflow:
             return QColor(theme.ACTIVE.accent)
+        # A guessed category is drawn muted, so the eye can skip the ones that
+        # are only probably right.
+        if role == Qt.ItemDataRole.ForegroundRole and column == 2 and self.ledger.is_guessed(tx.id):
+            return QColor(theme.ACTIVE.warning)
+        if role == Qt.ItemDataRole.ToolTipRole and column == 2:
+            reason = self.ledger.guess_reason(tx.id)
+            return f"Guessed: {reason}" if reason else None
         return None
+
+    def _category_label(self, tx: Transaction) -> str:
+        if tx.is_transfer:
+            return "Transfer"
+        name = self.ledger.categories.get(tx.id, "")
+        # The "?" is the whole point of guessing: a guess that looks like a
+        # certainty is worse than none.
+        return f"{name}  ?" if self.ledger.is_guessed(tx.id) else name
 
     def headerData(  # noqa: N802
         self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole

@@ -70,6 +70,10 @@ class Transaction:
     # a duplicate of the first and silently dropped on import. Set by
     # `assign_occurrences()`, which importers call before handing rows over.
     occurrence: int = 0
+    # True when the category was guessed rather than matched by a rule.
+    # Shown in the UI, because a guess the user cannot tell apart from a
+    # certainty is worse than no guess at all.
+    auto_categorized: bool = False
     tags: list[str] = field(default_factory=list)
 
     @property

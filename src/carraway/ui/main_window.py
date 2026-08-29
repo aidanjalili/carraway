@@ -27,11 +27,13 @@ from .views.settings import SettingsView
 from .views.spending import SpendingView
 from .views.subscriptions import SubscriptionsView
 from .views.transactions import TransactionsView
+from .views.upcoming import UpcomingView
 
 # Net worth first: it is the one number that answers "how am I doing", and it
 # is what someone opening the app wants before any breakdown of it.
 _SCREENS = [
     ("Net worth", NetWorthView),
+    ("Upcoming", UpcomingView),
     ("Subscriptions", SubscriptionsView),
     ("Budget", BudgetView),
     ("Spending", SpendingView),

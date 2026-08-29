@@ -13,6 +13,7 @@ from pathlib import Path
 
 from ..analysis import budget as budget_mod
 from ..analysis import categorize as cat
+from ..analysis import guess as guess_mod
 from ..analysis import networth as networth_mod
 from ..analysis import price_changes, recurring, subscriptions, transfers
 from ..analysis import spending as spending_mod
@@ -35,6 +36,7 @@ class Ledger:
     balances: dict = field(default_factory=dict)
     manual: list = field(default_factory=list)
     settings: dict = field(default_factory=dict)
+    guesses: dict = field(default_factory=dict)  # transaction id -> Guess
     decided: dict[str, date] = field(default_factory=dict)  # merchant -> when answered
 
     def load(self) -> None:
@@ -65,6 +67,14 @@ class Ledger:
         self.categories = {
             tx.id: name for tx, name in zip(self.transactions, assigned, strict=True)
         }
+
+        # Guessing is opt-in, and every guess stays marked as one. A guess the
+        # user cannot tell apart from a rule match is worse than no guess.
+        self.guesses = {}
+        if self.setting("auto_categorize"):
+            self.guesses = guess_mod.guess_all(self.transactions, assigned)
+            for tx_id, found in self.guesses.items():
+                self.categories[tx_id] = found.category
         conn.close()
 
     # -- derived views the screens ask for --------------------------------
@@ -104,6 +114,13 @@ class Ledger:
         ones — nothing writes a category to the database."""
         names = [self.categories.get(t.id, "Uncategorized") for t in self.transactions]
         return spending_mod.buckets(self.transactions, period=period, categories=names)
+
+    def is_guessed(self, transaction_id: str) -> bool:
+        return transaction_id in self.guesses
+
+    def guess_reason(self, transaction_id: str) -> str:
+        found = self.guesses.get(transaction_id)
+        return found.reason if found else ""
 
     def setting(self, key: str):
         return self.settings.get(key, db.DEFAULT_SETTINGS.get(key))
