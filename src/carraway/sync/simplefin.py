@@ -52,44 +52,82 @@ class SimpleFinError(RuntimeError):
     """SimpleFIN rejected a request or returned something unusable."""
 
 
-def claim_setup_token(setup_token: str) -> str:
-    """Exchange a one-use setup token for a durable access URL.
+def decode_setup_token(setup_token: str) -> str:
+    """Decode a setup token to its claim URL without spending it.
 
-    A 403 here means the token was already claimed, which per the protocol
-    should be treated as a possible compromise rather than a retryable error —
-    someone else may have claimed it.
+    Separated from claiming so a paste can be checked before the one-use token
+    is consumed. Getting this wrong costs the user a trip back to SimpleFIN to
+    generate another, so it is worth being able to look first.
     """
-    token = setup_token.strip()
+    token = "".join(setup_token.split())  # tolerate newlines from a wrapped paste
+    if not token:
+        raise SimpleFinError("No setup token given")
+
     try:
-        claim_url = base64.b64decode(token, validate=True).decode("utf-8").strip()
+        # Bridge tokens are unpadded in the wild often enough to be worth
+        # fixing up rather than rejecting; base64 needs length % 4 == 0.
+        padded = token + "=" * (-len(token) % 4)
+        claim_url = base64.b64decode(padded, validate=True).decode("utf-8").strip()
     except (binascii.Error, UnicodeDecodeError, ValueError) as exc:
         raise SimpleFinError(
-            "That does not look like a SimpleFIN setup token. Copy the whole "
-            "string from SimpleFIN Bridge, which is base64 and usually long."
+            f"That is not a valid SimpleFIN setup token ({len(token)} characters). "
+            "It should be one long base64 string from SimpleFIN Bridge, with no "
+            "spaces. If you pasted an access URL by mistake, that starts with "
+            "'https://' and is not a setup token."
         ) from exc
 
     if not claim_url.lower().startswith("https://"):
         # The protocol requires TLS; a plaintext claim URL would send the
         # resulting credentials over the wire in the clear.
-        raise SimpleFinError("Refusing a setup token whose claim URL is not HTTPS")
+        raise SimpleFinError(
+            f"The token decoded to something that is not an HTTPS URL: {claim_url[:60]!r}"
+        )
+    return claim_url
+
+
+def claim_setup_token(setup_token: str) -> str:
+    """Exchange a one-use setup token for a durable access URL.
+
+    A 403 here usually means the token has already been claimed — including by
+    an earlier attempt of your own, since every attempt that reaches SimpleFIN
+    spends it. The protocol says to treat an unexpected 403 as a possible
+    compromise, so the message says both.
+    """
+    claim_url = decode_setup_token(setup_token)
 
     request = urllib.request.Request(claim_url, data=b"", method="POST")
+    request.add_header("Content-Length", "0")
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             access_url = response.read().decode("utf-8").strip()
     except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            body = exc.read().decode("utf-8", errors="replace").strip()
+            if body:
+                detail = f" SimpleFIN said: {body[:200]}"
+        except Exception:
+            pass
         if exc.code == 403:
             raise SimpleFinError(
-                "SimpleFIN refused this token. A setup token can only be claimed "
-                "once — generate a fresh one, and if you did not claim this one "
-                "yourself, treat it as compromised."
+                "SimpleFIN rejected this token as already claimed."
+                f"{detail}\n\n"
+                "Every attempt that reaches SimpleFIN spends the token, so an "
+                "earlier try — even one that appeared to fail — will have used "
+                "it up. Generate a fresh token and paste it whole.\n"
+                "If you have not tried before, treat this token as compromised "
+                "and revoke it at SimpleFIN Bridge."
             ) from exc
-        raise SimpleFinError(f"SimpleFIN returned HTTP {exc.code} when claiming the token") from exc
+        raise SimpleFinError(
+            f"SimpleFIN returned HTTP {exc.code} when claiming the token.{detail}"
+        ) from exc
     except urllib.error.URLError as exc:
         raise SimpleFinError(f"Could not reach SimpleFIN: {exc.reason}") from exc
 
     if not access_url.lower().startswith("https://"):
-        raise SimpleFinError("SimpleFIN returned something that is not an HTTPS access URL")
+        raise SimpleFinError(
+            f"SimpleFIN returned something that is not an HTTPS access URL: {access_url[:80]!r}"
+        )
     return access_url
 
 

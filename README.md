@@ -139,13 +139,19 @@ Read-only access to thousands of US institutions for about **$15/year**, paid to
 
 ```bash
 pip install -e '.[sync]'
-carraway simplefin setup      # paste the setup token from SimpleFIN Bridge
+carraway simplefin check      # verify a token pastes correctly, without using it
+carraway simplefin setup      # claim it and connect
 carraway sync simplefin
 ```
 
 The access URL is stored in your system keyring where one is available, and in
 a `0600` file under `~/.config/carraway` where one is not — the app tells you
 which before it saves anything.
+
+⚠️ **A setup token is single-use.** Every attempt that reaches SimpleFIN spends
+it, including one that appears to fail, so a second try with the same token
+returns "already claimed". Use `carraway simplefin check` first: it verifies the
+token decodes without claiming it.
 
 ### Venmo — read this before enabling it
 

@@ -39,25 +39,71 @@ def _persist(conn, result, label: str) -> int:
 
 
 def cmd_simplefin_setup(args: argparse.Namespace) -> int:
-    from .simplefin import SimpleFinError, claim_setup_token
+    from urllib.parse import urlparse
 
-    print("Paste the setup token from your SimpleFIN Bridge account.")
-    print("It is claimed once and exchanged for a durable access URL.\n")
-    print(f"The result will be stored in: {credentials.describe_store()}\n")
-    token = args.token or getpass.getpass("Setup token (hidden): ")
-    if not token.strip():
+    from .simplefin import SimpleFinError, claim_setup_token, decode_setup_token
+
+    print("Paste the setup token from your SimpleFIN Bridge account.\n")
+    # Shown rather than hidden on purpose: a setup token is single-use and
+    # worthless the moment it is claimed, so the real secret is the access URL
+    # it returns. Hiding it only makes a bad paste impossible to spot, which is
+    # expensive here because a failed attempt still spends the token.
+    print("The token is shown as you type. It is single-use, so it is not the")
+    print("lasting secret — the access URL it returns is, and that is hidden.\n")
+    token = args.token or input("Setup token: ").strip()
+    if not token:
         print("Nothing entered.", file=sys.stderr)
         return 1
+
+    # Decode first, without spending it, so a mangled paste is caught here
+    # rather than costing the user a trip back to SimpleFIN for a new token.
+    try:
+        claim_url = decode_setup_token(token)
+    except SimpleFinError as exc:
+        print(f"\n{exc}", file=sys.stderr)
+        return 1
+
+    cleaned = "".join(token.split())
+    host = urlparse(claim_url).netloc or "?"
+    print(f"\n  token   : {len(cleaned)} characters, {cleaned[:12]}...{cleaned[-8:]}")
+    print(f"  decodes : https://{host}/...")
+    print(f"  storing : {credentials.describe_store()}")
+
+    if not args.yes:
+        print("\nClaiming spends this token permanently.")
+        if input("Claim it now? [y/N] ").strip().lower() not in ("y", "yes"):
+            print("Cancelled. The token is untouched and can still be used.")
+            return 0
 
     try:
         access_url = claim_setup_token(token)
     except SimpleFinError as exc:
-        print(f"Could not claim the token: {exc}", file=sys.stderr)
+        print(f"\n{exc}", file=sys.stderr)
         return 1
 
     where = credentials.store(_SIMPLEFIN_URL, access_url)
     print(f"\nConnected. Access URL saved to {where}.")
     print("Run 'carraway sync simplefin' to pull transactions.")
+    return 0
+
+
+def cmd_simplefin_check(args: argparse.Namespace) -> int:
+    """Verify a token decodes, without claiming it."""
+    from urllib.parse import urlparse
+
+    from .simplefin import SimpleFinError, decode_setup_token
+
+    token = args.token or input("Setup token: ").strip()
+    try:
+        claim_url = decode_setup_token(token)
+    except SimpleFinError as exc:
+        print(f"{exc}", file=sys.stderr)
+        return 1
+
+    cleaned = "".join(token.split())
+    print(f"Looks like a valid setup token ({len(cleaned)} characters).")
+    print(f"  decodes to: https://{urlparse(claim_url).netloc}/...")
+    print("Not claimed — it is still usable. Run 'carraway simplefin setup' to connect.")
     return 0
 
 
@@ -203,7 +249,13 @@ def register(sub: argparse._SubParsersAction, database_default: str) -> None:
     sf_sub = sf.add_subparsers(dest="simplefin_command", required=True)
     sf_setup = sf_sub.add_parser("setup", help="claim a SimpleFIN setup token")
     sf_setup.add_argument("--token", help="setup token (prompted for if omitted)")
+    sf_setup.add_argument(
+        "--yes", action="store_true", help="skip the confirmation before claiming"
+    )
     sf_setup.set_defaults(func=cmd_simplefin_setup)
+    sf_check = sf_sub.add_parser("check", help="verify a setup token decodes, without claiming it")
+    sf_check.add_argument("--token", help="setup token (prompted for if omitted)")
+    sf_check.set_defaults(func=cmd_simplefin_check)
     sf_forget = sf_sub.add_parser("forget", help="remove the stored access URL")
     sf_forget.set_defaults(func=cmd_simplefin_forget)
 

@@ -146,3 +146,37 @@ def test_since_becomes_a_start_date_parameter():
 
     assert "start-date" in seen
     assert seen["start-date"].isdigit()
+
+
+def test_a_token_can_be_checked_without_being_spent():
+    # Claiming is one-use, so a mangled paste must be catchable before it costs
+    # the user a trip back to SimpleFIN for a fresh token.
+    import base64
+
+    from carraway.sync.simplefin import decode_setup_token
+
+    token = base64.b64encode(b"https://bridge.example.org/simplefin/claim/ABC").decode()
+    assert decode_setup_token(token) == "https://bridge.example.org/simplefin/claim/ABC"
+
+
+def test_a_wrapped_or_unpadded_paste_still_decodes():
+    # Tokens get wrapped by terminals and stripped of padding by web UIs;
+    # neither should look like a bad token to the user.
+    import base64
+
+    from carraway.sync.simplefin import decode_setup_token
+
+    url = b"https://bridge.example.org/simplefin/claim/ABCDE"
+    token = base64.b64encode(url).decode()
+    wrapped = token[:20] + "\n  " + token[20:]
+    assert decode_setup_token(wrapped) == url.decode()
+    assert decode_setup_token(token.rstrip("=")) == url.decode()
+
+
+def test_useless_pastes_say_what_is_wrong():
+    from carraway.sync.simplefin import decode_setup_token
+
+    with pytest.raises(SimpleFinError, match="not a valid SimpleFIN setup token"):
+        decode_setup_token("this is clearly not base64 !!")
+    with pytest.raises(SimpleFinError, match="No setup token given"):
+        decode_setup_token("   ")
