@@ -39,8 +39,15 @@ carraway accounts --add "Chase Checking" --type checking
 carraway import statement.csv --account <id>   # or statement.ofx / .qfx
 carraway transfers --apply                     # stop double-counting card payments
 carraway categorize                            # spending broken down by category
-carraway recurring                             # the subscriptions view
+carraway recurring                             # everything that repeats
+carraway subscriptions                         # split into subscriptions, bills, habits
+carraway review                                # answer what it could not place
 ```
+
+Recurring is not the same as cancellable. Rent, utilities and insurance repeat
+just as reliably as Netflix, and so does a weekly corner-shop habit. Carraway
+sorts them apart using a catalog of known services and billers, asks you about
+anything it does not recognise, and never asks twice.
 
 ```
 Found 5 recurring series in 412 transactions:

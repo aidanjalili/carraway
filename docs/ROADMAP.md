@@ -32,9 +32,10 @@ useful — no six-month stretch with nothing to show.
 - [ ] Split transactions
 - [x] One merchant billing several things — rent plus fees under one
       descriptor, or every Apple subscription under one name
-- [ ] Separate *subscriptions* from merely *periodic spending*. Real data
-      flagged a weekly corner-shop habit and a monthly takeaway order as
-      recurring. Both are true and neither is a subscription.
+- [x] Separate *subscriptions* from *bills* from *habits*, with a catalog of
+      ~160 known services and ~50 known billers
+- [x] Ask the user about anything unrecognised, and remember the answer
+      forever (`carraway review`)
 
 ## v0.3 — The GUI
 

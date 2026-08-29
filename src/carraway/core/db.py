@@ -57,6 +57,15 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE transactions ADD COLUMN occurrence INTEGER NOT NULL DEFAULT 0;
     """,
+    # v3 - the user's own answer about what a merchant is. Asked once, in the
+    # review flow, then never again. See analysis/subscriptions.py.
+    """
+    CREATE TABLE merchant_verdicts (
+        merchant   TEXT PRIMARY KEY,   -- normalised merchant, uppercased
+        kind       TEXT NOT NULL,      -- subscription | bill | habit
+        decided_at TEXT NOT NULL
+    );
+    """,
 ]
 
 
@@ -195,6 +204,39 @@ def _row_to_transaction(r: sqlite3.Row) -> Transaction:
         transfer_group=r["transfer_group"],
         occurrence=r["occurrence"],
     )
+
+
+# -- what the user has told us a merchant is -----------------------------
+
+
+def set_verdict(conn: sqlite3.Connection, merchant: str, kind: str) -> None:
+    """Record the user's answer about a merchant, replacing any earlier one."""
+    conn.execute(
+        """
+        INSERT INTO merchant_verdicts (merchant, kind, decided_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(merchant) DO UPDATE SET
+            kind = excluded.kind,
+            decided_at = excluded.decided_at
+        """,
+        (merchant.upper(), kind, date.today().isoformat()),
+    )
+    conn.commit()
+
+
+def get_verdicts(conn: sqlite3.Connection) -> dict[str, str]:
+    """Every stored answer, keyed by uppercased merchant."""
+    return {
+        r["merchant"]: r["kind"]
+        for r in conn.execute("SELECT merchant, kind FROM merchant_verdicts")
+    }
+
+
+def clear_verdict(conn: sqlite3.Connection, merchant: str) -> int:
+    """Forget one answer, so the review flow asks about it again."""
+    cur = conn.execute("DELETE FROM merchant_verdicts WHERE merchant = ?", (merchant.upper(),))
+    conn.commit()
+    return cur.rowcount
 
 
 def update_categories(conn: sqlite3.Connection, assignments: list[tuple[str, str]]) -> int:

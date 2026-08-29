@@ -95,3 +95,34 @@ def test_identical_same_day_purchases_are_both_kept(tmp_path):
     again, _ = import_csv(io.StringIO(csv_text), "acct1")
     assert db.insert_transactions(conn, again) == (0, 3)
     assert len(db.list_transactions(conn)) == 3
+
+
+def test_verdicts_persist_and_can_be_changed(tmp_path):
+    conn = make_db(tmp_path)
+    assert db.get_verdicts(conn) == {}
+
+    db.set_verdict(conn, "Down Town Tobacco", "habit")
+    db.set_verdict(conn, "Netflix", "subscription")
+    assert db.get_verdicts(conn) == {
+        "DOWN TOWN TOBACCO": "habit",
+        "NETFLIX": "subscription",
+    }
+
+    # Answering again replaces rather than duplicating: someone changing their
+    # mind must not leave two conflicting rows behind.
+    db.set_verdict(conn, "netflix", "bill")
+    assert db.get_verdicts(conn)["NETFLIX"] == "bill"
+
+    assert db.clear_verdict(conn, "NETFLIX") == 1
+    assert "NETFLIX" not in db.get_verdicts(conn)
+    assert db.clear_verdict(conn, "NEVER STORED") == 0
+
+
+def test_verdicts_survive_reopening(tmp_path):
+    path = tmp_path / "test.db"
+    conn = db.connect(path)
+    db.set_verdict(conn, "Mojoch London", "subscription")
+    conn.close()
+
+    # The whole point of storing an answer is not being asked again next time.
+    assert db.get_verdicts(db.connect(path)) == {"MOJOCH LONDON": "subscription"}

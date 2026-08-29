@@ -12,7 +12,7 @@ from datetime import date
 from pathlib import Path
 
 from ..analysis import categorize as cat
-from ..analysis import recurring, transfers
+from ..analysis import recurring, subscriptions, transfers
 from ..core import db
 from ..core.models import Account, RecurringSeries, Transaction
 from ..core.money import Money, total
@@ -27,6 +27,7 @@ class Ledger:
     transactions: list[Transaction] = field(default_factory=list)
     series: list[RecurringSeries] = field(default_factory=list)
     categories: dict[str, str] = field(default_factory=dict)  # transaction id -> category
+    verdicts: dict[str, str] = field(default_factory=dict)  # merchant -> user's answer
 
     def load(self) -> None:
         conn = db.connect(self.path)
@@ -39,6 +40,7 @@ class Ledger:
         pairs = transfers.find_transfers(self.transactions)
         transfers.apply_transfer_groups(self.transactions, pairs)
 
+        self.verdicts = db.get_verdicts(conn)
         self.series = recurring.detect(self.transactions)
         assigned = cat.categorize_all(self.transactions)
         self.categories = {
@@ -47,6 +49,13 @@ class Ledger:
         conn.close()
 
     # -- derived views the screens ask for --------------------------------
+
+    def kind_of(self, series: RecurringSeries) -> str:
+        """subscription, bill, habit or unknown — the user's answer wins."""
+        return subscriptions.resolve(series.merchant, self.verdicts)
+
+    def series_by_kind(self, kind: str) -> list[RecurringSeries]:
+        return [s for s in self.series if self.kind_of(s) == kind]
 
     def account_name(self, account_id: str) -> str:
         for account in self.accounts:

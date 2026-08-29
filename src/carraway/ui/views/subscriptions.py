@@ -27,7 +27,20 @@ from ...core.money import total
 from ..data import Ledger
 from ..widgets import SortableItem, StatCard, StatRow
 
-_HEADERS = ["Merchant", "Cadence", "Amount", "Per year", "Next charge", "Seen", "Confidence"]
+_HEADERS = [
+    "Merchant",
+    "Kind",
+    "Cadence",
+    "Amount",
+    "Per year",
+    "Next charge",
+    "Seen",
+    "Confidence",
+]
+
+# Sort order for the Kind column: what you can cancel first, what you have
+# not yet decided about last, since that is the row needing an action.
+_KIND_ORDER = {"subscription": 0, "bill": 1, "habit": 2, "unknown": 3}
 
 
 def _cadence_label(series: RecurringSeries) -> str:
@@ -55,10 +68,10 @@ class SubscriptionsView(QWidget):
         layout.addWidget(title)
         layout.addWidget(subtitle)
 
-        self.count_card = StatCard("Active", "0")
+        self.count_card = StatCard("Subscriptions", "0")
         self.monthly_card = StatCard("Per month", "-")
         self.yearly_card = StatCard("Per year", "-", tone="Accent")
-        self.stale_card = StatCard("Look cancelled", "0")
+        self.stale_card = StatCard("Unclassified", "0")
         layout.addWidget(
             StatRow([self.count_card, self.monthly_card, self.yearly_card, self.stale_card])
         )
@@ -68,7 +81,7 @@ class SubscriptionsView(QWidget):
         # Headers must sit over their columns: text left, numbers right.
         for column in range(len(_HEADERS)):
             align = (
-                Qt.AlignmentFlag.AlignLeft if column < 2 else Qt.AlignmentFlag.AlignRight
+                Qt.AlignmentFlag.AlignLeft if column < 3 else Qt.AlignmentFlag.AlignRight
             ) | Qt.AlignmentFlag.AlignVCenter
             self.table.horizontalHeaderItem(column).setTextAlignment(align)
         self.table.verticalHeader().setVisible(False)
@@ -94,10 +107,16 @@ class SubscriptionsView(QWidget):
         stale = self.ledger.stale_series
         today = date.today()
 
-        self.count_card.set_value(str(len(active)))
-        self.monthly_card.set_value(self.ledger.monthly_cost(active).format())
-        self.yearly_card.set_value(total([s.annualised for s in active]).format())
-        self.stale_card.set_value(str(len(stale)))
+        # The headline is what the user could actually cancel. Rent and
+        # utilities recur just as reliably and belong in a different column of
+        # someone's thinking, so they are counted separately.
+        cancellable = [s for s in active if self.ledger.kind_of(s) == "subscription"]
+        unknown = [s for s in self.ledger.series if self.ledger.kind_of(s) == "unknown"]
+
+        self.count_card.set_value(str(len(cancellable)))
+        self.monthly_card.set_value(self.ledger.monthly_cost(cancellable).format())
+        self.yearly_card.set_value(total([s.annualised for s in cancellable]).format())
+        self.stale_card.set_value(str(len(unknown)))
 
         # Sorting has to be off while filling, or rows reorder underneath the
         # loop and land in the wrong places.
@@ -108,8 +127,10 @@ class SubscriptionsView(QWidget):
         for row, item in enumerate(series):
             gone = id(item) in stale_ids
             name = item.merchant + ("  (stopped?)" if gone else "")
+            kind = self.ledger.kind_of(item)
             cells = [
                 SortableItem(name, item.merchant.lower()),
+                SortableItem(kind, _KIND_ORDER.get(kind, 9)),
                 SortableItem(_cadence_label(item), item.annualised.minor),
                 SortableItem(abs(item.typical_amount).format(), abs(item.typical_amount.minor)),
                 SortableItem(item.annualised.format(), item.annualised.minor),
@@ -121,7 +142,7 @@ class SubscriptionsView(QWidget):
                 SortableItem(f"{item.confidence:.0%}", item.confidence),
             ]
             for column, cell in enumerate(cells):
-                if column >= 2:
+                if column >= 3:
                     cell.setTextAlignment(
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                     )
@@ -130,10 +151,12 @@ class SubscriptionsView(QWidget):
                 self.table.setItem(row, column, cell)
 
         self.table.setSortingEnabled(True)
-        self.table.sortItems(3, Qt.SortOrder.DescendingOrder)
+        self.table.sortItems(4, Qt.SortOrder.DescendingOrder)
 
         varies = sum(1 for s in series if s.amount_varies)
         notes = [f"{len(series)} series detected as of {today.isoformat()}"]
+        if unknown:
+            notes.append(f"{len(unknown)} unclassified — run 'carraway review'")
         if varies:
             notes.append(f"~ marks {varies} whose amount changes between charges")
         if stale:

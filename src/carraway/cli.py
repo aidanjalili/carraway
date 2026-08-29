@@ -14,7 +14,7 @@ from datetime import date
 from pathlib import Path
 
 from . import __version__
-from .analysis import recurring
+from .analysis import recurring, subscriptions
 from .core import db
 from .core.models import Account, AccountType
 from .core.money import Money, total
@@ -248,6 +248,140 @@ def cmd_categorize(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_review(args: argparse.Namespace) -> int:
+    """Ask the user about recurring merchants the catalog cannot place.
+
+    Deliberately not a wall of questions. Candidates are ordered by what they
+    cost per year, so the first answer is always the most valuable one, and a
+    session stops after `--limit`. Every answer is stored, so nothing is ever
+    asked twice — that is what makes asking aggressively acceptable.
+    """
+    from .analysis import recurring
+
+    conn = db.connect(args.database)
+    transactions = db.list_transactions(conn)
+    if not transactions:
+        print("No transactions yet.")
+        return 0
+
+    verdicts = db.get_verdicts(conn)
+
+    # Cast wider than the normal view on purpose: the whole point is to not
+    # miss anything, and a series the detector is only 40% sure about is
+    # exactly the kind a person can settle in one second.
+    threshold = args.min_confidence if args.include_uncertain else recurring.MIN_CONFIDENCE
+    series = recurring.detect(transactions, min_confidence=threshold)
+
+    pending = [
+        s
+        for s in series
+        if subscriptions.resolve(s.merchant, verdicts) == subscriptions.UNKNOWN
+        and abs(s.annualised.minor) >= args.min_value * 100
+    ]
+    pending.sort(key=lambda s: -abs(s.annualised.minor))
+
+    known = len(series) - len(pending)
+    if not pending:
+        print(f"Nothing to review. All {len(series)} recurring series are classified.")
+        return 0
+
+    if not sys.stdin.isatty():
+        print(f"{len(pending)} merchant(s) need a decision. Run this in a terminal to answer:")
+        for s in pending[: args.limit]:
+            print(
+                f"  {s.merchant} - {abs(s.typical_amount).format()} {s.cadence}, "
+                f"{s.annualised.format()}/yr"
+            )
+        return 0
+
+    batch = pending[: args.limit]
+    print(f"{len(series)} recurring series - {known} already classified, {len(pending)} unknown.")
+    print(f"Reviewing the {len(batch)} most expensive.\n")
+    print("  [s] subscription   [b] bill   [h] habit / one-off   [enter] skip   [q] quit\n")
+
+    answered = 0
+    for index, item in enumerate(batch, start=1):
+        print(f"({index}/{len(batch)}) {item.merchant}")
+        print(
+            f"    {abs(item.typical_amount).format()} {item.cadence}"
+            f"  ·  {item.annualised.format()}/yr"
+            f"  ·  seen {item.occurrences}x since {item.first_seen}"
+            f"  ·  {item.confidence:.0%} confident"
+        )
+        try:
+            answer = input("    > ").strip().lower()
+        except EOFError:
+            break
+        if answer in ("q", "quit"):
+            break
+        kind = {
+            "s": subscriptions.SUBSCRIPTION,
+            "b": subscriptions.BILL,
+            "h": subscriptions.HABIT,
+        }.get(answer[:1] if answer else "")
+        if kind is None:
+            print("    skipped\n")
+            continue
+        db.set_verdict(conn, item.merchant, kind)
+        answered += 1
+        print(f"    saved as {kind}\n")
+
+    remaining = len(pending) - answered
+    print(f"Saved {answered} answer(s).")
+    if remaining > 0:
+        print(f"{remaining} still unclassified - run 'carraway review' again to continue.")
+    return 0
+
+
+def cmd_subscriptions(args: argparse.Namespace) -> int:
+    """The cull list: recurring things that are actually cancellable."""
+    from .analysis import recurring
+
+    conn = db.connect(args.database)
+    transactions = db.list_transactions(conn)
+    if not transactions:
+        print("No transactions yet.")
+        return 0
+
+    verdicts = db.get_verdicts(conn)
+    series = recurring.detect(transactions)
+    grouped: dict[str, list] = {}
+    for item in series:
+        grouped.setdefault(subscriptions.resolve(item.merchant, verdicts), []).append(item)
+
+    order = [
+        (subscriptions.SUBSCRIPTION, "Subscriptions", "cancellable"),
+        (subscriptions.BILL, "Bills", "recurring, but not optional"),
+        (subscriptions.HABIT, "Habits", "regular spending, not a commitment"),
+        (subscriptions.UNKNOWN, "Unclassified", "run 'carraway review' to sort these"),
+    ]
+    for kind, heading, note in order:
+        items = grouped.get(kind, [])
+        if not items:
+            continue
+        items.sort(key=lambda s: -abs(s.annualised.minor))
+        yearly = total([s.annualised for s in items])
+        print(f"\n{heading} - {yearly.format()}/yr  ({note})")
+        print("-" * 66)
+        for item in items:
+            flag = "*" if item.amount_varies else " "
+            print(
+                f"  {item.merchant[:30]:<32}{abs(item.typical_amount).format():>10}"
+                f" {item.cadence:<10}{flag} {item.annualised.format():>11}/yr"
+            )
+
+    cancellable = grouped.get(subscriptions.SUBSCRIPTION, [])
+    if cancellable:
+        print(
+            f"\n{len(cancellable)} cancellable subscription(s) costing "
+            f"{total([s.annualised for s in cancellable]).format()}/yr."
+        )
+    unknown = grouped.get(subscriptions.UNKNOWN, [])
+    if unknown:
+        print(f"{len(unknown)} unclassified - 'carraway review' will ask about them.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="carraway",
@@ -315,6 +449,34 @@ def build_parser() -> argparse.ArgumentParser:
         "--apply", action="store_true", help="save the categories (default is a dry run)"
     )
     p_categorize.set_defaults(func=cmd_categorize)
+
+    p_subs = sub.add_parser(
+        "subscriptions", help="recurring things split into subscriptions, bills and habits"
+    )
+    p_subs.set_defaults(func=cmd_subscriptions)
+
+    p_review = sub.add_parser("review", help="answer what unrecognised recurring merchants are")
+    p_review.add_argument(
+        "--limit", type=int, default=10, help="how many to ask about (default: %(default)s)"
+    )
+    p_review.add_argument(
+        "--include-uncertain",
+        action="store_true",
+        help="also ask about weaker patterns, so nothing is missed",
+    )
+    p_review.add_argument(
+        "--min-confidence",
+        type=float,
+        default=0.35,
+        help="threshold when --include-uncertain is set (default: %(default)s)",
+    )
+    p_review.add_argument(
+        "--min-value",
+        type=float,
+        default=12.0,
+        help="skip anything costing less than this per year (default: %(default)s)",
+    )
+    p_review.set_defaults(func=cmd_review)
 
     p_summary = sub.add_parser("summary", help="show totals across imported data")
     p_summary.add_argument("--account", help="limit to one account id")
