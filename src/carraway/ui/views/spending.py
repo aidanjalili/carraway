@@ -12,6 +12,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QHeaderView,
@@ -86,6 +87,23 @@ class SpendingView(QWidget):
         self.chart_buttons.idClicked.connect(self._show_chart)
         layout.addLayout(controls)
 
+        # The same question the Overview asks, on the screen where the
+        # breakdown is actually studied. One setting behind both, so answering
+        # it in either place answers it everywhere.
+        guess_row = QHBoxLayout()
+        guess_row.addStretch(1)
+        self.include_guesses = QCheckBox("Include guessed categories")
+        self.include_guesses.setChecked(bool(ledger.setting("include_guesses_in_totals")))
+        self.include_guesses.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.include_guesses.setToolTip(
+            "Guessed categories are marked with ? in Transactions. Untick to see "
+            "only what the rules matched; guessed rows fall back to Uncategorized "
+            "rather than disappearing."
+        )
+        self.include_guesses.toggled.connect(self._toggle_guesses)
+        guess_row.addWidget(self.include_guesses)
+        layout.addLayout(guess_row)
+
         self.total_card = StatCard("Spent this period", "-")
         self.average_card = StatCard("Average per period", "-")
         self.biggest_card = StatCard("Biggest category", "-")
@@ -131,11 +149,21 @@ class SpendingView(QWidget):
 
     # -- data ------------------------------------------------------------
 
+    def _toggle_guesses(self, included: bool) -> None:
+        self.ledger.save_setting("include_guesses_in_totals", included)
+        self._reload()
+
     def _reload(self) -> None:
+        show_guesses = bool(self.ledger.setting("include_guesses_in_totals"))
+        # Hidden when guessing is off: a control that cannot change anything is
+        # worse than no control.
+        self.include_guesses.setVisible(bool(self.ledger.setting("auto_categorize")))
+        self.include_guesses.blockSignals(True)
+        self.include_guesses.setChecked(show_guesses)
+        self.include_guesses.blockSignals(False)
+
         period = self.granularity.currentText()
-        self.buckets = self.ledger.spending_buckets(
-            period, include_guessed=bool(self.ledger.setting("include_guesses_in_totals"))
-        )
+        self.buckets = self.ledger.spending_buckets(period, include_guessed=show_guesses)
         # Land on the most recent period: that is what someone opening this
         # screen wants, not the oldest month in their history.
         self.index = len(self.buckets) - 1 if self.buckets else 0

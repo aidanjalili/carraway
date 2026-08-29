@@ -283,3 +283,58 @@ def test_american_airlines_without_swallowing_every_american():
     assert categorize(make_tx("AMERICAN 0012345678 FORT WORTH TX", "-412.30")) == "Travel"
     # "AMERICAN" on its own must not become a travel rule.
     assert categorize(make_tx("AMERICAN FAMILY DINER", "-18.00")) != "Travel"
+
+
+def test_the_subscription_catalogue_also_categorises():
+    # The two lists were maintained separately, so a merchant recognised as a
+    # subscription could still come back Uncategorized — DigitalOcean was known
+    # to be one and had no category at all.
+    assert categorize(make_tx("DIGITALOCEAN.COM", "-12.00")) == "Subscriptions"
+    assert categorize(make_tx("ANYTIME FIT ABC CLUB FEES PPD", "-29.99")) == "Subscriptions"
+
+
+def test_chains_the_list_had_simply_missed():
+    for description, expected in [
+        ("DOMINO'S 2002 414-443-6402 WI", "Dining"),
+        ("SUBWAY 4141 MADISON WI", "Dining"),
+        ("WAL-MART MADISON WI", "Shopping"),
+        ("BURTON DINING HALL NORTHFIELD", "Dining"),
+    ]:
+        assert categorize(make_tx(description, "-12.00")) == expected, description
+
+
+def test_a_transit_subway_is_not_a_sandwich():
+    # "SUBWAY" is a sandwich shop and "SUBWAY STATION" is transit; the more
+    # specific phrase has to win.
+    assert categorize(make_tx("SUBWAY STATION NYC", "-2.90")) == "Transport"
+
+
+def test_user_rules_outrank_everything_shipped():
+    from carraway.analysis.categorize import rules_from
+
+    stored = [{"pattern": "TRADER JOES", "category": "Dining"}]
+    # Trader Joe's is a built-in grocery rule; a user saying otherwise wins,
+    # because they wrote the rule while looking at the row.
+    assert categorize(make_tx("TRADER JOES #182", "-42.00")) == "Groceries"
+    assert categorize(make_tx("TRADER JOES #182", "-42.00"), rules_from(stored)) == "Dining"
+
+
+def test_user_rules_match_the_raw_description():
+    from carraway.analysis.categorize import rules_from
+
+    # Matched against what the user can actually see in the transaction list,
+    # including the reference numbers normalisation strips out.
+    stored = [{"pattern": "PPD ID: 4760039224", "category": "Fees"}]
+    tx = make_tx("CHASE CREDIT CRD AUTOPAY PPD ID: 4760039224", "-188.45")
+    assert categorize(tx, rules_from(stored)) == "Fees"
+
+
+def test_hidden_categories_are_dropped_but_added_ones_appear():
+    from carraway.analysis.categorize import available_categories
+
+    names = available_categories(["Hobbies"], {"Pets"})
+    assert "Hobbies" in names
+    assert "Pets" not in names
+    # Uncategorized must survive whatever the user does, or rows have nowhere
+    # to fall back to.
+    assert "Uncategorized" in names

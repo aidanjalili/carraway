@@ -367,3 +367,57 @@ def looks_like_venmo(source: Path | str) -> bool:
     except (ImportError_, OSError, UnicodeDecodeError, csv.Error):
         return False
     return True
+
+
+def statement_balance(source: Path | str | io.StringIO) -> tuple[date, Money] | None:
+    """The closing balance a statement reports, and the day it applies to.
+
+    Venmo brackets its transactions with an opening and a closing balance row,
+    neither of which carries a transaction id. That closing figure is the only
+    place a Venmo balance appears at all — there is no API to ask — so it is
+    what makes a Venmo account countable towards net worth.
+
+    Returns None when the file carries no closing figure, which is not an
+    error: the transactions are still perfectly good.
+    """
+    try:
+        text = _read(source)
+        rows = list(csv.reader(io.StringIO(text)))
+        header_index = _find_header(rows)
+    except (ImportError_, OSError, UnicodeDecodeError, csv.Error):
+        return None
+
+    columns = _columns(rows[header_index])
+    ending = columns.get("ending balance")
+    if ending is None:
+        return None
+
+    closing: Money | None = None
+    for row in rows[header_index + 1 :]:
+        raw = _cell(row, ending).strip()
+        if not raw:
+            continue
+        try:
+            closing = parse_venmo_amount(raw, "USD")
+        except (ValueError, TypeError):
+            continue
+
+    if closing is None:
+        return None
+
+    # Dated to the last transaction in the file rather than today: a statement
+    # downloaded months later still describes the balance at its own period
+    # end, and dating it now would put a stale figure at the front of the
+    # net worth history.
+    latest = date.min
+    datetime_column = columns.get(_DATETIME_HEADER)
+    if datetime_column is not None:
+        for row in rows[header_index + 1 :]:
+            stamp = _cell(row, datetime_column).strip()
+            if not stamp:
+                continue
+            try:
+                latest = max(latest, parse_venmo_datetime(stamp))
+            except ImportError_:
+                continue
+    return (latest if latest != date.min else date.today()), abs(closing)

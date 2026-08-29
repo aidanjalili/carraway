@@ -39,6 +39,8 @@ class Ledger:
     guesses: dict = field(default_factory=dict)  # transaction id -> Guess
     dismissed: list = field(default_factory=list)
     overrides: dict = field(default_factory=dict)
+    user_rules: list = field(default_factory=list)
+    categories_available: tuple = ()
     decided: dict[str, date] = field(default_factory=dict)  # merchant -> when answered
 
     def load(self) -> None:
@@ -56,6 +58,9 @@ class Ledger:
         self.balances = db.latest_balances(conn)
         self.manual = db.list_manual_subscriptions(conn)
         self.overrides = db.get_series_overrides(conn)
+        self.user_rules = db.list_user_rules(conn)
+        added, hidden = db.category_settings(conn)
+        self.categories_available = cat.available_categories(added, hidden)
         self.verdicts = db.get_verdicts(conn)
         self.decided = db.get_verdict_dates(conn)
         # Inflows included so recurring income and person-to-person
@@ -69,7 +74,9 @@ class Ledger:
         self.verdicts = {**subscriptions.manual_kinds(self.manual), **self.verdicts}
         self._split_dismissed()
         self.price_changes = price_changes.find_price_changes(self.transactions, series=self.series)
-        assigned = cat.categorize_all(self.transactions)
+        # The user's rules outrank everything shipped, since they were
+        # written while looking at the row that was wrong.
+        assigned = cat.categorize_all(self.transactions, cat.rules_from(self.user_rules))
         self.categories = {
             tx.id: name for tx, name in zip(self.transactions, assigned, strict=True)
         }
@@ -127,6 +134,37 @@ class Ledger:
     def guess_reason(self, transaction_id: str) -> str:
         found = self.guesses.get(transaction_id)
         return found.reason if found else ""
+
+    def add_rule(self, pattern: str, category: str) -> None:
+        conn = db.connect(self.path)
+        db.add_user_rule(conn, pattern, category)
+        conn.close()
+        self.load()
+
+    def remove_rule(self, rule_id: str) -> None:
+        conn = db.connect(self.path)
+        db.remove_user_rule(conn, rule_id)
+        conn.close()
+        self.load()
+
+    def add_category(self, name: str) -> None:
+        conn = db.connect(self.path)
+        db.add_user_category(conn, name)
+        conn.close()
+        self.load()
+
+    def set_category_hidden(self, name: str, hidden: bool) -> None:
+        conn = db.connect(self.path)
+        db.hide_category(conn, name, hidden)
+        conn.close()
+        self.load()
+
+    def rule_preview(self, pattern: str) -> int:
+        """How many transactions a rule would match, before it is saved."""
+        needle = pattern.strip().upper()
+        if not needle:
+            return 0
+        return sum(1 for t in self.transactions if needle in t.description.upper())
 
     def setting(self, key: str):
         return self.settings.get(key, db.DEFAULT_SETTINGS.get(key))

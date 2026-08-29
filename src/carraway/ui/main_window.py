@@ -136,7 +136,7 @@ class MainWindow(QMainWindow):
         from ..core.models import Account, AccountType
         from ..importers.csv_importer import ImportError_, import_csv
         from ..importers.ofx_importer import import_ofx
-        from ..importers.venmo import import_venmo, looks_like_venmo
+        from ..importers.venmo import import_venmo, looks_like_venmo, statement_balance
 
         chosen, _ = QFileDialog.getOpenFileNames(
             self,
@@ -192,6 +192,15 @@ class MainWindow(QMainWindow):
             except ImportError_ as exc:
                 lines.append(f"{path.name}: {exc}")
                 continue
+
+            if reader is import_venmo:
+                # The statement's own closing balance is the only place a
+                # payment-app balance appears, and recording it is what makes
+                # the account countable towards net worth.
+                closing = statement_balance(path)
+                if closing is not None:
+                    observed, amount = closing
+                    db.record_balance(conn, account_id, amount, observed)
 
             inserted, skipped = db.insert_transactions(conn, transactions)
             total_new += inserted

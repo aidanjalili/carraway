@@ -671,6 +671,15 @@ BUILTIN_RULES: list[Rule] = [
     # generalises. Genuinely local merchants stay out: they belong in a user's
     # own rules, and baking one town's businesses into the defaults would make
     # the ruleset worse for everyone else.
+    # Ahead of the dining rules, since "SUBWAY STATION" is transit and plain
+    # "SUBWAY" is a sandwich shop.
+    *_many(
+        TRANSPORT,
+        "SUBWAY STATION",
+        "METRO STATION",
+        "TRAIN STATION",
+        priority=PRIORITY_USER,
+    ),
     *_many(
         TRANSPORT,
         "KWIK TRIP",
@@ -749,6 +758,28 @@ BUILTIN_RULES: list[Rule] = [
         "JERSEY MIKE",
         "CANTEEN",
         "SNACK SODA",
+        # Missing outright, and all obvious from a real ledger.
+        "DOMINO",
+        # No trailing space: normalisation strips the store number, so the
+        # merchant arrives as bare "SUBWAY".
+        "SUBWAY",
+        "PAPA JOHN",
+        "PIZZA HUT",
+        "LITTLE CAESAR",
+        "CHIPOTLE",
+        "PANERA",
+        "WENDY",
+        "MCDONALD",
+        "BURGER KING",
+        "TACO BELL",
+        "KFC",
+        "CHICK-FIL-A",
+        "DUNKIN",
+        "CARIBOU COFFEE",
+        "PEETS",
+        "DINING HALL",
+        "CAFETERIA",
+        "FOOD HALL",
     ),
     *_many(
         DINING,
@@ -766,6 +797,16 @@ BUILTIN_RULES: list[Rule] = [
     *_many(
         SHOPPING,
         "MENARDS",
+        "WAL-MART",
+        "WALGREENS",
+        "CVS",
+        "DOLLAR GENERAL",
+        "DOLLAR TREE",
+        "IKEA",
+        "HOME DEPOT",
+        "LOWES",
+        "REI ",
+        "DICKS SPORTING",
         "ACE HARDWARE",
         "FLEET FARM",
         "TRACTOR SUPPLY",
@@ -838,6 +879,28 @@ BUILTIN_RULES: list[Rule] = [
 ]
 
 
+def _catalogue_rules() -> list[Rule]:
+    """Category rules derived from the subscription catalogue.
+
+    Those two lists were maintained separately, so a merchant recognised as a
+    subscription could still come back Uncategorized — DigitalOcean was known
+    to be a subscription and had no category at all. Anything the catalogue
+    names is categorised from the same list, which also means adding a service
+    there fixes both at once.
+
+    Priority sits between the generic keywords and the named merchants: a
+    specific built-in rule should still win, but a catalogue entry should beat
+    a bare keyword match.
+    """
+    from .subscriptions import bill_names, subscription_names
+
+    rules = [
+        Rule(name, SUBSCRIPTIONS, priority=PRIORITY_BUILTIN - 10) for name in subscription_names()
+    ]
+    rules += [Rule(name, UTILITIES, priority=PRIORITY_BUILTIN - 20) for name in bill_names()]
+    return rules
+
+
 def _ordered(rules: Sequence[Rule]) -> list[Rule]:
     """Sort rules so the first match is the right one.
 
@@ -849,7 +912,7 @@ def _ordered(rules: Sequence[Rule]) -> list[Rule]:
     return sorted(rules, key=lambda r: (-r.priority, -len(r.pattern)))
 
 
-_BUILTIN_ORDERED = _ordered(BUILTIN_RULES)
+_BUILTIN_ORDERED = _ordered(BUILTIN_RULES + _catalogue_rules())
 
 
 def _resolve(rules: Sequence[Rule] | None, include_builtins: bool) -> list[Rule]:
@@ -1015,3 +1078,37 @@ def suggest_rules(
     ]
     suggestions.sort(key=lambda s: (-s.count, -abs(s.total.minor), s.merchant))
     return suggestions[:limit]
+
+
+def rules_from(stored: list[dict[str, str]]) -> list[Rule]:
+    """Turn the user's saved rules into Rules that outrank everything shipped.
+
+    Matched against the raw description rather than the normalised merchant,
+    because that is what the user is looking at when they write the rule: if
+    they can see "PPD ID: 4760039224" on the row, a rule containing it should
+    work.
+    """
+    return [
+        Rule(
+            item["pattern"],
+            item["category"],
+            priority=PRIORITY_USER + 100,
+            on="description",
+        )
+        for item in stored
+        if item.get("pattern") and item.get("category")
+    ]
+
+
+def available_categories(added: list[str], hidden: set[str]) -> tuple[str, ...]:
+    """The category list to offer, with the user's edits applied.
+
+    Hidden built-ins are dropped from what is offered but never rewritten on
+    transactions already filed under them, which would silently move money
+    between categories.
+    """
+    names = [name for name in CATEGORIES if name not in hidden]
+    for name in added:
+        if name not in names:
+            names.insert(max(len(names) - 3, 0), name)
+    return tuple(names)

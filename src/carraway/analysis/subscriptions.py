@@ -617,3 +617,13 @@ def apply_overrides(
             changes["confidence"] = 1.0
         out.append(replace(item, **changes) if changes else item)
     return out
+
+
+def subscription_names() -> tuple[str, ...]:
+    """Every service the catalogue recognises, for reuse as category rules."""
+    return _SUBSCRIPTIONS
+
+
+def bill_names() -> tuple[str, ...]:
+    """Every biller the catalogue recognises."""
+    return _BILLS

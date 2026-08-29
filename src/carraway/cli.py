@@ -55,7 +55,7 @@ def cmd_accounts(args: argparse.Namespace) -> int:
 def cmd_import(args: argparse.Namespace) -> int:
     from .importers.csv_importer import ImportError_, import_csv
     from .importers.ofx_importer import import_ofx
-    from .importers.venmo import import_venmo, looks_like_venmo
+    from .importers.venmo import import_venmo, looks_like_venmo, statement_balance
 
     conn = db.connect(args.database)
     accounts = {a.id: a for a in db.list_accounts(conn)}
@@ -116,6 +116,16 @@ def cmd_import(args: argparse.Namespace) -> int:
     except ImportError_ as exc:
         print(f"Could not read {args.file}: {exc}", file=sys.stderr)
         return 1
+
+    # A payment-app statement carries its own closing balance, which is the
+    # only place that balance appears — there is no account to sync. Recording
+    # it is what lets the account count towards net worth.
+    if reader is import_venmo:
+        closing = statement_balance(args.file)
+        if closing is not None:
+            observed, amount = closing
+            db.record_balance(conn, args.account, amount, observed)
+            print(f"Recorded a balance of {amount.format()} as of {observed}.")
 
     inserted, skipped = db.insert_transactions(conn, transactions)
     print(f"Imported {inserted} transaction(s) from {Path(args.file).name}")

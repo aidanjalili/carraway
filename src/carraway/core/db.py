@@ -148,6 +148,22 @@ MIGRATIONS: list[str] = [
         updated_on    TEXT NOT NULL
     );
     """,
+    # v10 - the user's own categorisation rules, and their own categories. A
+    # shipped list can never cover a local business or somebody's idea of what
+    # a category is, and both were previously only editable in source.
+    """
+    CREATE TABLE user_rules (
+        id       TEXT PRIMARY KEY,
+        pattern  TEXT NOT NULL,          -- matched against the description
+        category TEXT NOT NULL,
+        added_on TEXT NOT NULL
+    );
+
+    CREATE TABLE user_categories (
+        name    TEXT PRIMARY KEY,
+        hidden  INTEGER NOT NULL DEFAULT 0   -- a built-in the user turned off
+    );
+    """,
 ]
 
 
@@ -574,6 +590,83 @@ def clear_series_override(conn: sqlite3.Connection, merchant: str) -> int:
     cur = conn.execute("DELETE FROM series_overrides WHERE merchant = ?", (merchant.upper(),))
     conn.commit()
     return cur.rowcount
+
+
+# -- the user's own rules and categories ----------------------------------
+
+
+def add_user_rule(conn: sqlite3.Connection, pattern: str, category: str) -> str:
+    """Store a rule, returning the id. An identical one is never stored twice.
+
+    Two rules with the same pattern and category behave as one, so a duplicate
+    is only ever clutter in the list — and a double-fired button click should
+    not produce it.
+    """
+    import uuid
+
+    cleaned = pattern.strip()
+    existing = conn.execute(
+        "SELECT id FROM user_rules WHERE pattern = ? AND category = ?",
+        (cleaned, category),
+    ).fetchone()
+    if existing:
+        return str(existing["id"])
+
+    rule_id = uuid.uuid4().hex[:8]
+    conn.execute(
+        "INSERT INTO user_rules (id, pattern, category, added_on) VALUES (?, ?, ?, ?)",
+        (rule_id, cleaned, category, date.today().isoformat()),
+    )
+    conn.commit()
+    return rule_id
+
+
+def list_user_rules(conn: sqlite3.Connection) -> list[dict[str, str]]:
+    return [
+        {"id": r["id"], "pattern": r["pattern"], "category": r["category"]}
+        for r in conn.execute("SELECT * FROM user_rules ORDER BY added_on, id")
+    ]
+
+
+def remove_user_rule(conn: sqlite3.Connection, rule_id: str) -> int:
+    cur = conn.execute("DELETE FROM user_rules WHERE id = ?", (rule_id,))
+    conn.commit()
+    return cur.rowcount
+
+
+def add_user_category(conn: sqlite3.Connection, name: str) -> None:
+    conn.execute(
+        "INSERT INTO user_categories (name, hidden) VALUES (?, 0) "
+        "ON CONFLICT(name) DO UPDATE SET hidden = 0",
+        (name.strip(),),
+    )
+    conn.commit()
+
+
+def hide_category(conn: sqlite3.Connection, name: str, hidden: bool = True) -> None:
+    """Hide a category rather than delete it.
+
+    Transactions may already be filed under it, and deleting the name would
+    orphan them. Hidden ones stop being offered for new work.
+    """
+    conn.execute(
+        "INSERT INTO user_categories (name, hidden) VALUES (?, ?) "
+        "ON CONFLICT(name) DO UPDATE SET hidden = excluded.hidden",
+        (name.strip(), int(hidden)),
+    )
+    conn.commit()
+
+
+def category_settings(conn: sqlite3.Connection) -> tuple[list[str], set[str]]:
+    """(categories the user added, names they have hidden)."""
+    added: list[str] = []
+    hidden: set[str] = set()
+    for row in conn.execute("SELECT name, hidden FROM user_categories"):
+        if row["hidden"]:
+            hidden.add(row["name"])
+        else:
+            added.append(row["name"])
+    return added, hidden
 
 
 def add_todo(

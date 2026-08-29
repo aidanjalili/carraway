@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -52,6 +53,8 @@ class SettingsView(QWidget):
         layout.setSpacing(16)
 
         layout.addWidget(self._categorise_card())
+        layout.addWidget(self._rules_card())
+        layout.addWidget(self._category_list_card())
         layout.addWidget(self._accounts_card())
         layout.addWidget(self._defaults_card())
         layout.addWidget(self._data_card())
@@ -116,6 +119,180 @@ class SettingsView(QWidget):
             self.auto_summary.setText(f"{uncategorised:,} transactions are uncategorised.")
             return
         self.auto_summary.setText(f"{len(self.ledger.guesses):,} categories are currently guesses.")
+
+    def _rules_card(self) -> Card:
+        card = Card()
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(8)
+
+        heading = QLabel("Your own rules")
+        heading.setObjectName("SectionHeading")
+        layout.addWidget(heading)
+
+        blurb = QLabel(
+            "If a description contains some text, file it under a category. "
+            "Matched against the description exactly as it appears in the "
+            "Transactions list, and your rules beat every built-in one."
+        )
+        blurb.setObjectName("Muted")
+        blurb.setWordWrap(True)
+        layout.addWidget(blurb)
+
+        entry = QHBoxLayout()
+        entry.setSpacing(8)
+        entry.addWidget(QLabel("If it contains"))
+        self.rule_pattern = QLineEdit()
+        self.rule_pattern.setPlaceholderText("MILLER & SONS")
+        self.rule_pattern.textChanged.connect(self._preview_rule)
+        entry.addWidget(self.rule_pattern, stretch=1)
+
+        entry.addWidget(QLabel("file as"))
+        self.rule_category = QComboBox()
+        self.rule_category.addItems(list(self.ledger.categories_available))
+        entry.addWidget(self.rule_category)
+
+        add = QPushButton("Add")
+        add.setCursor(Qt.CursorShape.PointingHandCursor)
+        add.clicked.connect(self._add_rule)
+        entry.addWidget(add)
+        layout.addLayout(entry)
+
+        self.rule_preview = QLabel("")
+        self.rule_preview.setObjectName("Muted")
+        layout.addWidget(self.rule_preview)
+
+        self.rules_box = QVBoxLayout()
+        self.rules_box.setSpacing(4)
+        layout.addLayout(self.rules_box)
+        self._rebuild_rules()
+        return card
+
+    def _preview_rule(self, text: str) -> None:
+        """Say how many rows a rule would catch before it is saved."""
+        count = self.ledger.rule_preview(text)
+        self.rule_preview.setText(
+            "" if not text.strip() else f"Would match {count:,} transaction(s)."
+        )
+
+    def _add_rule(self) -> None:
+        pattern = self.rule_pattern.text().strip()
+        if not pattern:
+            return
+        self.ledger.add_rule(pattern, self.rule_category.currentText())
+        self.rule_pattern.clear()
+        self._rebuild_rules()
+        self._refresh_window()
+
+    def _rebuild_rules(self) -> None:
+        while self.rules_box.count():
+            item = self.rules_box.takeAt(0)
+            if item.widget():
+                item.widget().setParent(None)
+            elif item.layout():
+                while item.layout().count():
+                    inner = item.layout().takeAt(0)
+                    if inner.widget():
+                        inner.widget().setParent(None)
+
+        if not self.ledger.user_rules:
+            empty = QLabel("No rules yet.")
+            empty.setObjectName("Muted")
+            self.rules_box.addWidget(empty)
+            return
+
+        for rule in self.ledger.user_rules:
+            row = QHBoxLayout()
+            label = QLabel(f'"{rule["pattern"]}"  →  {rule["category"]}')
+            row.addWidget(label)
+            row.addStretch(1)
+            count = QLabel(f"{self.ledger.rule_preview(rule['pattern']):,} matches")
+            count.setObjectName("Muted")
+            row.addWidget(count)
+            drop = QPushButton("Remove")
+            drop.setCursor(Qt.CursorShape.PointingHandCursor)
+            drop.clicked.connect(lambda _=False, r=rule["id"]: self._remove_rule(r))
+            row.addWidget(drop)
+            self.rules_box.addLayout(row)
+
+    def _remove_rule(self, rule_id: str) -> None:
+        self.ledger.remove_rule(rule_id)
+        self._rebuild_rules()
+        self._refresh_window()
+
+    def _category_list_card(self) -> Card:
+        card = Card()
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(8)
+
+        heading = QLabel("Categories")
+        heading.setObjectName("SectionHeading")
+        layout.addWidget(heading)
+
+        blurb = QLabel(
+            "Add your own, or untick one you never use. Unticking hides a "
+            "category from the lists; anything already filed under it keeps "
+            "its category rather than being moved somewhere else."
+        )
+        blurb.setObjectName("Muted")
+        blurb.setWordWrap(True)
+        layout.addWidget(blurb)
+
+        entry = QHBoxLayout()
+        self.new_category = QLineEdit()
+        self.new_category.setPlaceholderText("Hobbies")
+        self.new_category.returnPressed.connect(self._add_category)
+        entry.addWidget(self.new_category, stretch=1)
+        add = QPushButton("Add category")
+        add.setCursor(Qt.CursorShape.PointingHandCursor)
+        add.clicked.connect(self._add_category)
+        entry.addWidget(add)
+        layout.addLayout(entry)
+
+        self.category_box = QVBoxLayout()
+        self.category_box.setSpacing(2)
+        layout.addLayout(self.category_box)
+        self._rebuild_categories()
+        return card
+
+    def _add_category(self) -> None:
+        name = self.new_category.text().strip()
+        if not name:
+            return
+        self.ledger.add_category(name)
+        self.new_category.clear()
+        self._rebuild_categories()
+        self._refresh_window()
+
+    def _rebuild_categories(self) -> None:
+        from ...analysis.categorize import CATEGORIES
+
+        while self.category_box.count():
+            item = self.category_box.takeAt(0)
+            if item.widget():
+                item.widget().setParent(None)
+
+        available = set(self.ledger.categories_available)
+        counts: dict[str, int] = {}
+        for name in self.ledger.categories.values():
+            counts[name] = counts.get(name, 0) + 1
+
+        for name in sorted(set(CATEGORIES) | available | set(counts)):
+            box = QCheckBox(f"{name}   ({counts.get(name, 0):,})")
+            box.setChecked(name in available)
+            box.setCursor(Qt.CursorShape.PointingHandCursor)
+            box.toggled.connect(lambda shown, n=name: self._toggle_category(n, shown))
+            self.category_box.addWidget(box)
+
+    def _toggle_category(self, name: str, shown: bool) -> None:
+        self.ledger.set_category_hidden(name, not shown)
+        self._refresh_window()
+
+    def _refresh_window(self) -> None:
+        window = self.window()
+        if hasattr(window, "refresh_all"):
+            window.refresh_all()
 
     def _accounts_card(self) -> Card:
         card = Card()
