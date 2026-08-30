@@ -274,7 +274,7 @@ def test_a_manual_refresh_is_refused_until_the_cooldown_passes(tmp_path):
     from datetime import datetime, timedelta
 
     from carraway.core import db as core_db
-    from carraway.ui import sync_worker
+    from carraway.sync import budget as sync_worker
 
     conn = _fresh_db(tmp_path)
     # Nothing has run, so nothing is in the way.
@@ -291,7 +291,7 @@ def test_a_manual_refresh_is_refused_until_the_cooldown_passes(tmp_path):
 
 
 def test_the_daily_budget_stops_patient_clicking(tmp_path):
-    from carraway.ui import sync_worker
+    from carraway.sync import budget as sync_worker
 
     conn = _fresh_db(tmp_path)
     assert sync_worker.requests_left(conn) == sync_worker.DAILY_REQUEST_BUDGET
@@ -305,7 +305,7 @@ def test_the_daily_budget_stops_patient_clicking(tmp_path):
 
 
 def test_a_drained_budget_also_stops_the_automatic_sync(tmp_path):
-    from carraway.ui import sync_worker
+    from carraway.sync import budget as sync_worker
 
     conn = _fresh_db(tmp_path)
     assert sync_worker.is_due(conn)
@@ -316,7 +316,7 @@ def test_a_drained_budget_also_stops_the_automatic_sync(tmp_path):
 
 def test_usage_resets_when_the_day_rolls_over(tmp_path):
     from carraway.core import db as core_db
-    from carraway.ui import sync_worker
+    from carraway.sync import budget as sync_worker
 
     conn = _fresh_db(tmp_path)
     core_db.set_setting(conn, "sync_requests_today", {"date": "2020-01-01", "requests": 99})
@@ -324,7 +324,7 @@ def test_usage_resets_when_the_day_rolls_over(tmp_path):
 
 
 def test_the_budget_leaves_room_for_a_scheduled_sync():
-    from carraway.ui import sync_worker
+    from carraway.sync import budget as sync_worker
 
     # A background timer failing silently on quota is worse than a button that
     # says "not yet", so the budget must sit below the provider's own limit.
