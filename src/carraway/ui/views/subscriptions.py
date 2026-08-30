@@ -29,7 +29,14 @@ from PySide6.QtWidgets import (
 from ...core.models import RecurringSeries
 from ...core.money import Money, total
 from ..data import Ledger
-from ..widgets import FilterStrip, SortableItem, StatCard, StatRow, enable_row_hover
+from ..widgets import (
+    ColumnFilter,
+    FilterStrip,
+    SortableItem,
+    StatCard,
+    StatRow,
+    enable_row_hover,
+)
 from . import add_subscription, edit_series
 from .classify_dialog import ClassifyDialog
 
@@ -139,6 +146,9 @@ class SubscriptionsView(QWidget):
         # click; without it Qt only updates on press.
         # Row-wide hover; Qt's stylesheet :hover only covers one cell.
         self._hover = enable_row_hover(self.table)
+        # Right-click any header to narrow that column to chosen values.
+        self.column_filter = ColumnFilter(self.table)
+        self.column_filter.changed.connect(self._apply_column_filters)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSortingEnabled(True)
@@ -147,6 +157,11 @@ class SubscriptionsView(QWidget):
         for column in range(1, len(_HEADERS)):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         layout.addWidget(self.table, stretch=1)
+
+        self.filter_note = QLabel("")
+        self.filter_note.setObjectName("Muted")
+        self.filter_note.setVisible(False)
+        layout.addWidget(self.filter_note)
 
         self.totals = QLabel("")
         self.totals.setObjectName("SectionHeading")
@@ -167,6 +182,45 @@ class SubscriptionsView(QWidget):
         self.table.doubleClicked.connect(lambda _: self._edit_selected())
 
         self.refresh()
+
+    def _apply_column_filters(self) -> None:
+        """Hide rows a header filter excludes, and mark the filtered headers.
+
+        Rows are hidden rather than removed, so sorting and the running totals
+        keep working on the same table the user was already looking at.
+        """
+        hidden = 0
+        for row in range(self.table.rowCount()):
+            keep = True
+            for column in range(self.table.columnCount()):
+                cell = self.table.item(row, column)
+                if cell and not self.column_filter.accepts(column, cell.text()):
+                    keep = False
+                    break
+            self.table.setRowHidden(row, not keep)
+            hidden += not keep
+
+        for column in range(self.table.columnCount()):
+            header_item = self.table.horizontalHeaderItem(column)
+            if header_item is None:
+                continue
+            name = _HEADERS[column]
+            # A filtered column has to say so, or a row count that does not
+            # match the totals looks like a bug rather than a filter.
+            header_item.setText(f"{name}  ▾" if self.column_filter.is_filtered(column) else name)
+
+        self._update_filter_note(hidden)
+
+    def _update_filter_note(self, hidden: int) -> None:
+        if not hidden:
+            self.filter_note.setVisible(False)
+            return
+        shown = self.table.rowCount() - hidden
+        self.filter_note.setText(
+            f"Showing {shown} of {self.table.rowCount()} — "
+            "right-click a column header to change, or to show all."
+        )
+        self.filter_note.setVisible(True)
 
     def _visible(self) -> list:
         """The series belonging to the selected tab."""
@@ -271,6 +325,7 @@ class SubscriptionsView(QWidget):
 
         self.table.setSortingEnabled(True)
         self.table.sortItems(1, Qt.SortOrder.AscendingOrder)
+        self._apply_column_filters()
 
         # A running total for whatever is on screen, which is the number
         # someone actually came to this tab for.
