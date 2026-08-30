@@ -170,7 +170,13 @@ class MainWindow(QMainWindow):
             self._describe_last_sync()
 
     def _sync_now(self) -> None:
-        """The Refresh button: always syncs, because a person asked."""
+        """The Refresh button.
+
+        Refused rather than queued when a limit says no. SimpleFIN allows 24
+        requests a day and one sync spends about six, so a button with no
+        limit could drain a day's quota in under a minute — including the
+        share the scheduled sync depends on.
+        """
         if not sync_worker.is_configured():
             from PySide6.QtWidgets import QMessageBox
 
@@ -180,6 +186,14 @@ class MainWindow(QMainWindow):
                 "Connect one first with:\n\n    carraway simplefin setup",
             )
             return
+
+        conn = db.connect(self.ledger.path)
+        refusal = sync_worker.refusal_reason(conn)
+        conn.close()
+        if refusal:
+            self.sync_status.setText(refusal)
+            return
+
         if not self.syncer.start():
             self.sync_status.setText("Already refreshing…")
 
@@ -197,8 +211,14 @@ class MainWindow(QMainWindow):
             self.ledger.load()
             self.refresh_all()
         note = f"{inserted} new transaction(s)" if inserted else "Up to date"
+        conn = db.connect(self.ledger.path)
+        left = sync_worker.requests_left(conn)
+        conn.close()
+        # Shown only when it starts to matter, so the normal case stays quiet.
+        if left < 12:
+            note += f" · {left} bank requests left today"
         if warnings:
-            note += f" · {warnings[0][:60]}"
+            note += f" · {warnings[0][:50]}"
         self.sync_status.setText(note)
 
     def _sync_failed(self, message: str) -> None:

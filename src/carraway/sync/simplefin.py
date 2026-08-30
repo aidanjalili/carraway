@@ -309,6 +309,10 @@ class SimpleFinProvider:
 
     def __init__(self, access_url: str, account_ids: dict[str, str] | None = None) -> None:
         self.access_url = access_url
+        # How many HTTP requests this provider has made. SimpleFIN allows 24 a
+        # day and one full sync spends about six, so the caller has to be able
+        # to measure rather than guess.
+        self.requests_made = 0
         # Maps SimpleFIN's account id to the local one, so re-syncing lands in
         # the same account rather than creating a duplicate each time.
         self.account_ids = account_ids or {}
@@ -347,6 +351,7 @@ class SimpleFinProvider:
         for _ in range(self.MAX_WINDOWS):
             window_start = max(floor, window_end - timedelta(days=self.WINDOW_DAYS))
             payload = _get(self.access_url, self._params(window_start, window_end, pending))
+            self.requests_made += 1
             found = self._absorb(payload, result, seen_accounts, signatures)
 
             if window_start <= floor:

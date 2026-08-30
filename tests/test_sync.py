@@ -262,3 +262,70 @@ def test_plain_string_errors_become_warnings():
     with patch("carraway.sync.simplefin._get", return_value=payload):
         result = SimpleFinProvider("https://u:p@example.org/simplefin").fetch()
     assert result.warnings == ["Chase needs reauthorisation"]
+
+
+def _fresh_db(tmp_path):
+    from carraway.core import db as core_db
+
+    return core_db.connect(tmp_path / "sync.db")
+
+
+def test_a_manual_refresh_is_refused_until_the_cooldown_passes(tmp_path):
+    from datetime import datetime, timedelta
+
+    from carraway.core import db as core_db
+    from carraway.ui import sync_worker
+
+    conn = _fresh_db(tmp_path)
+    # Nothing has run, so nothing is in the way.
+    assert sync_worker.refusal_reason(conn) is None
+
+    core_db.set_setting(conn, "last_sync_at", datetime.now().isoformat())
+    reason = sync_worker.refusal_reason(conn)
+    assert reason and "Try again" in reason
+
+    # Once the cooldown has passed it is allowed again.
+    earlier = datetime.now() - sync_worker.MANUAL_COOLDOWN - timedelta(seconds=1)
+    core_db.set_setting(conn, "last_sync_at", earlier.isoformat())
+    assert sync_worker.refusal_reason(conn) is None
+
+
+def test_the_daily_budget_stops_patient_clicking(tmp_path):
+    from carraway.ui import sync_worker
+
+    conn = _fresh_db(tmp_path)
+    assert sync_worker.requests_left(conn) == sync_worker.DAILY_REQUEST_BUDGET
+
+    # A cooldown alone would not stop someone clicking every few minutes all
+    # day, so the budget is what actually protects the quota.
+    sync_worker.record_usage(conn, sync_worker.DAILY_REQUEST_BUDGET)
+    assert sync_worker.requests_left(conn) == 0
+    reason = sync_worker.refusal_reason(conn)
+    assert reason and "used up" in reason
+
+
+def test_a_drained_budget_also_stops_the_automatic_sync(tmp_path):
+    from carraway.ui import sync_worker
+
+    conn = _fresh_db(tmp_path)
+    assert sync_worker.is_due(conn)
+    sync_worker.record_usage(conn, sync_worker.DAILY_REQUEST_BUDGET)
+    # Opening the window repeatedly must not spend what is left either.
+    assert not sync_worker.is_due(conn)
+
+
+def test_usage_resets_when_the_day_rolls_over(tmp_path):
+    from carraway.core import db as core_db
+    from carraway.ui import sync_worker
+
+    conn = _fresh_db(tmp_path)
+    core_db.set_setting(conn, "sync_requests_today", {"date": "2020-01-01", "requests": 99})
+    assert sync_worker.requests_left(conn) == sync_worker.DAILY_REQUEST_BUDGET
+
+
+def test_the_budget_leaves_room_for_a_scheduled_sync():
+    from carraway.ui import sync_worker
+
+    # A background timer failing silently on quota is worse than a button that
+    # says "not yet", so the budget must sit below the provider's own limit.
+    assert sync_worker.DAILY_REQUEST_BUDGET < 24

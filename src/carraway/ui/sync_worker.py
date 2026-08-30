@@ -13,7 +13,7 @@ already ran; pressing Refresh always syncs, because that is a person asking.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from PySide6.QtCore import QObject, QThread, Signal
 
@@ -22,7 +22,19 @@ from ..core import backup, db
 # How stale an automatic sync tolerates before it bothers. Banks feed
 # SimpleFIN about daily, so anything shorter spends requests to learn nothing.
 AUTO_SYNC_INTERVAL = timedelta(hours=6)
+
+# The shortest gap between two manual refreshes. Long enough that leaning on
+# the button cannot drain the day's budget, short enough that someone who just
+# made a purchase and wants to see it does not feel blocked.
+MANUAL_COOLDOWN = timedelta(minutes=2)
+
+# SimpleFIN allows 24 requests a day, and one full sync spends about six.
+# Kept below that so a scheduled run always has room: a background timer
+# silently failing on quota is worse than a button that says "not yet".
+DAILY_REQUEST_BUDGET = 18
+
 _LAST_SYNC_KEY = "last_sync_at"
+_USAGE_KEY = "sync_requests_today"
 
 
 def last_sync(conn) -> datetime | None:
@@ -35,10 +47,54 @@ def last_sync(conn) -> datetime | None:
         return None
 
 
+def _usage(conn) -> tuple[str, int]:
+    """(day, requests spent) for today, resetting when the date rolls over."""
+    stored = db.get_setting(conn, _USAGE_KEY)
+    today = date.today().isoformat()
+    if isinstance(stored, dict) and stored.get("date") == today:
+        return today, int(stored.get("requests", 0))
+    return today, 0
+
+
+def record_usage(conn, requests: int) -> None:
+    today, spent = _usage(conn)
+    db.set_setting(conn, _USAGE_KEY, {"date": today, "requests": spent + max(requests, 0)})
+
+
+def requests_left(conn) -> int:
+    """How much of today's budget remains."""
+    _, spent = _usage(conn)
+    return max(DAILY_REQUEST_BUDGET - spent, 0)
+
+
 def is_due(conn) -> bool:
     """Whether an automatic sync should run now."""
+    if requests_left(conn) < 6:
+        return False
     previous = last_sync(conn)
     return previous is None or datetime.now() - previous >= AUTO_SYNC_INTERVAL
+
+
+def refusal_reason(conn) -> str | None:
+    """Why a manual refresh should not run yet, or None if it may.
+
+    Two separate limits. The cooldown stops a button being leaned on; the
+    budget stops a day's worth of patient clicking from exhausting the quota
+    the scheduled sync depends on.
+    """
+    if requests_left(conn) < 6:
+        return (
+            "Today's bank requests are used up. SimpleFIN allows a limited "
+            "number a day, and the scheduled sync needs what is left. "
+            "It resets at midnight."
+        )
+    previous = last_sync(conn)
+    if previous is not None:
+        waited = datetime.now() - previous
+        if waited < MANUAL_COOLDOWN:
+            seconds = int((MANUAL_COOLDOWN - waited).total_seconds())
+            return f"Just refreshed. Try again in {seconds}s."
+    return None
 
 
 def is_configured() -> bool:
@@ -74,7 +130,9 @@ class SyncWorker(QObject):
             backup.snapshot(self.database, tag="sync")
 
             known = {a.external_id: a.id for a in db.list_accounts(conn) if a.external_id}
-            result = SimpleFinProvider(access_url, account_ids=known).fetch()
+            provider = SimpleFinProvider(access_url, account_ids=known)
+            result = provider.fetch()
+            record_usage(conn, provider.requests_made)
 
             # Accounts are only linked automatically here when they already
             # match something known. A genuinely new account is left for the
