@@ -121,6 +121,45 @@ def stylesheet(p: Palette) -> str:
         font-weight: 600;
     }}
 
+    QMenu {{
+        background: {p.surface};
+        border: 1px solid {p.border};
+        border-radius: 8px;
+        padding: 4px;
+    }}
+    QMenu::item {{ padding: 6px 14px; border-radius: 5px; }}
+    QMenu::item:selected {{ background: {p.hover}; }}
+    QMenu::separator {{
+        height: 1px;
+        background: {p.border};
+        margin: 4px 8px;
+    }}
+    /* The filter menu is built from real QCheckBox widgets so it stays open
+       while several are ticked, which means they need their own hit area and
+       hover rather than inheriting a plain label's. */
+    QMenu QCheckBox {{
+        padding: 5px 10px;
+        border-radius: 5px;
+        background: transparent;
+        color: {p.text};
+    }}
+    QMenu QCheckBox:hover {{ background: {p.hover}; }}
+    QCheckBox::indicator {{
+        width: 15px;
+        height: 15px;
+        border: 1px solid {p.muted};
+        border-radius: 4px;
+        background: {p.surface_alt};
+    }}
+    QCheckBox::indicator:hover {{ border-color: {p.accent}; }}
+    QCheckBox::indicator:checked {{
+        background: {p.accent};
+        border-color: {p.accent};
+        /* A tick drawn as a small inset block: reliable at this size, and it
+           needs no icon file. */
+        image: none;
+    }}
+
     QLineEdit {{
         background: {p.surface_alt};
         border: 1px solid {p.border};

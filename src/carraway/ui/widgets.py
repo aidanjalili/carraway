@@ -10,6 +10,7 @@ from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QCheckBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
+    QWidgetAction,
 )
 
 from . import theme
@@ -305,6 +307,9 @@ class ColumnFilter(QObject):
         # unfiltered, which keeps "no filter" distinct from "everything ticked
         # by hand" for the header marker.
         self.allowed: dict[int, set[str]] = {}
+        # Held only while a menu is open, so the boxes are not garbage
+        # collected out from under it mid-interaction.
+        self._boxes: list[QCheckBox] = []
 
         header = table.horizontalHeader()
         header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -337,25 +342,53 @@ class ColumnFilter(QObject):
 
     def _menu(self, position) -> None:
         header = self._table.horizontalHeader()
-        column = header.logicalIndexAt(position)
+        menu = self.build_menu(header.logicalIndexAt(position))
+        if menu is not None:
+            menu.exec(header.mapToGlobal(position))
+
+    def build_menu(self, column: int) -> QMenu | None:
+        """The filter menu for a column, or None when it has nothing to offer.
+
+        Separated from showing it so the contents can be exercised without
+        entering a modal event loop.
+        """
         if column < 0:
-            return
+            return None
 
         values = self._values(column)
         if not values:
-            return
+            return None
 
         menu = QMenu(self._table)
-        label = self._table.horizontalHeaderItem(column)
-        menu.addSection(f"Show only — {label.text() if label else ''}")
+        # Parented to the table so it inherits the palette, but destroyed on
+        # close: without this every right-click would leave a menu alive as a
+        # child of the table for the life of the window.
+        menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        header_item = self._table.horizontalHeaderItem(column)
+        name = (header_item.text() if header_item else "").strip(" ▾")
+        title = QLabel(f"  Show only — {name}")
+        title.setObjectName("Muted")
+        title.setContentsMargins(6, 6, 6, 2)
+        heading = QWidgetAction(menu)
+        heading.setDefaultWidget(title)
+        menu.addAction(heading)
 
         allowed = self.allowed.get(column)
+        # Real QCheckBox widgets rather than checkable actions: a checkable
+        # action draws a tick that is easy to miss, and — more importantly —
+        # triggering one closes the menu, so ticking a second value meant
+        # reopening it every time. A widget consumes its own click, leaving
+        # the menu open until the user clicks away.
         for value in values:
-            action = QAction(value, menu)
-            action.setCheckable(True)
-            action.setChecked(allowed is None or value in allowed)
-            action.toggled.connect(lambda checked, c=column, v=value: self._toggle(c, v, checked))
-            menu.addAction(action)
+            box = QCheckBox(value)
+            box.setChecked(allowed is None or value in allowed)
+            box.setCursor(Qt.CursorShape.PointingHandCursor)
+            box.setContentsMargins(10, 3, 10, 3)
+            box.toggled.connect(lambda checked, c=column, v=value: self._toggle(c, v, checked))
+            holder = QWidgetAction(menu)
+            holder.setDefaultWidget(box)
+            menu.addAction(holder)
+            self._boxes.append(box)
 
         menu.addSeparator()
         show_all = QAction("Show all", menu)
@@ -368,7 +401,8 @@ class ColumnFilter(QObject):
             everything.triggered.connect(self.clear)
             menu.addAction(everything)
 
-        menu.exec(header.mapToGlobal(position))
+        menu.aboutToHide.connect(self._boxes.clear)
+        return menu
 
     def _toggle(self, column: int, value: str, checked: bool) -> None:
         # An unfiltered column starts as everything, so unticking one value
