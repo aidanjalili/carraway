@@ -110,7 +110,10 @@ class Ledger:
             notes=values.get("notes", ""),
         )
         conn.close()
-        self.manual = db.list_manual_subscriptions(db.connect(self.path))
+        # A full reload rather than just refreshing `manual`: the series list
+        # is built once during load, so updating the tracked entries alone
+        # left the new subscription invisible until the app restarted.
+        self.load()
 
     def remove_manual(self, series: RecurringSeries) -> bool:
         match = next((i for i in self.manual if str(i["merchant"]) == series.merchant), None)
@@ -119,7 +122,7 @@ class Ledger:
         conn = db.connect(self.path)
         db.remove_manual_subscription(conn, str(match["id"]))
         conn.close()
-        self.manual = db.list_manual_subscriptions(db.connect(self.path))
+        self.load()
         return True
 
     def spending_buckets(self, period: str = "monthly", *, include_guessed: bool = True) -> list:

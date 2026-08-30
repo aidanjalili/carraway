@@ -27,11 +27,15 @@ class _FakeTable:
 
 
 def _filter(rows):
+    from PySide6.QtCore import QObject
+
     from carraway.ui.widgets import ColumnFilter
 
-    # __init__ wires up Qt signals, so the logic is exercised on a bare
-    # instance rather than a constructed widget.
+    # Built without ColumnFilter.__init__, which needs a real header to attach
+    # its context menu to. The QObject base still has to be initialised, or
+    # emitting `changed` raises "Signal source has been deleted".
     instance = ColumnFilter.__new__(ColumnFilter)
+    QObject.__init__(instance)
     instance._table = _FakeTable(rows)
     instance.allowed = {}
     instance._boxes = []
