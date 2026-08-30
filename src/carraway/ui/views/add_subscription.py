@@ -12,7 +12,7 @@ The honest answer is to let the user say what they know.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date
 
 from PySide6.QtCore import QDate
 from PySide6.QtWidgets import (
@@ -32,18 +32,14 @@ _CADENCES = ["monthly", "yearly", "weekly", "biweekly", "quarterly"]
 
 
 def next_charge(started: date, cadence: str) -> date:
-    """The first charge on or after today, counting forward from `started`.
+    """The next charge on or after today, using the app's shared arithmetic.
 
-    Rolled forward rather than simply added once, so an entry whose start date
-    is months old still projects a future charge rather than a past one.
+    The same function the rest of the app projects with, so the date previewed
+    here is the date that will appear in Upcoming.
     """
-    step = {"weekly": 7, "biweekly": 14, "monthly": 30, "quarterly": 91, "yearly": 365}
-    days = step.get(cadence, 30)
-    when = started
-    today = date.today()
-    while when < today:
-        when += timedelta(days=days)
-    return when
+    from ...analysis.recurring import project_from
+
+    return project_from(started, cadence)
 
 
 _PER_YEAR = {"weekly": 52, "biweekly": 26, "monthly": 12, "quarterly": 4, "yearly": 1}

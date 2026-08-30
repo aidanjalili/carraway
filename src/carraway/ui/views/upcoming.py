@@ -113,9 +113,10 @@ class UpcomingView(QWidget):
         A yearly charge inside a 30-day window appears once; a weekly one
         appears four times, because that is what will actually happen.
         """
+        from ...analysis.recurring import advance
+
         today = date.today()
         limit = today + timedelta(days=horizon_days)
-        step = {"weekly": 7, "biweekly": 14, "monthly": 30, "quarterly": 91, "yearly": 365}
 
         out: list[tuple[date, object]] = []
         for series in self.ledger.series:
@@ -124,15 +125,20 @@ class UpcomingView(QWidget):
             when = series.next_expected
             if when is None:
                 continue
-            # A prediction already in the past is not upcoming; roll it forward
-            # so a series that was missed by a few days still shows its next
-            # real occurrence rather than disappearing.
-            gap = step.get(series.cadence, 30)
-            while when < today:
-                when += timedelta(days=gap)
-            while when <= limit:
+            # A prediction already in the past is not upcoming; roll it
+            # forward so a series missed by a few days still shows its next
+            # real occurrence rather than disappearing. Calendar arithmetic
+            # rather than a fixed number of days, or a charge on the 30th
+            # walks backwards through the year.
+            day_of_month = when.day if series.cadence == "monthly" else None
+            guard = 0
+            while when < today and guard < 600:
+                when = advance(when, series.cadence, day_of_month)
+                guard += 1
+            while when <= limit and guard < 600:
                 out.append((when, series))
-                when += timedelta(days=gap)
+                when = advance(when, series.cadence, day_of_month)
+                guard += 1
         out.sort(key=lambda row: (row[0], -abs(row[1].typical_amount.minor)))
         return out
 

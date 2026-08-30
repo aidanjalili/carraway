@@ -191,8 +191,14 @@ def _amount_stability(minors: list[int]) -> tuple[float, bool]:
     return max(0.0, 1.0 - min(cv / 0.35, 1.0)), cv > 0.12
 
 
-def _predict_next(last: date, cadence: str, day_of_month: int | None) -> date:
-    """Project the next expected charge date from the last one seen."""
+def advance(last: date, cadence: str, day_of_month: int | None = None) -> date:
+    """The next occurrence after `last`, in calendar terms.
+
+    Public because every projection in the app needs the same arithmetic, and
+    the naive version — adding 30 days for "monthly" — drifts: a charge on the
+    30th walks back to the 29th, then the 28th, and is four days wrong within
+    six months.
+    """
     if cadence in ("weekly", "biweekly"):
         return last + timedelta(days=int(CADENCES[cadence][0]))
     if cadence == "monthly":
@@ -287,7 +293,7 @@ def _build_series(
         occurrences=len(txs),
         first_seen=txs[0].date,
         last_seen=txs[-1].date,
-        next_expected=_predict_next(txs[-1].date, cadence, day_of_month),
+        next_expected=advance(txs[-1].date, cadence, day_of_month),
         confidence=round(confidence, 3),
         amount_varies=varies,
         transaction_ids=[t.id for t in txs],
@@ -365,3 +371,24 @@ def stale(
 ) -> list[RecurringSeries]:
     """Series whose next charge is overdue — likely cancelled, or worth a look."""
     return [s for s in series if s.next_expected and (today - s.next_expected).days > grace_days]
+
+
+def project_from(started: date, cadence: str, today: date | None = None) -> date:
+    """The first occurrence on or after today, counting forward from `started`.
+
+    Rolled forward one period at a time rather than multiplied out, so the
+    calendar rules — short months, leap days — apply at every step instead of
+    only the last.
+    """
+    today = today or date.today()
+    when = started
+    # A generous bound: enough to carry a weekly charge forward a decade, and
+    # a guard against a cadence this function does not recognise looping.
+    for _ in range(600):
+        if when >= today:
+            return when
+        following = advance(when, cadence, started.day if cadence == "monthly" else None)
+        if following <= when:
+            return when
+        when = following
+    return when

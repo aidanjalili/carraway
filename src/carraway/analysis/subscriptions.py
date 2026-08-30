@@ -526,7 +526,6 @@ def as_series(
     about what the user is paying for.
     """
 
-    step = {"weekly": 7, "biweekly": 14, "monthly": 30, "quarterly": 91, "yearly": 365}
     today = date.today()
     out: list[RecurringSeries] = []
     for item in tracked:
@@ -548,7 +547,7 @@ def as_series(
                 # Projected from the start date the user gave, rolled forward
                 # so an entry begun months ago still shows a future charge.
                 # Without a date there is no anchor and none can be offered.
-                next_expected=_project(started, str(item["cadence"]), step, today),
+                next_expected=_project(started, str(item["cadence"]), today),
                 confidence=1.0,  # the user's own word, not an inference
                 amount_varies=False,
                 transaction_ids=[],
@@ -635,14 +634,10 @@ def bill_names() -> tuple[str, ...]:
     return _BILLS
 
 
-def _project(started: date | None, cadence: str, step: dict[str, int], today: date) -> date | None:
+def _project(started: date | None, cadence: str, today: date) -> date | None:
     """The next charge on or after today, or None without a start date."""
     if started is None:
         return None
-    from datetime import timedelta
+    from .recurring import project_from
 
-    days = step.get(cadence, 30)
-    when = started
-    while when < today:
-        when += timedelta(days=days)
-    return when
+    return project_from(started, cadence, today)

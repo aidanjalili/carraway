@@ -279,3 +279,44 @@ def test_refunds_are_not_part_of_the_series_they_reverse():
     assert len(spending) == 1
     assert spending[0].typical_amount == Money.parse("-48.93")
     assert spending[0].occurrences == 3
+
+
+def test_a_monthly_charge_keeps_its_day_of_month():
+    from carraway.analysis.recurring import advance
+
+    # Adding 30 days walks a charge backwards through the year — the 30th
+    # becomes the 29th, then the 28th, and is four days wrong within six
+    # months. Calendar arithmetic holds the day instead.
+    when = date(2026, 8, 30)
+    for _ in range(5):
+        when = advance(when, "monthly", 30)
+        assert when.day == 30, when
+
+
+def test_a_short_month_clamps_without_losing_the_day_after():
+    from carraway.analysis.recurring import advance
+
+    # A charge on the 31st has to become the 28th in February and then go
+    # back to the 31st, rather than staying on the 28th forever.
+    assert advance(date(2026, 1, 31), "monthly", 31) == date(2026, 2, 28)
+    assert advance(date(2026, 2, 28), "monthly", 31) == date(2026, 3, 31)
+
+
+def test_projecting_forward_lands_on_or_after_today():
+    from carraway.analysis.recurring import project_from
+
+    started = date(2026, 8, 30)
+    today = date(2026, 11, 15)
+    # Rolled forward one period at a time, so the calendar rules apply at
+    # every step rather than only the last.
+    assert project_from(started, "monthly", today) == date(2026, 11, 30)
+    assert project_from(started, "yearly", today) == date(2027, 8, 30)
+    # A start date in the future is already the next occurrence.
+    assert project_from(date(2027, 1, 1), "monthly", today) == date(2027, 1, 1)
+
+
+def test_projection_terminates_on_an_unknown_cadence():
+    from carraway.analysis.recurring import project_from
+
+    # An unrecognised cadence must not spin: the loop is bounded.
+    assert project_from(date(2020, 1, 1), "fortnightly-ish", date(2026, 1, 1))
