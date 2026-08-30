@@ -304,7 +304,7 @@ class NetWorthView(QWidget):
             box = QCheckBox(account.name[:22])
             box.setChecked(account.id not in excluded)
             box.setCursor(Qt.CursorShape.PointingHandCursor)
-            box.setToolTip(f"{account.name} — {account.institution or account.type}")
+            box.setToolTip(self._account_tooltip(account))
             box.toggled.connect(
                 lambda checked, account_id=account.id: self._toggle_account(account_id, checked)
             )
@@ -314,6 +314,36 @@ class NetWorthView(QWidget):
         if not self.account_boxes:
             self.include_label.setText("")
 
+    def _account_tooltip(self, account) -> str:
+        """What this account holds, and how it affects the total.
+
+        The checkbox label is truncated to fit the row, so the tooltip carries
+        the full name — and the figure, since the whole reason to hover a
+        toggle is to decide whether to untick it, which needs to know what
+        unticking would cost.
+        """
+        balance = self.ledger.balances.get(account.id)
+        lines = [account.name]
+        detail = account.institution or str(account.type)
+        if detail and detail != account.name:
+            lines.append(detail)
+
+        if balance is None:
+            lines.append("No balance recorded — not counted.")
+            return "\n".join(lines)
+
+        if account.type.is_liability:
+            # A card balance arrives negative and means money owed, so it is
+            # shown as a magnitude with the direction spelled out rather than
+            # as a minus sign the reader has to interpret.
+            lines.append(f"{abs(balance).format()} owed — subtracts from net worth")
+        else:
+            lines.append(f"{balance.format()} held — adds to net worth")
+
+        if account.id in self.ledger.excluded_accounts:
+            lines.append("Currently not counted.")
+        return "\n".join(lines)
+
     def _toggle_account(self, account_id: str, included: bool) -> None:
         excluded = self.ledger.excluded_accounts
         if included:
@@ -321,6 +351,10 @@ class NetWorthView(QWidget):
         else:
             excluded.add(account_id)
         self.ledger.save_setting("networth_excluded_accounts", sorted(excluded))
+        for other_id, box in self.account_boxes.items():
+            account = next((a for a in self.ledger.accounts if a.id == other_id), None)
+            if account is not None:
+                box.setToolTip(self._account_tooltip(account))
         self.refresh()
 
     def refresh(self) -> None:
