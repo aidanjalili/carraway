@@ -12,8 +12,12 @@ The honest answer is to let the user say what they know.
 
 from __future__ import annotations
 
+from datetime import date, timedelta
+
+from PySide6.QtCore import QDate
 from PySide6.QtWidgets import (
     QComboBox,
+    QDateEdit,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -25,6 +29,23 @@ from PySide6.QtWidgets import (
 from ...core.money import Money
 
 _CADENCES = ["monthly", "yearly", "weekly", "biweekly", "quarterly"]
+
+
+def next_charge(started: date, cadence: str) -> date:
+    """The first charge on or after today, counting forward from `started`.
+
+    Rolled forward rather than simply added once, so an entry whose start date
+    is months old still projects a future charge rather than a past one.
+    """
+    step = {"weekly": 7, "biweekly": 14, "monthly": 30, "quarterly": 91, "yearly": 365}
+    days = step.get(cadence, 30)
+    when = started
+    today = date.today()
+    while when < today:
+        when += timedelta(days=days)
+    return when
+
+
 _PER_YEAR = {"weekly": 52, "biweekly": 26, "monthly": 12, "quarterly": 4, "yearly": 1}
 
 
@@ -72,6 +93,16 @@ class AddSubscriptionDialog(QDialog):
         self.kind.addItems(["subscription", "bill"])
         form.addRow("Kind", self.kind)
 
+        self.started = QDateEdit()
+        self.started.setCalendarPopup(True)
+        self.started.setDisplayFormat("yyyy-MM-dd")
+        self.started.setDate(QDate.currentDate())
+        self.started.setToolTip(
+            "The date it last billed, or the date it starts. Carraway counts "
+            "forward from here to work out when the next charge is due."
+        )
+        form.addRow("Last billed", self.started)
+
         self.paid_via = QLineEdit()
         self.paid_via.setPlaceholderText("paid by a family member")
         form.addRow("Paid via", self.paid_via)
@@ -85,6 +116,7 @@ class AddSubscriptionDialog(QDialog):
         layout.addWidget(self.preview)
         self.amount.textChanged.connect(self._update_preview)
         self.cadence.currentTextChanged.connect(self._update_preview)
+        self.started.dateChanged.connect(lambda _: self._update_preview())
 
         self.buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
@@ -94,14 +126,21 @@ class AddSubscriptionDialog(QDialog):
         layout.addWidget(self.buttons)
 
     def _update_preview(self) -> None:
-        """Show the annual cost as they type: $15/month reads differently from $180/year."""
+        """Show the annual cost and the next charge date as they type.
+
+        $15 a month and $180 a year are the same fact and read very
+        differently, and seeing the projected date is the fastest way to catch
+        a wrong cadence or start date before saving.
+        """
         amount = self._amount_or_none()
         if amount is None:
             self.preview.setText("")
             return
         per_year = _PER_YEAR.get(self.cadence.currentText(), 0)
         yearly = abs(amount) * per_year
-        self.preview.setText(f"That is {yearly.format()} a year.")
+        started = self.started.date().toPython()
+        following = next_charge(started, self.cadence.currentText())
+        self.preview.setText(f"That is {yearly.format()} a year. Next charge around {following}.")
 
     def _amount_or_none(self) -> Money | None:
         raw = self.amount.text().strip().replace("$", "").replace(",", "")
@@ -130,6 +169,7 @@ class AddSubscriptionDialog(QDialog):
             "kind": self.kind.currentText(),
             "paid_via": self.paid_via.text().strip(),
             "notes": self.notes.text().strip(),
+            "started_on": self.started.date().toPython(),
         }
 
 

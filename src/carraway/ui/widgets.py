@@ -6,24 +6,21 @@ numeric sorting, card chrome — are written once.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, Signal
-from PySide6.QtGui import QAction, QColor
+from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QButtonGroup,
-    QCheckBox,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLayout,
     QLayoutItem,
-    QMenu,
     QPushButton,
     QStyle,
     QStyledItemDelegate,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
-    QWidgetAction,
 )
 
 from . import theme
@@ -284,149 +281,3 @@ def enable_row_hover(view) -> HoverRowDelegate:
     delegate = HoverRowDelegate(view)
     view.setItemDelegate(delegate)
     return delegate
-
-
-class ColumnFilter(QObject):
-    """Right-click a column header to show only some of its values.
-
-    A table that already carries sorting still cannot answer "show me only the
-    cancelled ones" — sorting groups them but leaves everything else on
-    screen. This adds a per-column value filter, driven from the column's own
-    contents so it never offers a value the table does not contain.
-
-    Emits `changed` when the selection moves; the view decides what to hide,
-    since only it knows which rows a value belongs to.
-    """
-
-    changed = Signal()
-
-    def __init__(self, table) -> None:
-        super().__init__(table)
-        self._table = table
-        # column -> the values allowed. A column absent from this map is
-        # unfiltered, which keeps "no filter" distinct from "everything ticked
-        # by hand" for the header marker.
-        self.allowed: dict[int, set[str]] = {}
-        # Held only while a menu is open, so the boxes are not garbage
-        # collected out from under it mid-interaction.
-        self._boxes: list[QCheckBox] = []
-
-        header = table.horizontalHeader()
-        header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        header.customContextMenuRequested.connect(self._menu)
-
-    def is_filtered(self, column: int) -> bool:
-        return column in self.allowed
-
-    def accepts(self, column: int, value: str) -> bool:
-        allowed = self.allowed.get(column)
-        return allowed is None or value in allowed
-
-    def clear(self) -> None:
-        if self.allowed:
-            self.allowed.clear()
-            self.changed.emit()
-
-    def _values(self, column: int) -> list[str]:
-        """Every distinct value in a column, whatever is currently hidden.
-
-        Read from the model rather than the visible rows, or filtering to one
-        value would leave no way back to the others.
-        """
-        seen = {
-            self._table.item(row, column).text()
-            for row in range(self._table.rowCount())
-            if self._table.item(row, column)
-        }
-        return sorted(v for v in seen if v)
-
-    def _menu(self, position) -> None:
-        header = self._table.horizontalHeader()
-        menu = self.build_menu(header.logicalIndexAt(position))
-        if menu is not None:
-            menu.exec(header.mapToGlobal(position))
-
-    def build_menu(self, column: int) -> QMenu | None:
-        """The filter menu for a column, or None when it has nothing to offer.
-
-        Separated from showing it so the contents can be exercised without
-        entering a modal event loop.
-        """
-        if column < 0:
-            return None
-
-        values = self._values(column)
-        if not values:
-            return None
-
-        menu = QMenu(self._table)
-        # Parented to the table so it inherits the palette, but destroyed on
-        # close: without this every right-click would leave a menu alive as a
-        # child of the table for the life of the window.
-        menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        header_item = self._table.horizontalHeaderItem(column)
-        name = (header_item.text() if header_item else "").strip(" ▾")
-        title = QLabel(f"  Show only — {name}")
-        title.setObjectName("Muted")
-        title.setContentsMargins(6, 6, 6, 2)
-        heading = QWidgetAction(menu)
-        heading.setDefaultWidget(title)
-        menu.addAction(heading)
-
-        allowed = self.allowed.get(column)
-        # Real QCheckBox widgets rather than checkable actions: a checkable
-        # action draws a tick that is easy to miss, and — more importantly —
-        # triggering one closes the menu, so ticking a second value meant
-        # reopening it every time. A widget consumes its own click, leaving
-        # the menu open until the user clicks away.
-        for value in values:
-            box = QCheckBox(value)
-            box.setChecked(allowed is None or value in allowed)
-            box.setCursor(Qt.CursorShape.PointingHandCursor)
-            box.setContentsMargins(10, 3, 10, 3)
-            box.toggled.connect(lambda checked, c=column, v=value: self._toggle(c, v, checked))
-            holder = QWidgetAction(menu)
-            holder.setDefaultWidget(box)
-            menu.addAction(holder)
-            self._boxes.append(box)
-
-        menu.addSeparator()
-        show_all = QAction("Show all", menu)
-        show_all.setEnabled(column in self.allowed)
-        show_all.triggered.connect(lambda: self._reset(column))
-        menu.addAction(show_all)
-
-        if self.allowed:
-            everything = QAction("Clear every column filter", menu)
-            everything.triggered.connect(self.clear)
-            menu.addAction(everything)
-
-        menu.aboutToHide.connect(self._boxes.clear)
-        return menu
-
-    def _toggle(self, column: int, value: str, checked: bool) -> None:
-        # An unfiltered column starts as everything, so unticking one value
-        # means "all but this" rather than "only this".
-        allowed = self.allowed.get(column)
-        if allowed is None:
-            allowed = set(self._values(column))
-        allowed = set(allowed)
-
-        if checked:
-            allowed.add(value)
-        else:
-            allowed.discard(value)
-
-        if not allowed:
-            # Hiding everything leaves an empty table with no way back, so an
-            # empty selection means no filter.
-            self.allowed.pop(column, None)
-        elif allowed == set(self._values(column)):
-            self.allowed.pop(column, None)
-        else:
-            self.allowed[column] = allowed
-        self.changed.emit()
-
-    def _reset(self, column: int) -> None:
-        if self.allowed.pop(column, None) is not None:
-            self.changed.emit()

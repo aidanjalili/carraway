@@ -164,6 +164,12 @@ MIGRATIONS: list[str] = [
         hidden  INTEGER NOT NULL DEFAULT 0   -- a built-in the user turned off
     );
     """,
+    # v11 - when a tracked subscription first billed, so the app can work out
+    # when the next charge is due. Without it a manual entry has a cadence but
+    # no anchor, and cannot appear in Upcoming at all.
+    """
+    ALTER TABLE manual_subscriptions ADD COLUMN started_on TEXT;
+    """,
 ]
 
 
@@ -414,6 +420,7 @@ def add_manual_subscription(
     kind: str = "subscription",
     paid_via: str = "",
     notes: str = "",
+    started_on: date | None = None,
 ) -> str:
     """Record a subscription detection cannot see. Returns its id."""
     import uuid
@@ -422,8 +429,9 @@ def add_manual_subscription(
     conn.execute(
         """
         INSERT INTO manual_subscriptions
-            (id, merchant, amount_minor, currency, cadence, kind, paid_via, notes, active)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+            (id, merchant, amount_minor, currency, cadence, kind, paid_via, notes,
+             active, started_on)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
         """,
         (
             subscription_id,
@@ -434,6 +442,7 @@ def add_manual_subscription(
             kind,
             paid_via,
             notes,
+            started_on.isoformat() if started_on else None,
         ),
     )
     conn.commit()
@@ -455,17 +464,34 @@ def list_manual_subscriptions(
             "paid_via": r["paid_via"],
             "notes": r["notes"],
             "active": bool(r["active"]),
+            "started_on": (date.fromisoformat(r["started_on"]) if r["started_on"] else None),
         }
         for r in rows
     ]
 
 
 def remove_manual_subscription(conn: sqlite3.Connection, subscription_id: str) -> int:
-    """Deactivate rather than delete: a cancelled subscription is still worth
-    remembering, and the user may have paid for it for years."""
+    """Deactivate rather than delete.
+
+    A cancelled subscription is still worth remembering — the user may have
+    paid for it for years, and that history belongs in their totals. Use
+    `delete_manual_subscription` for an entry that was simply a mistake.
+    """
     cur = conn.execute(
         "UPDATE manual_subscriptions SET active = 0 WHERE id = ?", (subscription_id,)
     )
+    conn.commit()
+    return cur.rowcount
+
+
+def delete_manual_subscription(conn: sqlite3.Connection, subscription_id: str) -> int:
+    """Remove a tracked entry outright.
+
+    For one added by mistake, where deactivating would leave a wrong row on
+    the record forever. Nothing else references these, so there is nothing to
+    orphan.
+    """
+    cur = conn.execute("DELETE FROM manual_subscriptions WHERE id = ?", (subscription_id,))
     conn.commit()
     return cur.rowcount
 

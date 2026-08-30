@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QMenu,
     QPushButton,
     QTableWidget,
@@ -30,7 +31,6 @@ from ...core.models import RecurringSeries
 from ...core.money import Money, total
 from ..data import Ledger
 from ..widgets import (
-    ColumnFilter,
     FilterStrip,
     SortableItem,
     StatCard,
@@ -120,11 +120,27 @@ class SubscriptionsView(QWidget):
         # so they get their own tabs rather than one list the user must scan.
         tab_row = QHBoxLayout()
         self.tabs = FilterStrip()
-        for label in ("Subscriptions", "Bills", "Income", "Habits", "Stopped", "All", "Hidden"):
+        for label in (
+            "Subscriptions",
+            "Bills",
+            "Income",
+            "Habits",
+            "Cancelled",
+            "Stopped",
+            "All",
+            "Hidden",
+        ):
             self.tabs.addTab(label)
         self.tabs.currentChanged.connect(lambda _: self.refresh())
         tab_row.addWidget(self.tabs)
         tab_row.addStretch(1)
+
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search merchant, kind or cadence…")
+        self.search.setClearButtonEnabled(True)
+        self.search.setMinimumWidth(260)
+        self.search.textChanged.connect(lambda _: self._apply_search())
+        tab_row.addWidget(self.search)
 
         add = QPushButton("Track one manually…")
         add.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -146,9 +162,6 @@ class SubscriptionsView(QWidget):
         # click; without it Qt only updates on press.
         # Row-wide hover; Qt's stylesheet :hover only covers one cell.
         self._hover = enable_row_hover(self.table)
-        # Right-click any header to narrow that column to chosen values.
-        self.column_filter = ColumnFilter(self.table)
-        self.column_filter.changed.connect(self._apply_column_filters)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSortingEnabled(True)
@@ -162,6 +175,11 @@ class SubscriptionsView(QWidget):
         self.filter_note.setObjectName("Muted")
         self.filter_note.setVisible(False)
         layout.addWidget(self.filter_note)
+
+        self.search_note = QLabel("")
+        self.search_note.setObjectName("Muted")
+        self.search_note.setVisible(False)
+        layout.addWidget(self.search_note)
 
         self.totals = QLabel("")
         self.totals.setObjectName("SectionHeading")
@@ -183,44 +201,34 @@ class SubscriptionsView(QWidget):
 
         self.refresh()
 
-    def _apply_column_filters(self) -> None:
-        """Hide rows a header filter excludes, and mark the filtered headers.
+    def _apply_search(self) -> None:
+        """Hide rows the search text does not appear in.
 
-        Rows are hidden rather than removed, so sorting and the running totals
-        keep working on the same table the user was already looking at.
+        Rows are hidden rather than the table rebuilt, so sorting survives and
+        the running totals keep describing the tab rather than the search.
+        Matched across merchant, kind and cadence at once, since typing
+        "yearly" or "bill" is as natural as typing a merchant name.
         """
+        needle = self.search.text().strip().lower()
         hidden = 0
         for row in range(self.table.rowCount()):
-            keep = True
-            for column in range(self.table.columnCount()):
-                cell = self.table.item(row, column)
-                if cell and not self.column_filter.accepts(column, cell.text()):
-                    keep = False
-                    break
+            if not needle:
+                self.table.setRowHidden(row, False)
+                continue
+            cells = (self.table.item(row, column) for column in (0, 1, 2))
+            keep = any(cell and needle in cell.text().lower() for cell in cells)
             self.table.setRowHidden(row, not keep)
             hidden += not keep
 
-        for column in range(self.table.columnCount()):
-            header_item = self.table.horizontalHeaderItem(column)
-            if header_item is None:
-                continue
-            name = _HEADERS[column]
-            # A filtered column has to say so, or a row count that does not
-            # match the totals looks like a bug rather than a filter.
-            header_item.setText(f"{name}  ▾" if self.column_filter.is_filtered(column) else name)
-
-        self._update_filter_note(hidden)
-
-    def _update_filter_note(self, hidden: int) -> None:
-        if not hidden:
-            self.filter_note.setVisible(False)
+        if not needle or not hidden:
+            self.search_note.setVisible(False)
             return
         shown = self.table.rowCount() - hidden
-        self.filter_note.setText(
-            f"Showing {shown} of {self.table.rowCount()} — "
-            "right-click a column header to change, or to show all."
+        self.search_note.setText(
+            f"{shown} of {self.table.rowCount()} match \u201c{self.search.text().strip()}\u201d"
+            "  ·  the totals above still describe the whole tab"
         )
-        self.filter_note.setVisible(True)
+        self.search_note.setVisible(True)
 
     def _visible(self) -> list:
         """The series belonging to the selected tab."""
@@ -243,6 +251,7 @@ class SubscriptionsView(QWidget):
             "Bills": "bill",
             "Income": "income",
             "Habits": "habit",
+            "Cancelled": "cancelled",
         }[chosen]
         return [s for s in everything if self.ledger.kind_of(s) == wanted and id(s) not in stale]
 
@@ -325,7 +334,7 @@ class SubscriptionsView(QWidget):
 
         self.table.setSortingEnabled(True)
         self.table.sortItems(1, Qt.SortOrder.AscendingOrder)
-        self._apply_column_filters()
+        self._apply_search()
 
         # A running total for whatever is on screen, which is the number
         # someone actually came to this tab for.
@@ -406,9 +415,18 @@ class SubscriptionsView(QWidget):
             # Only a tracked entry can be removed. A detected one is a fact
             # about the ledger, and deleting it would just mean re-detecting it.
             menu.addSeparator()
-            drop = QAction(f"Stop tracking {series.merchant}", self)
-            drop.triggered.connect(lambda: self._remove_manual(series))
-            menu.addAction(drop)
+            stop = QAction(f"Stop tracking {series.merchant}", self)
+            stop.setToolTip(
+                "Keeps it on record as something you used to pay for, and stops "
+                "counting it towards your totals."
+            )
+            stop.triggered.connect(lambda: self._remove_manual(series))
+            menu.addAction(stop)
+
+            delete = QAction(f"Delete {series.merchant} entirely…", self)
+            delete.setToolTip("For one added by mistake. This cannot be undone.")
+            delete.triggered.connect(lambda: self._delete_manual(series))
+            menu.addAction(delete)
 
         menu.exec(self.table.viewport().mapToGlobal(position))
 
@@ -438,6 +456,28 @@ class SubscriptionsView(QWidget):
         self.ledger.restore(series)
         self.ledger.load()
         self.refresh()
+
+    def _delete_manual(self, series) -> None:
+        """Remove a tracked entry for good, after asking.
+
+        Distinct from stopping tracking: that keeps a real subscription on
+        record, whereas this is for an entry that should never have existed.
+        Irreversible, so it asks.
+        """
+        from PySide6.QtWidgets import QMessageBox
+
+        answer = QMessageBox.question(
+            self,
+            "Delete this entry?",
+            f"Delete “{series.merchant}” entirely?\n\n"
+            "This is for an entry added by mistake and cannot be undone. To "
+            "keep it on record as something you used to pay for, choose "
+            "“Stop tracking” instead.",
+            QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer == QMessageBox.StandardButton.Yes and self.ledger.delete_manual(series):
+            self.refresh()
 
     def _remove_manual(self, series) -> None:
         if self.ledger.remove_manual(series):

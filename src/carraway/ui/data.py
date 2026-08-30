@@ -108,12 +108,24 @@ class Ledger:
             kind=values.get("kind", "subscription"),
             paid_via=values.get("paid_via", ""),
             notes=values.get("notes", ""),
+            started_on=values.get("started_on"),
         )
         conn.close()
         # A full reload rather than just refreshing `manual`: the series list
         # is built once during load, so updating the tracked entries alone
         # left the new subscription invisible until the app restarted.
         self.load()
+
+    def delete_manual(self, series: RecurringSeries) -> bool:
+        """Remove a tracked entry outright, for one added by mistake."""
+        match = next((i for i in self.manual if str(i["merchant"]) == series.merchant), None)
+        if match is None:
+            return False
+        conn = db.connect(self.path)
+        db.delete_manual_subscription(conn, str(match["id"]))
+        conn.close()
+        self.load()
+        return True
 
     def remove_manual(self, series: RecurringSeries) -> bool:
         match = next((i for i in self.manual if str(i["merchant"]) == series.merchant), None)

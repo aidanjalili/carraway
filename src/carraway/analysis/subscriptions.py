@@ -525,6 +525,8 @@ def as_series(
     Lives here rather than in the UI so the CLI and the GUI cannot disagree
     about what the user is paying for.
     """
+
+    step = {"weekly": 7, "biweekly": 14, "monthly": 30, "quarterly": 91, "yearly": 365}
     today = date.today()
     out: list[RecurringSeries] = []
     for item in tracked:
@@ -533,6 +535,7 @@ def as_series(
         if detected and _already_detected(str(item["merchant"]), detected):
             continue
         amount = item["amount"]
+        started = item.get("started_on")
         out.append(
             RecurringSeries(
                 merchant=str(item["merchant"]),
@@ -540,9 +543,12 @@ def as_series(
                 cadence=str(item["cadence"]),
                 typical_amount=amount,  # type: ignore[arg-type]
                 occurrences=0,
-                first_seen=today,
-                last_seen=today,
-                next_expected=None,
+                first_seen=started or today,
+                last_seen=started or today,
+                # Projected from the start date the user gave, rolled forward
+                # so an entry begun months ago still shows a future charge.
+                # Without a date there is no anchor and none can be offered.
+                next_expected=_project(started, str(item["cadence"]), step, today),
                 confidence=1.0,  # the user's own word, not an inference
                 amount_varies=False,
                 transaction_ids=[],
@@ -627,3 +633,16 @@ def subscription_names() -> tuple[str, ...]:
 def bill_names() -> tuple[str, ...]:
     """Every biller the catalogue recognises."""
     return _BILLS
+
+
+def _project(started: date | None, cadence: str, step: dict[str, int], today: date) -> date | None:
+    """The next charge on or after today, or None without a start date."""
+    if started is None:
+        return None
+    from datetime import timedelta
+
+    days = step.get(cadence, 30)
+    when = started
+    while when < today:
+        when += timedelta(days=days)
+    return when

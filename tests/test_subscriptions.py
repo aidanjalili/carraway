@@ -285,3 +285,29 @@ def test_a_series_with_no_correction_is_returned_untouched():
     original = _detected("Netflix", "8.43")
     assert apply_overrides([original], {"SPOTIFY": {"amount_minor": 100}})[0] is original
     assert apply_overrides([original], {})[0] is original
+
+
+def test_a_start_date_projects_the_next_charge():
+    from datetime import date, timedelta
+
+    from carraway.analysis.subscriptions import as_series
+
+    # Without a start date a tracked entry has a cadence but no anchor, so no
+    # charge can be projected and it cannot appear in Upcoming at all.
+    started = date.today() - timedelta(days=45)
+    entry = _tracked("Gym", "29.54", "monthly")
+    entry["started_on"] = started
+
+    series = as_series([entry])[0]
+    assert series.next_expected is not None
+    # Rolled forward, so a start date months old still projects a future date.
+    assert series.next_expected >= date.today()
+    assert series.first_seen == started
+
+
+def test_without_a_start_date_no_charge_is_projected():
+    from carraway.analysis.subscriptions import as_series
+
+    entry = _tracked("Gym", "29.54", "monthly")
+    entry["started_on"] = None
+    assert as_series([entry])[0].next_expected is None

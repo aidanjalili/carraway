@@ -126,3 +126,29 @@ def test_verdicts_survive_reopening(tmp_path):
 
     # The whole point of storing an answer is not being asked again next time.
     assert db.get_verdicts(db.connect(path)) == {"MOJOCH LONDON": "subscription"}
+
+
+def test_stopping_tracking_keeps_the_record_but_deleting_does_not(tmp_path):
+    # Two different things: a real subscription that ended is worth
+    # remembering, while an entry added by mistake should leave no trace.
+    conn = make_db(tmp_path)
+    kept = db.add_manual_subscription(conn, "Real Gym", Money.parse("29.99"), "monthly")
+    wrong = db.add_manual_subscription(conn, "Typo Entry", Money.parse("9.99"), "monthly")
+
+    assert db.remove_manual_subscription(conn, kept) == 1
+    assert db.delete_manual_subscription(conn, wrong) == 1
+
+    active = {i["merchant"] for i in db.list_manual_subscriptions(conn)}
+    everything = {i["merchant"] for i in db.list_manual_subscriptions(conn, active_only=False)}
+    assert active == set()
+    assert everything == {"Real Gym"}
+
+
+def test_a_tracked_subscription_remembers_when_it_started(tmp_path):
+    from datetime import date
+
+    conn = make_db(tmp_path)
+    db.add_manual_subscription(
+        conn, "Gym", Money.parse("29.54"), "monthly", started_on=date(2026, 8, 30)
+    )
+    assert db.list_manual_subscriptions(conn)[0]["started_on"] == date(2026, 8, 30)
