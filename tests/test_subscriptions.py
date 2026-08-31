@@ -1,6 +1,17 @@
 """Telling a subscription from a bill from a habit."""
 
-from carraway.analysis.subscriptions import BILL, HABIT, SUBSCRIPTION, UNKNOWN, classify, resolve
+from datetime import date
+
+from carraway.analysis import subscriptions as subs
+from carraway.analysis.subscriptions import (
+    BILL,
+    HABIT,
+    SUBSCRIPTION,
+    UNKNOWN,
+    classify,
+    resolve,
+)
+from carraway.core.money import Money
 
 
 def test_known_subscriptions():
@@ -311,3 +322,37 @@ def test_without_a_start_date_no_charge_is_projected():
     entry = _tracked("Gym", "29.54", "monthly")
     entry["started_on"] = None
     assert as_series([entry])[0].next_expected is None
+
+
+def test_a_tracked_entry_carries_the_account_that_pays_for_it():
+    # A detected series gets account_id from the transactions it was found in.
+    # A tracked one has none, so the user's answer fills the same field —
+    # otherwise every screen that groups or labels by account skips them.
+    tracked = [
+        {
+            "merchant": "Gym",
+            "amount": Money.parse("-29.54"),
+            "cadence": "monthly",
+            "kind": "subscription",
+            "paid_via_account": "wf",
+            "started_on": date(2026, 8, 30),
+        }
+    ]
+    series = subs.as_series(tracked)
+    assert series[0].account_id == "wf"
+
+
+def test_a_route_with_no_account_leaves_the_field_empty():
+    # "venmo to dad" is not an account id and must never be mistaken for one.
+    tracked = [
+        {
+            "merchant": "Phone",
+            "amount": Money.parse("-35.00"),
+            "cadence": "monthly",
+            "kind": "subscription",
+            "paid_via": "venmo to dad",
+            "started_on": None,
+        }
+    ]
+    series = subs.as_series(tracked)
+    assert series[0].account_id == ""

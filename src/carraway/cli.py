@@ -882,11 +882,15 @@ def cmd_track(args: argparse.Namespace) -> int:
             print("Nothing tracked manually yet.")
             print("Add one with:  carraway track 'T-Mobile' 35 monthly --via 'paid by dad'")
             return 0
-        print(f"{'ID':<14}{'SERVICE':<26}{'AMOUNT':>10}  {'CADENCE':<10}PAID VIA")
+        names = {a.id: a.name for a in db.list_accounts(conn)}
+        print(f"{'ID':<14}{'SERVICE':<26}{'AMOUNT':>10}  {'CADENCE':<10}PAID WITH")
         for item in tracked:
+            # Same precedence as the GUI: a linked account first, then
+            # whatever route the user described.
+            method = names.get(str(item["paid_via_account"]), "") or str(item["paid_via"])
             print(
                 f"{item['id']:<14}{str(item['merchant'])[:24]:<26}"
-                f"{abs(item['amount']).format():>10}  {str(item['cadence']):<10}{item['paid_via']}"
+                f"{abs(item['amount']).format():>10}  {str(item['cadence']):<10}{method}"
             )
         yearly = total([abs(i["amount"]) * _PER_YEAR.get(str(i["cadence"]), 0) for i in tracked])
         print(f"\n{len(tracked)} tracked, {yearly.format()}/year")
@@ -896,6 +900,24 @@ def cmd_track(args: argparse.Namespace) -> int:
         print("Give an amount and a cadence, e.g. carraway track 'AAA' 67 yearly", file=sys.stderr)
         return 1
 
+    account_id = None
+    if args.via_account:
+        matches = [
+            a
+            for a in db.list_accounts(conn)
+            if args.via_account.lower() in a.name.lower() or a.id == args.via_account
+        ]
+        if len(matches) != 1:
+            found = ", ".join(a.name for a in matches) or "nothing"
+            print(
+                f"--via-account {args.via_account!r} matched {found}. "
+                "Use enough of the name to pick exactly one, or its id "
+                "(see 'carraway accounts').",
+                file=sys.stderr,
+            )
+            return 1
+        account_id = matches[0].id
+
     subscription_id = db.add_manual_subscription(
         conn,
         args.merchant,
@@ -903,6 +925,7 @@ def cmd_track(args: argparse.Namespace) -> int:
         args.cadence,
         kind=args.kind,
         paid_via=args.via or "",
+        paid_via_account=account_id,
         notes=args.notes or "",
     )
     print(f"Tracking {args.merchant} at {Money.parse(str(args.amount)).format()} {args.cadence}")
@@ -1113,7 +1136,14 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["weekly", "biweekly", "monthly", "quarterly", "yearly"],
         help="how often it bills",
     )
-    p_track.add_argument("--via", help="how it is paid, e.g. 'paid by dad'")
+    p_track.add_argument(
+        "--via", help="how it is paid when no account here covers it, e.g. 'paid by dad'"
+    )
+    p_track.add_argument(
+        "--via-account",
+        metavar="NAME",
+        help="the linked account it bills to; part of its name is enough",
+    )
     p_track.add_argument("--kind", default="subscription", choices=["subscription", "bill"])
     p_track.add_argument("--notes", help="anything worth remembering")
     p_track.add_argument("--remove", metavar="ID", help="stop tracking one")

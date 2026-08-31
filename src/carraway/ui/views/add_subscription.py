@@ -26,7 +26,9 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from ...core.models import Account
 from ...core.money import Money
+from .paid_with import PaidWithPicker
 
 _CADENCES = ["monthly", "yearly", "weekly", "biweekly", "quarterly"]
 
@@ -48,7 +50,7 @@ _PER_YEAR = {"weekly": 52, "biweekly": 26, "monthly": 12, "quarterly": 4, "yearl
 class AddSubscriptionDialog(QDialog):
     """Ask for the details of a subscription the ledger cannot show."""
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, accounts: list[Account] | None = None, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Track a subscription")
         self.setMinimumWidth(440)
@@ -99,9 +101,12 @@ class AddSubscriptionDialog(QDialog):
         )
         form.addRow("Last billed", self.started)
 
-        self.paid_via = QLineEdit()
-        self.paid_via.setPlaceholderText("paid by a family member")
-        form.addRow("Paid via", self.paid_via)
+        self.paid_with = PaidWithPicker(accounts or [])
+        self.paid_with.setToolTip(
+            "The card or account it bills to. Pick 'Other…' for anything "
+            "Carraway cannot see, such as a family member paying it."
+        )
+        form.addRow("Paid with", self.paid_with)
 
         self.notes = QLineEdit()
         form.addRow("Notes", self.notes)
@@ -163,15 +168,15 @@ class AddSubscriptionDialog(QDialog):
             "amount": self._amount_or_none() or Money.zero(),
             "cadence": self.cadence.currentText(),
             "kind": self.kind.currentText(),
-            "paid_via": self.paid_via.text().strip(),
+            **self.paid_with.value,
             "notes": self.notes.text().strip(),
             "started_on": self.started.date().toPython(),
         }
 
 
-def prompt(parent=None) -> dict | None:
+def prompt(accounts: list[Account] | None = None, parent=None) -> dict | None:
     """Run the dialog. Returns the values, or None if cancelled."""
-    dialog = AddSubscriptionDialog(parent)
+    dialog = AddSubscriptionDialog(accounts, parent)
     if dialog.exec() != QDialog.DialogCode.Accepted:
         return None
     return dialog.values

@@ -170,6 +170,16 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE manual_subscriptions ADD COLUMN started_on TEXT;
     """,
+    # v12 - which account pays for a tracked subscription. Distinct from the
+    # free-text `paid_via`, which holds the things no account can represent
+    # ("venmo to dad", "my mother's card"). A linked account is a reference
+    # rather than a description: it survives the account being renamed, and
+    # lets the subscription show the same account name every other screen
+    # uses. Nullable, since neither field is required and most entries have
+    # only one of the two.
+    """
+    ALTER TABLE manual_subscriptions ADD COLUMN paid_via_account TEXT;
+    """,
 ]
 
 
@@ -419,10 +429,16 @@ def add_manual_subscription(
     *,
     kind: str = "subscription",
     paid_via: str = "",
+    paid_via_account: str | None = None,
     notes: str = "",
     started_on: date | None = None,
 ) -> str:
-    """Record a subscription detection cannot see. Returns its id."""
+    """Record a subscription detection cannot see. Returns its id.
+
+    `paid_via_account` links the entry to an account in this ledger;
+    `paid_via` describes a payment route that has no account here. They are
+    alternatives, not a pair, and passing neither is normal.
+    """
     import uuid
 
     subscription_id = uuid.uuid4().hex[:12]
@@ -430,8 +446,8 @@ def add_manual_subscription(
         """
         INSERT INTO manual_subscriptions
             (id, merchant, amount_minor, currency, cadence, kind, paid_via, notes,
-             active, started_on)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+             active, started_on, paid_via_account)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
         """,
         (
             subscription_id,
@@ -443,6 +459,7 @@ def add_manual_subscription(
             paid_via,
             notes,
             started_on.isoformat() if started_on else None,
+            paid_via_account or None,
         ),
     )
     conn.commit()
@@ -462,6 +479,7 @@ def list_manual_subscriptions(
             "cadence": r["cadence"],
             "kind": r["kind"],
             "paid_via": r["paid_via"],
+            "paid_via_account": r["paid_via_account"] or "",
             "notes": r["notes"],
             "active": bool(r["active"]),
             "started_on": (date.fromisoformat(r["started_on"]) if r["started_on"] else None),
@@ -479,6 +497,27 @@ def remove_manual_subscription(conn: sqlite3.Connection, subscription_id: str) -
     """
     cur = conn.execute(
         "UPDATE manual_subscriptions SET active = 0 WHERE id = ?", (subscription_id,)
+    )
+    conn.commit()
+    return cur.rowcount
+
+
+def set_manual_paid_via(
+    conn: sqlite3.Connection,
+    subscription_id: str,
+    *,
+    paid_via: str = "",
+    paid_via_account: str | None = None,
+) -> int:
+    """Record how a tracked subscription is paid for. Returns rows changed.
+
+    Both fields are written every time, so choosing an account clears a stale
+    free-text note and vice versa — leaving the old one behind would show two
+    contradictory answers to one question.
+    """
+    cur = conn.execute(
+        "UPDATE manual_subscriptions SET paid_via = ?, paid_via_account = ? WHERE id = ?",
+        (paid_via, paid_via_account or None, subscription_id),
     )
     conn.commit()
     return cur.rowcount

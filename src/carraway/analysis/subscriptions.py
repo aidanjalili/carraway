@@ -538,7 +538,11 @@ def as_series(
         out.append(
             RecurringSeries(
                 merchant=str(item["merchant"]),
-                account_id="",
+                # The account the user said pays for it. A detected series
+                # gets this from the transactions it was found in; a tracked
+                # one has none, so the user's answer fills the same field and
+                # every screen that groups or labels by account works for both.
+                account_id=str(item.get("paid_via_account") or ""),
                 cadence=str(item["cadence"]),
                 typical_amount=amount,  # type: ignore[arg-type]
                 occurrences=0,

@@ -383,11 +383,13 @@ def _autopay_rows(
         yield from _section(title)
         for item in sorted(group, key=lambda s: -abs(s.annualised.minor)):
             when = item.next_expected.isoformat() if item.next_expected else "—"
-            # A detected series was charged to an account, and that is its
-            # payment method. Only entries the user typed in need the note
-            # they wrote, which is what paid_via holds.
-            method = paid_via.get(item.merchant.upper()) or (
-                (account_names or {}).get(item.account_id, "")
+            # An account link wins over free text, matching what the
+            # Subscriptions screen shows: a detected series was charged to an
+            # account, and a tracked one names the account the user picked.
+            # The free text is the fallback for routes with no account here
+            # — "venmo to dad" and the like.
+            method = (account_names or {}).get(item.account_id, "") or paid_via.get(
+                item.merchant.upper(), ""
             )
             yield [
                 _string_cell(item.merchant),

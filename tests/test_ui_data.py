@@ -117,3 +117,78 @@ def test_an_account_with_no_balance_is_reported_by_name(tmp_path):
     assert missing == ["a2"]
     by_id = {a.id: a.name for a in ledger.accounts}
     assert [by_id[i] for i in missing] == ["No Balance Here"]
+
+
+def _tracked_ledger(tmp_path) -> Ledger:
+    """A ledger with linked accounts and one tracked subscription on each route."""
+    path = tmp_path / "paid.db"
+    conn = db.connect(path)
+    db.upsert_account(conn, Account(id="wf", name="Wells Fargo Card", type=AccountType.CREDIT_CARD))
+    db.upsert_account(conn, Account(id="chk", name="Chase Checking", type=AccountType.CHECKING))
+    db.upsert_account(
+        conn, Account(id="old", name="Closed Card", type=AccountType.CREDIT_CARD, closed=True)
+    )
+    db.add_manual_subscription(conn, "Gym", Money.parse("29.54"), "monthly", paid_via_account="wf")
+    db.add_manual_subscription(
+        conn, "Phone", Money.parse("35.00"), "monthly", paid_via="venmo to dad"
+    )
+    db.add_manual_subscription(conn, "Domain", Money.parse("15.00"), "yearly")
+    conn.close()
+
+    ledger = Ledger(path=path)
+    ledger.load()
+    return ledger
+
+
+def _series_named(ledger: Ledger, name: str):
+    return next(s for s in ledger.series if s.merchant == name)
+
+
+def test_a_linked_account_is_shown_by_its_real_name(tmp_path):
+    # The point of storing a reference rather than the text the user typed:
+    # the subscription names the account the way every other screen does.
+    ledger = _tracked_ledger(tmp_path)
+    assert ledger.paid_with(_series_named(ledger, "Gym")) == "Wells Fargo Card"
+
+
+def test_free_text_survives_for_routes_with_no_account(tmp_path):
+    # "venmo to dad" is not an account and never will be. Forcing the answer
+    # into a dropdown would make it unrecordable.
+    ledger = _tracked_ledger(tmp_path)
+    assert ledger.paid_with(_series_named(ledger, "Phone")) == "venmo to dad"
+
+
+def test_saying_nothing_shows_nothing(tmp_path):
+    ledger = _tracked_ledger(tmp_path)
+    assert ledger.paid_with(_series_named(ledger, "Domain")) == ""
+
+
+def test_a_detected_series_reports_the_account_it_was_found_in(tmp_path):
+    # No user input needed: the charge landed somewhere, and that is the answer.
+    ledger = _ledger(tmp_path, _statement("-8.43"))
+    netflix = next(s for s in ledger.series if "NETFLIX" in s.merchant.upper())
+    assert ledger.paid_with(netflix) == "Card"
+
+
+def test_choosing_an_account_clears_a_stale_note(tmp_path):
+    # Both fields are written every time, so the row cannot end up claiming
+    # two different answers to one question.
+    ledger = _tracked_ledger(tmp_path)
+    phone = _series_named(ledger, "Phone")
+    assert ledger.set_paid_with(phone, {"paid_via_account": "chk"}) is True
+    assert ledger.paid_with(_series_named(ledger, "Phone")) == "Chase Checking"
+    entry = ledger.manual_entry(_series_named(ledger, "Phone"))
+    assert entry["paid_via"] == ""
+
+
+def test_a_detected_series_cannot_have_its_account_reassigned(tmp_path):
+    # It is a fact from the statement, not a guess to correct.
+    ledger = _ledger(tmp_path, _statement("-8.43"))
+    netflix = next(s for s in ledger.series if "NETFLIX" in s.merchant.upper())
+    assert ledger.set_paid_with(netflix, {"paid_via_account": "a1"}) is False
+
+
+def test_payable_accounts_puts_cards_first_and_drops_closed_ones(tmp_path):
+    ledger = _tracked_ledger(tmp_path)
+    offered = ledger.payable_accounts
+    assert [a.name for a in offered] == ["Wells Fargo Card", "Chase Checking"]

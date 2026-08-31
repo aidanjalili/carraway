@@ -18,7 +18,7 @@ from ..analysis import networth as networth_mod
 from ..analysis import price_changes, recurring, subscriptions, transfers
 from ..analysis import spending as spending_mod
 from ..core import db
-from ..core.models import Account, RecurringSeries, Transaction
+from ..core.models import Account, AccountType, RecurringSeries, Transaction
 from ..core.money import Money, total
 
 
@@ -107,6 +107,7 @@ class Ledger:
             values["cadence"],
             kind=values.get("kind", "subscription"),
             paid_via=values.get("paid_via", ""),
+            paid_via_account=values.get("paid_via_account") or None,
             notes=values.get("notes", ""),
             started_on=values.get("started_on"),
         )
@@ -116,9 +117,74 @@ class Ledger:
         # left the new subscription invisible until the app restarted.
         self.load()
 
+    @property
+    def payable_accounts(self) -> list[Account]:
+        """Accounts worth offering as the thing that pays for a subscription.
+
+        Closed ones are dropped, since nothing new bills to them. Every open
+        one is kept, including the unlikely ones: ruling out a brokerage
+        account would be a guess, and the cost of being wrong is a user who
+        cannot record the truth. Cards first, because an autopay is far more
+        often on a card than out of a savings account, and the top of a
+        dropdown is where the common answer belongs.
+        """
+        order = {
+            AccountType.CREDIT_CARD: 0,
+            AccountType.CHECKING: 1,
+            AccountType.CASH: 2,
+            AccountType.SAVINGS: 3,
+            AccountType.LOAN: 4,
+            AccountType.INVESTMENT: 5,
+        }
+        return sorted(
+            (a for a in self.accounts if not a.closed),
+            key=lambda a: (order.get(a.type, 9), a.name.lower()),
+        )
+
+    def manual_entry(self, series: RecurringSeries) -> dict | None:
+        """The stored row behind a tracked series, or None if it was detected.
+
+        Matched on merchant, which is what `as_series` copies across. Detected
+        series never match, because nothing put them in the table.
+        """
+        return next((i for i in self.manual if str(i["merchant"]) == series.merchant), None)
+
+    def paid_with(self, series: RecurringSeries) -> str:
+        """Which card, account or route this charge comes out of.
+
+        An account link wins over the free text: it is the more specific
+        answer, and naming the account the way every other screen names it is
+        worth more than repeating whatever the user typed. Empty when nothing
+        is known, which is honest — a tracked entry need not say.
+        """
+        if series.account_id:
+            return self.account_name(series.account_id)
+        entry = self.manual_entry(series)
+        return str(entry.get("paid_via") or "") if entry else ""
+
+    def set_paid_with(self, series: RecurringSeries, choice: dict) -> bool:
+        """Record how a tracked entry is paid for. False if it was detected.
+
+        Detected series are deliberately not editable here: the account a
+        charge landed in is a fact from the statement, not a guess to correct.
+        """
+        entry = self.manual_entry(series)
+        if entry is None:
+            return False
+        conn = db.connect(self.path)
+        db.set_manual_paid_via(
+            conn,
+            str(entry["id"]),
+            paid_via=choice.get("paid_via", ""),
+            paid_via_account=choice.get("paid_via_account") or None,
+        )
+        conn.close()
+        self.load()
+        return True
+
     def delete_manual(self, series: RecurringSeries) -> bool:
         """Remove a tracked entry outright, for one added by mistake."""
-        match = next((i for i in self.manual if str(i["merchant"]) == series.merchant), None)
+        match = self.manual_entry(series)
         if match is None:
             return False
         conn = db.connect(self.path)
@@ -128,7 +194,7 @@ class Ledger:
         return True
 
     def remove_manual(self, series: RecurringSeries) -> bool:
-        match = next((i for i in self.manual if str(i["merchant"]) == series.merchant), None)
+        match = self.manual_entry(series)
         if match is None:
             return False
         conn = db.connect(self.path)

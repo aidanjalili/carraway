@@ -37,19 +37,31 @@ from ..widgets import (
     StatRow,
     enable_row_hover,
 )
-from . import add_subscription, edit_series
+from . import add_subscription, edit_series, paid_with
 from .classify_dialog import ClassifyDialog
 
 _HEADERS = [
     "Merchant",
     "Kind",
     "Cadence",
+    "Paid with",
     "Amount",
     "Per year",
     "Next charge",
     "Seen",
     "Confidence",
 ]
+
+# Everything from here rightwards is a number and is right-aligned; everything
+# before it is text and is left-aligned. Named rather than written as a bare
+# index so inserting a column means changing one number, not hunting for the
+# comparisons that assumed the old layout.
+_FIRST_NUMERIC_COLUMN = _HEADERS.index("Amount")
+
+# The columns the search box looks in. Merchant, kind, cadence and the account
+# it bills to: typing "wells fargo" to see everything on one card is as natural
+# as typing a merchant name.
+_SEARCHABLE_COLUMNS = (0, 1, 2, 3)
 
 # Sort order for the Kind column: what you can cancel first, what you have
 # not yet decided about last, since that is the row needing an action.
@@ -153,7 +165,9 @@ class SubscriptionsView(QWidget):
         # Headers must sit over their columns: text left, numbers right.
         for column in range(len(_HEADERS)):
             align = (
-                Qt.AlignmentFlag.AlignLeft if column < 3 else Qt.AlignmentFlag.AlignRight
+                Qt.AlignmentFlag.AlignLeft
+                if column < _FIRST_NUMERIC_COLUMN
+                else Qt.AlignmentFlag.AlignRight
             ) | Qt.AlignmentFlag.AlignVCenter
             self.table.horizontalHeaderItem(column).setTextAlignment(align)
         self.table.verticalHeader().setVisible(False)
@@ -206,8 +220,8 @@ class SubscriptionsView(QWidget):
 
         Rows are hidden rather than the table rebuilt, so sorting survives and
         the running totals keep describing the tab rather than the search.
-        Matched across merchant, kind and cadence at once, since typing
-        "yearly" or "bill" is as natural as typing a merchant name.
+        Matched across every text column at once, since typing "yearly",
+        "bill" or "wells fargo" is as natural as typing a merchant name.
         """
         needle = self.search.text().strip().lower()
         hidden = 0
@@ -215,7 +229,7 @@ class SubscriptionsView(QWidget):
             if not needle:
                 self.table.setRowHidden(row, False)
                 continue
-            cells = (self.table.item(row, column) for column in (0, 1, 2))
+            cells = (self.table.item(row, column) for column in _SEARCHABLE_COLUMNS)
             keep = any(cell and needle in cell.text().lower() for cell in cells)
             self.table.setRowHidden(row, not keep)
             hidden += not keep
@@ -299,6 +313,7 @@ class SubscriptionsView(QWidget):
             # which is stale the moment a price changes.
             amount = self.ledger.current_amount(item)
             annual = self.ledger.current_annual(item)
+            paid_with = self.ledger.paid_with(item)
             cells = [
                 SortableItem(name, item.merchant.lower()),
                 # Sorted by kind, then by cost within a kind, so the
@@ -312,6 +327,10 @@ class SubscriptionsView(QWidget):
                     _cadence_label(item),
                     (_CADENCE_ORDER.get(item.cadence, 99), -abs(annual.minor)),
                 ),
+                # Blank when nothing is known, and sorted to the bottom
+                # rather than the top: an unanswered question is not a name
+                # that happens to start with a space.
+                SortableItem(paid_with or "—", (paid_with or "\uffff").lower()),
                 SortableItem(abs(amount).format(), abs(amount.minor)),
                 SortableItem(annual.format(), annual.minor),
                 SortableItem(
@@ -324,7 +343,7 @@ class SubscriptionsView(QWidget):
             self._rows[id(item)] = item
             cells[0].setData(Qt.ItemDataRole.UserRole, id(item))
             for column, cell in enumerate(cells):
-                if column >= 3:
+                if column >= _FIRST_NUMERIC_COLUMN:
                     cell.setTextAlignment(
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                     )
@@ -412,6 +431,14 @@ class SubscriptionsView(QWidget):
         menu.addAction(dismiss)
 
         if self.ledger.is_manual(series):
+            # Only a tracked entry can say what pays for it. For a detected
+            # one the account is not a guess to correct — the charge landed
+            # there, and that is what the statement says.
+            route = QAction("Paid with…", self)
+            route.setToolTip("Which card or account this bills to.")
+            route.triggered.connect(lambda: self._set_paid_with(series))
+            menu.addAction(route)
+
             # Only a tracked entry can be removed. A detected one is a fact
             # about the ledger, and deleting it would just mean re-detecting it.
             menu.addSeparator()
@@ -430,9 +457,26 @@ class SubscriptionsView(QWidget):
 
         menu.exec(self.table.viewport().mapToGlobal(position))
 
+    def _set_paid_with(self, series) -> None:
+        """Change which account a tracked subscription bills to."""
+        entry = self.ledger.manual_entry(series)
+        if entry is None:
+            return
+        choice = paid_with.prompt(
+            series.merchant,
+            self.ledger.payable_accounts,
+            str(entry.get("paid_via") or ""),
+            str(entry.get("paid_via_account") or ""),
+            self,
+        )
+        if choice is None:
+            return
+        self.ledger.set_paid_with(series, choice)
+        self.refresh()
+
     def _add_manual(self) -> None:
         """Record a subscription no detector can see."""
-        values = add_subscription.prompt(self)
+        values = add_subscription.prompt(self.ledger.payable_accounts, self)
         if values is None:
             return
         self.ledger.add_manual(values)
