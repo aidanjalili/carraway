@@ -180,6 +180,38 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE manual_subscriptions ADD COLUMN paid_via_account TEXT;
     """,
+    # v13 - budgets the user sets for a stretch of days, and the per-category
+    # envelopes inside them. Separate from `analysis.budget`, which derives a
+    # repeating allowance from a net-worth goal and stores nothing: this is a
+    # thing you name, come back to next week, and check yourself against.
+    #
+    # `accounts` is a comma-separated list of account ids, empty meaning all
+    # of them. A join table would be tidier, but this is a short scope list
+    # read only alongside its budget and never queried across, so a table
+    # would be structure without a use for it.
+    """
+    CREATE TABLE budgets (
+        id         TEXT PRIMARY KEY,
+        name       TEXT NOT NULL,
+        starts_on  TEXT NOT NULL,
+        ends_on    TEXT NOT NULL,          -- inclusive
+        accounts   TEXT NOT NULL DEFAULT '',
+        currency   TEXT NOT NULL DEFAULT 'USD',
+        -- The reasoning behind the numbers, when the user worked backwards
+        -- from what they earn. Null when they simply typed the figures.
+        income_minor  INTEGER,
+        saving_minor  INTEGER,
+        fixed_minor   INTEGER,
+        created_on TEXT NOT NULL
+    );
+
+    CREATE TABLE budget_envelopes (
+        budget_id  TEXT NOT NULL REFERENCES budgets(id) ON DELETE CASCADE,
+        category   TEXT NOT NULL,
+        amount_minor INTEGER NOT NULL,     -- a magnitude; see analysis.budgets
+        PRIMARY KEY (budget_id, category)
+    );
+    """,
 ]
 
 
@@ -548,6 +580,105 @@ def delete_manual_subscription(conn: sqlite3.Connection, subscription_id: str) -
     orphan.
     """
     cur = conn.execute("DELETE FROM manual_subscriptions WHERE id = ?", (subscription_id,))
+    conn.commit()
+    return cur.rowcount
+
+
+# -- budgets --------------------------------------------------------------
+
+
+def save_budget(conn: sqlite3.Connection, budget) -> str:
+    """Insert or replace a budget and its envelopes. Returns its id.
+
+    Envelopes are deleted and rewritten rather than diffed: the whole set is
+    always supplied together, and a leftover line from a previous version
+    would silently keep counting against the user.
+    """
+    conn.execute(
+        """
+        INSERT INTO budgets
+            (id, name, starts_on, ends_on, accounts, currency,
+             income_minor, saving_minor, fixed_minor, created_on)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            starts_on = excluded.starts_on,
+            ends_on = excluded.ends_on,
+            accounts = excluded.accounts,
+            currency = excluded.currency,
+            income_minor = excluded.income_minor,
+            saving_minor = excluded.saving_minor,
+            fixed_minor = excluded.fixed_minor
+        """,
+        (
+            budget.id,
+            budget.name,
+            budget.starts_on.isoformat(),
+            budget.ends_on.isoformat(),
+            ",".join(budget.accounts),
+            budget.total.currency,
+            budget.expected_income.minor if budget.expected_income else None,
+            budget.savings_target.minor if budget.savings_target else None,
+            budget.fixed_costs.minor if budget.fixed_costs else None,
+            date.today().isoformat(),
+        ),
+    )
+    conn.execute("DELETE FROM budget_envelopes WHERE budget_id = ?", (budget.id,))
+    conn.executemany(
+        "INSERT INTO budget_envelopes (budget_id, category, amount_minor) VALUES (?, ?, ?)",
+        [(budget.id, e.category, abs(e.allowance.minor)) for e in budget.envelopes],
+    )
+    conn.commit()
+    return budget.id
+
+
+def list_budgets(conn: sqlite3.Connection) -> list:
+    """Every saved budget, newest window first."""
+    from ..analysis.budgets import Budget, Envelope
+
+    rows = conn.execute("SELECT * FROM budgets ORDER BY starts_on DESC, name").fetchall()
+    out = []
+    for r in rows:
+        envelopes = conn.execute(
+            "SELECT category, amount_minor FROM budget_envelopes "
+            "WHERE budget_id = ? ORDER BY amount_minor DESC, category",
+            (r["id"],),
+        ).fetchall()
+        out.append(
+            Budget(
+                id=r["id"],
+                name=r["name"],
+                starts_on=date.fromisoformat(r["starts_on"]),
+                ends_on=date.fromisoformat(r["ends_on"]),
+                envelopes=tuple(
+                    Envelope(e["category"], Money(e["amount_minor"], r["currency"]))
+                    for e in envelopes
+                ),
+                accounts=tuple(a for a in r["accounts"].split(",") if a),
+                expected_income=(
+                    Money(r["income_minor"], r["currency"])
+                    if r["income_minor"] is not None
+                    else None
+                ),
+                savings_target=(
+                    Money(r["saving_minor"], r["currency"])
+                    if r["saving_minor"] is not None
+                    else None
+                ),
+                fixed_costs=(
+                    Money(r["fixed_minor"], r["currency"]) if r["fixed_minor"] is not None else None
+                ),
+            )
+        )
+    return out
+
+
+def delete_budget(conn: sqlite3.Connection, budget_id: str) -> int:
+    """Remove a budget and its envelopes. Returns rows removed."""
+    # The cascade needs foreign keys on, which `connect` enables; deleting the
+    # envelopes explicitly means this is right either way.
+    conn.execute("DELETE FROM budget_envelopes WHERE budget_id = ?", (budget_id,))
+    cur = conn.execute("DELETE FROM budgets WHERE id = ?", (budget_id,))
     conn.commit()
     return cur.rowcount
 

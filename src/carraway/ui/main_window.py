@@ -24,7 +24,8 @@ from . import sync_worker
 from .assets import app_icon
 from .data import Ledger
 from .sync_worker import SyncRunner
-from .views.budget import BudgetView
+from .views.budget_detail import BudgetDetailView
+from .views.create_budget import CreateBudgetView
 from .views.dashboard import DashboardView
 from .views.networth import NetWorthView
 from .views.settings import SettingsView
@@ -39,7 +40,7 @@ _SCREENS = [
     ("Net worth", NetWorthView),
     ("Upcoming", UpcomingView),
     ("Subscriptions", SubscriptionsView),
-    ("Budget", BudgetView),
+    ("Create a budget", CreateBudgetView),
     ("Spending", SpendingView),
     ("Overview", DashboardView),
     ("Transactions", TransactionsView),
@@ -68,6 +69,7 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(self.stack, stretch=1)
 
         self.setCentralWidget(root)
+        self._rebuild_budget_nav()
 
         self.syncer = SyncRunner(self.ledger.path, self)
         self.syncer.started.connect(self._sync_started)
@@ -106,8 +108,8 @@ class MainWindow(QMainWindow):
         layout.addLayout(brand)
         layout.addWidget(tagline)
 
-        group = QButtonGroup(self)
-        group.setExclusive(True)
+        self.nav_group = QButtonGroup(self)
+        self.nav_group.setExclusive(True)
         for index, (name, _) in enumerate(_SCREENS):
             button = QPushButton(name)
             button.setObjectName("NavButton")
@@ -115,8 +117,26 @@ class MainWindow(QMainWindow):
             button.setChecked(index == 0)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.clicked.connect(lambda _=False, i=index: self.stack.setCurrentIndex(i))
-            group.addButton(button, index)
+            self.nav_group.addButton(button, index)
             layout.addWidget(button)
+
+        # Saved budgets get their own section, rebuilt whenever one is added
+        # or removed. Held in a layout of its own so rebuilding it does not
+        # disturb the fixed screens above or the buttons below.
+        self.budgets_heading = QLabel("MY BUDGETS")
+        self.budgets_heading.setObjectName("StatLabel")
+        self.budgets_heading.setStyleSheet("padding: 14px 8px 4px 8px;")
+        layout.addWidget(self.budgets_heading)
+
+        self.budgets_nav = QVBoxLayout()
+        self.budgets_nav.setContentsMargins(0, 0, 0, 0)
+        self.budgets_nav.setSpacing(4)
+        layout.addLayout(self.budgets_nav)
+
+        self.no_budgets = QLabel("None yet")
+        self.no_budgets.setObjectName("Muted")
+        self.no_budgets.setStyleSheet("padding: 2px 8px 0 8px; font-size: 12px;")
+        layout.addWidget(self.no_budgets)
 
         layout.addStretch(1)
 
@@ -350,10 +370,82 @@ class MainWindow(QMainWindow):
 
     def refresh_all(self) -> None:
         """Reload every screen after the ledger changes underneath them."""
+        self._rebuild_budget_nav()
         for index in range(self.stack.count()):
             view = self.stack.widget(index)
             if hasattr(view, "refresh"):
                 view.refresh()
+
+    # -- saved budgets in the sidebar -------------------------------------
+
+    def _rebuild_budget_nav(self) -> None:
+        """Put one nav button and one screen behind every saved budget.
+
+        Screens are torn down and rebuilt rather than diffed: there are a
+        handful of budgets at most, and a stale screen pointing at a deleted
+        budget is a whole class of bug not worth the saved microseconds.
+        """
+        remembered = self._current_budget_id()
+
+        while self.budgets_nav.count():
+            item = self.budgets_nav.takeAt(0)
+            widget = item.widget() if item else None
+            if widget is not None:
+                self.nav_group.removeButton(widget)
+                widget.deleteLater()
+        for index in reversed(range(len(_SCREENS), self.stack.count())):
+            view = self.stack.widget(index)
+            self.stack.removeWidget(view)
+            view.deleteLater()
+
+        budgets = list(self.ledger.budgets)
+        self.no_budgets.setVisible(not budgets)
+        self._budget_screens: dict[str, int] = {}
+
+        for budget in budgets:
+            index = self.stack.addWidget(BudgetDetailView(self.ledger, budget.id))
+            self._budget_screens[budget.id] = index
+            button = QPushButton(budget.name[:22])
+            button.setObjectName("NavButton")
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setToolTip(
+                f"{budget.name} — {budget.starts_on.isoformat()} to "
+                f"{budget.ends_on.isoformat()}, {budget.total.format()}"
+            )
+            button.clicked.connect(lambda _=False, i=index: self.stack.setCurrentIndex(i))
+            self.nav_group.addButton(button, index)
+            self.budgets_nav.addWidget(button)
+
+        # Stay where the user was, unless the budget they were looking at has
+        # just been deleted — then fall back to the screen that makes them.
+        if remembered and remembered in self._budget_screens:
+            self.show_budget(remembered)
+        elif remembered:
+            self._show_screen("Create a budget")
+
+    def _current_budget_id(self) -> str | None:
+        view = self.stack.currentWidget()
+        return getattr(view, "budget_id", None)
+
+    def _show_screen(self, name: str) -> None:
+        for index, (label, _) in enumerate(_SCREENS):
+            if label == name:
+                self.stack.setCurrentIndex(index)
+                button = self.nav_group.button(index)
+                if button is not None:
+                    button.setChecked(True)
+                return
+
+    def show_budget(self, budget_id: str) -> None:
+        """Open a budget's screen and check its button in the sidebar."""
+        index = getattr(self, "_budget_screens", {}).get(budget_id)
+        if index is None:
+            return
+        self.stack.setCurrentIndex(index)
+        button = self.nav_group.button(index)
+        if button is not None:
+            button.setChecked(True)
 
     def _export(self) -> None:
         from PySide6.QtWidgets import QFileDialog, QMessageBox

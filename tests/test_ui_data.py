@@ -342,3 +342,95 @@ def test_a_reading_already_includes_its_own_day(tmp_path):
     ledger.load()
     assert ledger.implied_balance("cash") == Money.parse("1008.47")
     assert ledger.implied_balance("cash") != Money.parse("1105.47")
+
+
+# -- budgets --------------------------------------------------------------
+
+
+def _budget_ledger(tmp_path) -> Ledger:
+    """Six months of steady spending across two accounts."""
+    path = tmp_path / "budget.db"
+    conn = db.connect(path)
+    db.upsert_account(conn, Account(id="card", name="Card", type=AccountType.CREDIT_CARD))
+    db.upsert_account(conn, Account(id="cash", name="Cash", type=AccountType.CASH))
+    rows = []
+    for month in range(2, 8):
+        rows.append(
+            Transaction(
+                id=f"d{month}",
+                account_id="card",
+                date=date(2026, month, 9),
+                amount=Money.parse("-200.00"),
+                description="RESTAURANT",
+                category="Dining",
+            )
+        )
+        rows.append(
+            Transaction(
+                id=f"c{month}",
+                account_id="cash",
+                date=date(2026, month, 12),
+                amount=Money.parse("-60.00"),
+                description="MARKET",
+                category="Groceries",
+            )
+        )
+    db.insert_transactions(conn, rows)
+    conn.close()
+    ledger = Ledger(path=path)
+    ledger.load()
+    return ledger
+
+
+def test_a_ledger_starts_with_no_budgets(tmp_path):
+    assert _budget_ledger(tmp_path).budgets == []
+
+
+def test_a_saved_budget_comes_back_on_the_ledger(tmp_path):
+    from carraway.analysis.budgets import Budget, Envelope
+
+    ledger = _budget_ledger(tmp_path)
+    ledger.save_budget(
+        Budget(
+            id="b1",
+            name="August",
+            starts_on=date(2026, 8, 1),
+            ends_on=date(2026, 8, 31),
+            envelopes=(Envelope("Dining", Money.parse("250")),),
+        )
+    )
+    assert [b.name for b in ledger.budgets] == ["August"]
+    assert ledger.budget_by_id("b1").total == Money.parse("250")
+
+    assert ledger.delete_budget("b1") is True
+    assert ledger.budgets == []
+
+
+def test_suggestions_can_be_narrowed_to_some_accounts(tmp_path):
+    ledger = _budget_ledger(tmp_path)
+    every = {e.category for e in ledger.suggest_envelopes(date(2026, 8, 1), date(2026, 8, 31))}
+    card = {
+        e.category
+        for e in ledger.suggest_envelopes(date(2026, 8, 1), date(2026, 8, 31), accounts=["card"])
+    }
+    assert "Groceries" in every
+    assert "Groceries" not in card
+    assert "Dining" in card
+
+
+def test_budget_status_uses_the_ledgers_own_categories(tmp_path):
+    # Not the built-in rules: the budget must agree with what Spending shows.
+    from carraway.analysis.budgets import Budget, Envelope
+
+    ledger = _budget_ledger(tmp_path)
+    budget = Budget(
+        id="b1",
+        name="July",
+        starts_on=date(2026, 7, 1),
+        ends_on=date(2026, 7, 31),
+        envelopes=(Envelope("Dining", Money.parse("250")),),
+    )
+    state = ledger.budget_status(budget, asof=date(2026, 7, 31))
+    dining = next(line for line in state.lines if line.category == "Dining")
+    assert dining.spent == Money.parse("200")
+    assert dining.on_track is True

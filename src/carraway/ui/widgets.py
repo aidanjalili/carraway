@@ -344,6 +344,48 @@ class HoverRowDelegate(QStyledItemDelegate):
         super().paint(painter, option, index)
 
 
+class MeterDelegate(HoverRowDelegate):
+    """Draws a filled bar for the cell's value, keeping the row hover intact.
+
+    Subclasses the hover delegate rather than replacing it: a column with its
+    own delegate would otherwise be the one column that does not light up with
+    the rest of its row, which reads as a rendering bug.
+
+    The value is a fraction in `Qt.UserRole`; above 1.0 the bar is full and
+    turns red, because "180% of budget" has no longer bar to draw and the
+    colour is the part that matters anyway.
+    """
+
+    def paint(self, painter, option, index) -> None:
+        fraction = index.data(Qt.ItemDataRole.UserRole)
+        if fraction is None:
+            super().paint(painter, option, index)
+            return
+
+        # The hover wash, without the text: the bar is the content here.
+        if index.row() == self._row and not (option.state & QStyle.StateFlag.State_Selected):
+            painter.fillRect(option.rect, QColor(theme.ACTIVE.hover))
+
+        rect = option.rect.adjusted(6, 0, -6, 0)
+        height = 8
+        top = rect.top() + (rect.height() - height) // 2
+        track = QRect(rect.left(), top, rect.width(), height)
+
+        painter.save()
+        painter.setRenderHint(painter.RenderHint.Antialiasing, True)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(theme.ACTIVE.surface_alt))
+        painter.drawRoundedRect(track, 4, 4)
+
+        filled = max(0.0, min(float(fraction), 1.0))
+        if filled > 0:
+            over = float(fraction) > 1.0
+            painter.setBrush(QColor(theme.ACTIVE.danger if over else theme.ACTIVE.accent))
+            width = max(int(track.width() * filled), 3)
+            painter.drawRoundedRect(QRect(track.left(), top, width, height), 4, 4)
+        painter.restore()
+
+
 def enable_row_hover(view) -> HoverRowDelegate:
     """Attach row highlighting to a table, keeping the delegate alive."""
     delegate = HoverRowDelegate(view)

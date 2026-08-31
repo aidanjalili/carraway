@@ -12,6 +12,7 @@ from datetime import date
 from pathlib import Path
 
 from ..analysis import budget as budget_mod
+from ..analysis import budgets as budgets_mod
 from ..analysis import categorize as cat
 from ..analysis import guess as guess_mod
 from ..analysis import networth as networth_mod
@@ -41,6 +42,7 @@ class Ledger:
     dismissed: list = field(default_factory=list)
     overrides: dict = field(default_factory=dict)
     user_rules: list = field(default_factory=list)
+    budgets: list = field(default_factory=list)
     categories_available: tuple = ()
     decided: dict[str, date] = field(default_factory=dict)  # merchant -> when answered
 
@@ -61,6 +63,7 @@ class Ledger:
         self.manual = db.list_manual_subscriptions(conn)
         self.overrides = db.get_series_overrides(conn)
         self.user_rules = db.list_user_rules(conn)
+        self.budgets = db.list_budgets(conn)
         added, hidden = db.category_settings(conn)
         self.categories_available = cat.available_categories(added, hidden)
         self.verdicts = db.get_verdicts(conn)
@@ -142,6 +145,115 @@ class Ledger:
             (a for a in self.accounts if not a.closed),
             key=lambda a: (order.get(a.type, 9), a.name.lower()),
         )
+
+    # -- budgets the user sets and comes back to ---------------------------
+
+    def save_budget(self, budget) -> None:
+        conn = db.connect(self.path)
+        db.save_budget(conn, budget)
+        conn.close()
+        self.load()
+
+    def delete_budget(self, budget_id: str) -> bool:
+        conn = db.connect(self.path)
+        removed = db.delete_budget(conn, budget_id)
+        conn.close()
+        self.load()
+        return bool(removed)
+
+    def budget_by_id(self, budget_id: str):
+        return next((b for b in self.budgets if b.id == budget_id), None)
+
+    def budget_status(self, budget, *, asof: date | None = None):
+        """How a budget is doing, judged with the user's own categorisations.
+
+        Passing `self.categories` matters: it already has the user's rules and
+        any guesses applied, so the budget agrees with what the Spending screen
+        shows rather than re-deriving categories from the built-in rules.
+        """
+        return budgets_mod.status(budget, self.transactions, asof=asof, categories=self.categories)
+
+    def suggest_envelopes(self, starts_on: date, ends_on: date, accounts=None):
+        """What this window costs at the user's usual rate, per category."""
+        return budgets_mod.suggest(
+            self.transactions,
+            starts_on,
+            ends_on,
+            categories=self.categories,
+            accounts=accounts,
+        )
+
+    def spending_weights(self, accounts=None) -> dict:
+        """Median monthly spend per category, for splitting a total in proportion."""
+        return budgets_mod.monthly_baselines(
+            self.transactions, categories=self.categories, accounts=accounts
+        )
+
+    def committed_per_month(self) -> Money:
+        """What recurring bills and subscriptions cost in a typical month.
+
+        Offered as the starting figure for "my fixed costs are…", since the
+        app already knows: it is exactly the series the user has classified as
+        bills or subscriptions, at their monthly rate. A habit is not counted
+        — that is discretionary spending, and the whole point of the question
+        is to separate the two.
+        """
+        per_year = {"weekly": 52, "biweekly": 26, "monthly": 12, "quarterly": 4, "yearly": 1}
+        minor = 0
+        for series in self.series:
+            if self.kind_of(series) not in budget_mod.COMMITTED_KINDS:
+                continue
+            amount = self.current_amount(series)
+            if amount.minor >= 0:
+                continue
+            minor += abs(amount.minor) * per_year.get(series.cadence, 0) // 12
+        return Money(minor)
+
+    def committed_by_category(self) -> dict[str, Money]:
+        """What commitments cost per month, split by the category they land in.
+
+        Needed so that "work backwards" does not budget for rent twice: the
+        user's fixed-costs figure already covers it, so rent must be given its
+        real allowance rather than a proportional share of what is left over.
+
+        The category comes from the charges themselves by majority vote, not
+        from the merchant name, so a mis-normalised name cannot move rent out
+        of Housing.
+        """
+        from collections import Counter
+
+        per_year = {"weekly": 52, "biweekly": 26, "monthly": 12, "quarterly": 4, "yearly": 1}
+        by_id = {tx.id: tx for tx in self.transactions}
+        out: dict[str, int] = {}
+        for series in self.series:
+            if self.kind_of(series) not in budget_mod.COMMITTED_KINDS:
+                continue
+            amount = self.current_amount(series)
+            if amount.minor >= 0:
+                continue
+            votes = Counter(
+                self.category_of(by_id[tx_id]) for tx_id in series.transaction_ids if tx_id in by_id
+            )
+            # A tracked entry has no transactions to vote, so it has no
+            # category of its own; those land in Subscriptions, which is where
+            # the user would look for them.
+            category = votes.most_common(1)[0][0] if votes else "Subscriptions"
+            monthly = abs(amount.minor) * per_year.get(series.cadence, 0) // 12
+            out[category] = out.get(category, 0) + monthly
+        return {name: Money(minor) for name, minor in out.items() if minor > 0}
+
+    def typical_monthly_income(self) -> Money:
+        """Recurring income at its monthly rate, as a starting figure."""
+        per_year = {"weekly": 52, "biweekly": 26, "monthly": 12, "quarterly": 4, "yearly": 1}
+        minor = 0
+        for series in self.series:
+            if self.kind_of(series) != subscriptions.INCOME:
+                continue
+            amount = self.current_amount(series)
+            if amount.minor <= 0:
+                continue
+            minor += amount.minor * per_year.get(series.cadence, 0) // 12
+        return Money(minor)
 
     # -- cash accounts, which no bank feed can tell us about ---------------
 

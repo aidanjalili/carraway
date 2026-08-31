@@ -153,6 +153,27 @@ def stylesheet(p: Palette) -> str:
         background: {p.surface_alt};
     }}
     QCheckBox::indicator:hover {{ border-color: {p.accent}; }}
+    /* Round, so a one-of-these choice never reads as a tick-several one. */
+    QRadioButton {{
+        padding: 3px 2px;
+        background: transparent;
+        color: {p.text};
+    }}
+    QRadioButton::indicator {{
+        width: 15px;
+        height: 15px;
+        border: 1px solid {p.muted};
+        border-radius: 8px;
+        background: {p.surface_alt};
+    }}
+    QRadioButton::indicator:hover {{ border-color: {p.accent}; }}
+    /* A filled circle rather than a ring-and-dot: a thick border with a
+       radius rounds only its outer edge at this size, which came out as a
+       rounded square. */
+    QRadioButton::indicator:checked {{
+        border: 1px solid {p.accent};
+        background: {p.accent};
+    }}
     QCheckBox::indicator:checked {{
         background: {p.accent};
         border-color: {p.accent};
