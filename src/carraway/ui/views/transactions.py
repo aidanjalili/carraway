@@ -37,7 +37,8 @@ from ...core.models import Transaction
 from ...core.money import Money
 from .. import theme
 from ..data import Ledger
-from ..widgets import BalanceBanner, FilterStrip, enable_row_hover
+from ..widgets import BalanceBanner, FilterStrip, enable_row_hover, refresh_everything
+from . import cash
 
 # Ranges someone actually asks for, with None meaning "everything".
 _PRESETS: dict[str, int | None] = {
@@ -296,6 +297,21 @@ class TransactionsView(QWidget):
         # Above the table rather than beside the title: it describes what the
         # table is showing, and it stays put while the rows scroll.
         self.balance = BalanceBanner()
+        # Cash is the only account whose balance no feed can report, so it is
+        # the only one where typing a figure is meaningful rather than
+        # something the next sync would quietly overwrite.
+        self.set_balance_button = QPushButton("Set balance…")
+        self.set_balance_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.set_balance_button.setToolTip(
+            "Type what is actually there. Carraway records it as today's balance."
+        )
+        self.set_balance_button.clicked.connect(self._set_cash_balance)
+        self.add_txn_button = QPushButton("Add transaction…")
+        self.add_txn_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.add_txn_button.setToolTip("Record a cash movement by hand.")
+        self.add_txn_button.clicked.connect(self._add_cash_transaction)
+        self.balance.add_action(self.add_txn_button)
+        self.balance.add_action(self.set_balance_button)
         layout.addWidget(self.balance)
 
         self.table = QTableView()
@@ -454,6 +470,9 @@ class TransactionsView(QWidget):
 
     def _update_balance(self, account_id: str | None) -> None:
         """Show the balance for whichever account the tabs are filtered to."""
+        is_cash = self.ledger.is_cash_account(account_id)
+        self.set_balance_button.setVisible(is_cash)
+        self.add_txn_button.setVisible(is_cash)
         balances = self.ledger.balances
         if account_id is None:
             if not balances:
@@ -489,6 +508,46 @@ class TransactionsView(QWidget):
             f"{name} · {'owed' if owed else 'balance'}",
             owed=owed,
         )
+
+    def _cash_account(self) -> str | None:
+        """The selected account id when it is a cash account, else None."""
+        account_id = self.tabs.tabData(self.tabs.currentIndex())
+        return account_id if self.ledger.is_cash_account(account_id) else None
+
+    def _set_cash_balance(self) -> None:
+        """Ask what the account really holds, and optionally reconcile to it."""
+        account_id = self._cash_account()
+        if account_id is None:
+            return
+        name = self.ledger.account_name(account_id)
+        answer = cash.ask_balance(name, self.ledger.implied_balance(account_id), self)
+        if answer is None:
+            return
+        gap = self.ledger.set_cash_balance(
+            account_id, answer["amount"], correction=answer["correction"]
+        )
+        refresh_everything(self)
+        if answer["correction"] and gap.minor:
+            self.count.setText(
+                f"Recorded {answer['amount'].format()} and added a "
+                f"{abs(gap).format()} adjustment line."
+            )
+
+    def _add_cash_transaction(self) -> None:
+        """Record a cash movement the user knows about."""
+        account_id = self._cash_account()
+        if account_id is None:
+            return
+        name = self.ledger.account_name(account_id)
+        answer = cash.ask_transaction(name, self)
+        if answer is None:
+            return
+        added = self.ledger.add_cash_transaction(
+            account_id, answer["when"], answer["description"], answer["amount"]
+        )
+        refresh_everything(self)
+        if not added:
+            self.count.setText("That transaction was already recorded.")
 
     def _is_liability(self, account_id: str) -> bool:
         for account in self.ledger.accounts:

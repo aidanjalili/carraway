@@ -76,17 +76,31 @@ class BalanceBanner(Card):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 10, 18, 11)
-        layout.setSpacing(1)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(18, 10, 18, 11)
+        row.setSpacing(12)
 
+        figure = QVBoxLayout()
+        figure.setSpacing(1)
         self.amount = QLabel("")
         self.amount.setObjectName("BalanceValue")
         self.caption = QLabel("")
         self.caption.setObjectName("StatLabel")
+        figure.addWidget(self.amount)
+        figure.addWidget(self.caption)
+        row.addLayout(figure)
+        row.addStretch(1)
 
-        layout.addWidget(self.amount)
-        layout.addWidget(self.caption)
+        # Buttons that act on whatever the banner is describing. Empty on most
+        # screens; a cash account puts its "set balance" here, beside the
+        # number it changes rather than in a menu somewhere else.
+        self.actions = QHBoxLayout()
+        self.actions.setSpacing(8)
+        row.addLayout(self.actions)
+
+    def add_action(self, button: QWidget) -> None:
+        """Attach a button beside the figure."""
+        self.actions.addWidget(button)
 
     def show_balance(self, amount: str, caption: str, *, owed: bool) -> None:
         """Set the figure and its caption. `owed` picks the colour."""

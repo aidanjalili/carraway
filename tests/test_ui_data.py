@@ -192,3 +192,153 @@ def test_payable_accounts_puts_cards_first_and_drops_closed_ones(tmp_path):
     ledger = _tracked_ledger(tmp_path)
     offered = ledger.payable_accounts
     assert [a.name for a in offered] == ["Wells Fargo Card", "Chase Checking"]
+
+
+def _cash_ledger(tmp_path, *, observe: bool = True) -> Ledger:
+    """A cash account whose imported history starts long after it opened."""
+    path = tmp_path / "cash.db"
+    conn = db.connect(path)
+    db.upsert_account(conn, Account(id="cash", name="Cash", type=AccountType.CASH))
+    db.insert_transactions(
+        conn,
+        [
+            Transaction(
+                id="t1",
+                account_id="cash",
+                date=date(2026, 6, 10),
+                amount=Money.parse("-40.00"),
+                description="Market",
+            ),
+            Transaction(
+                id="t2",
+                account_id="cash",
+                date=date(2026, 8, 5),
+                amount=Money.parse("-15.00"),
+                description="Coffee",
+            ),
+        ],
+    )
+    if observe:
+        # Observed after the first transaction and before the second, which is
+        # the ordinary case: a statement reaches back further than the reading.
+        db.record_balance(conn, "cash", Money.parse("200.00"), date(2026, 7, 1))
+    conn.close()
+    ledger = Ledger(path=path)
+    ledger.load()
+    return ledger
+
+
+def test_implied_balance_rolls_the_last_reading_forward(tmp_path):
+    # $200 on 1 July, minus the $15 spent after it. The $40 spent in June is
+    # already inside the $200 and must not be subtracted twice.
+    ledger = _cash_ledger(tmp_path)
+    assert ledger.implied_balance("cash") == Money.parse("185.00")
+
+
+def test_implied_balance_does_not_sum_every_transaction(tmp_path):
+    # The bug this guards against: summing all history treats an unknown
+    # opening balance as zero. On real data that was wrong by $4,928.
+    ledger = _cash_ledger(tmp_path)
+    assert ledger.implied_balance("cash") != Money.parse("-55.00")
+
+
+def test_with_no_reading_at_all_the_transactions_are_all_there_is(tmp_path):
+    ledger = _cash_ledger(tmp_path, observe=False)
+    assert ledger.implied_balance("cash") == Money.parse("-55.00")
+
+
+def test_typing_a_balance_records_it_without_touching_history(tmp_path):
+    ledger = _cash_ledger(tmp_path)
+    before = len(ledger.transactions)
+    ledger.set_cash_balance("cash", Money.parse("240.00"), correction=False)
+    assert ledger.balances["cash"] == Money.parse("240.00")
+    assert len(ledger.transactions) == before  # declined, so nothing invented
+
+
+def test_a_correction_line_makes_the_history_reach_the_typed_balance(tmp_path):
+    # $185 implied, $240 actually there: $55 came in that was never recorded.
+    ledger = _cash_ledger(tmp_path)
+    gap = ledger.set_cash_balance("cash", Money.parse("240.00"), correction=True)
+    assert gap == Money.parse("55.00")
+
+    added = [t for t in ledger.transactions if t.description == "Cash adjustment"]
+    assert len(added) == 1
+    assert added[0].amount == Money.parse("55.00")
+    assert added[0].date == date.today()
+
+
+def test_a_correction_for_money_quietly_spent_is_negative(tmp_path):
+    ledger = _cash_ledger(tmp_path)
+    gap = ledger.set_cash_balance("cash", Money.parse("100.00"), correction=True)
+    assert gap == Money.parse("-85.00")
+    added = next(t for t in ledger.transactions if t.description == "Cash adjustment")
+    assert added.amount.minor < 0
+
+
+def test_correcting_twice_in_a_row_is_a_no_op_the_second_time(tmp_path):
+    # After reconciling, the records agree, so there is nothing left to adjust.
+    ledger = _cash_ledger(tmp_path)
+    ledger.set_cash_balance("cash", Money.parse("240.00"), correction=True)
+    gap = ledger.set_cash_balance("cash", Money.parse("240.00"), correction=True)
+    assert gap == Money.zero()
+    assert len([t for t in ledger.transactions if t.description == "Cash adjustment"]) == 1
+
+
+def test_a_hand_entered_cash_transaction_lands_in_the_ledger(tmp_path):
+    ledger = _cash_ledger(tmp_path)
+    assert ledger.add_cash_transaction(
+        "cash", date(2026, 8, 20), "Farmers market", Money.parse("-24.00")
+    )
+    assert any(t.description == "Farmers market" for t in ledger.transactions)
+
+
+def test_the_same_cash_transaction_twice_is_recorded_once(tmp_path):
+    ledger = _cash_ledger(tmp_path)
+    args = ("cash", date(2026, 8, 20), "Farmers market", Money.parse("-24.00"))
+    assert ledger.add_cash_transaction(*args) is True
+    assert ledger.add_cash_transaction(*args) is False
+
+
+def test_only_cash_accounts_accept_a_typed_balance(tmp_path):
+    # Everything else is synced, and a typed figure would be overwritten by
+    # the next refresh without saying so.
+    ledger = _cash_ledger(tmp_path)
+    assert ledger.is_cash_account("cash") is True
+    assert ledger.is_cash_account("nope") is False
+    assert ledger.is_cash_account(None) is False
+
+
+def test_renaming_an_account_keeps_its_history(tmp_path):
+    ledger = _cash_ledger(tmp_path)
+    assert ledger.rename_account("cash", "Pocket money") is True
+    assert ledger.account_name("cash") == "Pocket money"
+    assert len([t for t in ledger.transactions if t.account_id == "cash"]) == 2
+    assert ledger.balances["cash"] == Money.parse("200.00")
+
+
+def test_a_reading_already_includes_its_own_day(tmp_path):
+    # A recorded balance is a closing figure. Counting same-day transactions
+    # on top of it double-counts them — on real Venmo data two transfers
+    # dated on the reading date would have inflated the balance by $137.
+    path = tmp_path / "sameday.db"
+    conn = db.connect(path)
+    db.upsert_account(conn, Account(id="cash", name="Cash", type=AccountType.CASH))
+    db.insert_transactions(
+        conn,
+        [
+            Transaction(
+                id="s1",
+                account_id="cash",
+                date=date(2026, 8, 29),
+                amount=Money.parse("97.00"),
+                description="Transfer in",
+            )
+        ],
+    )
+    db.record_balance(conn, "cash", Money.parse("1008.47"), date(2026, 8, 29))
+    conn.close()
+
+    ledger = Ledger(path=path)
+    ledger.load()
+    assert ledger.implied_balance("cash") == Money.parse("1008.47")
+    assert ledger.implied_balance("cash") != Money.parse("1105.47")

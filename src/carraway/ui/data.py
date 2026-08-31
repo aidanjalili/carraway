@@ -34,6 +34,7 @@ class Ledger:
     verdicts: dict[str, str] = field(default_factory=dict)  # merchant -> user's answer
     price_changes: list = field(default_factory=list)
     balances: dict = field(default_factory=dict)
+    balance_dates: dict = field(default_factory=dict)  # account id -> when last observed
     manual: list = field(default_factory=list)
     settings: dict = field(default_factory=dict)
     guesses: dict = field(default_factory=dict)  # transaction id -> Guess
@@ -56,6 +57,7 @@ class Ledger:
 
         self.settings = db.all_settings(conn)
         self.balances = db.latest_balances(conn)
+        self.balance_dates = db.latest_balance_dates(conn)
         self.manual = db.list_manual_subscriptions(conn)
         self.overrides = db.get_series_overrides(conn)
         self.user_rules = db.list_user_rules(conn)
@@ -140,6 +142,122 @@ class Ledger:
             (a for a in self.accounts if not a.closed),
             key=lambda a: (order.get(a.type, 9), a.name.lower()),
         )
+
+    # -- cash accounts, which no bank feed can tell us about ---------------
+
+    def is_cash_account(self, account_id: str | None) -> bool:
+        """True for an account whose balance only a person can know.
+
+        Everything else is synced or imported from a statement, and a figure
+        typed over one of those would be silently replaced on the next
+        refresh. Cash is the one kind where the user is the only source.
+        """
+        if account_id is None:
+            return False
+        return any(a.id == account_id and a.type is AccountType.CASH for a in self.accounts)
+
+    def implied_balance(self, account_id: str) -> Money | None:
+        """What the records say the account holds now, or None if they say nothing.
+
+        The last observed balance rolled forward by everything since it, not
+        the sum of every transaction: an imported statement rarely reaches
+        back to the day the account opened, so summing it all silently treats
+        an unknown opening balance as zero. On real data that was wrong by
+        $4,928 — the whole balance that existed before the first imported row.
+
+        "Since" means strictly after, because a recorded balance is a closing
+        figure that already includes its own day. Counting same-day
+        transactions on top of it double-counts them: on real data two
+        transfers landing on the reading date would have inflated the balance
+        by $137.
+        """
+        observed = self.balance_dates.get(account_id)
+        base = self.balances.get(account_id)
+        moves = [t for t in self.transactions if t.account_id == account_id]
+        if base is None or observed is None:
+            # Never observed. The transactions are all there is, and treating
+            # the opening balance as zero is the only assumption available —
+            # which is exactly what a correction line is for.
+            return total([t.amount for t in moves]) if moves else None
+        since = [t for t in moves if t.date > observed]
+        return Money(base.minor + sum(t.amount.minor for t in since), base.currency)
+
+    def set_cash_balance(self, account_id: str, amount: Money, correction: bool = False) -> Money:
+        """Record what the user says an account holds. Returns the correction made.
+
+        The balance is always recorded, so net worth is right either way. The
+        correction line is optional and separate: it exists so the *history*
+        adds up to the same figure, which is what Spending and the category
+        totals read. Declining it leaves a knowingly incomplete history rather
+        than inventing a transaction the user did not agree to.
+        """
+        implied = self.implied_balance(account_id)
+        gap = Money(amount.minor - implied.minor, amount.currency) if implied else amount
+
+        conn = db.connect(self.path)
+        if correction and gap.minor:
+            db.insert_transactions(conn, [self._correction(account_id, gap)])
+        db.record_balance(conn, account_id, amount, date.today())
+        conn.close()
+        self.load()
+        return gap
+
+    def _correction(self, account_id: str, gap: Money) -> Transaction:
+        """A transaction standing in for movements that were never recorded."""
+        import uuid
+
+        return Transaction(
+            id=uuid.uuid4().hex,
+            account_id=account_id,
+            date=date.today(),
+            amount=gap,
+            # Named so it is obvious in the ledger that a person adjusted this
+            # rather than a bank reporting it.
+            description="Cash adjustment",
+            merchant="Cash adjustment",
+        )
+
+    def add_cash_transaction(
+        self, account_id: str, when: date, description: str, amount: Money
+    ) -> bool:
+        """Record a movement the user knows about. False if it was a duplicate."""
+        import uuid
+
+        transaction = Transaction(
+            id=uuid.uuid4().hex,
+            account_id=account_id,
+            date=when,
+            amount=amount,
+            description=description,
+            merchant=recurring.normalise_merchant(description),
+        )
+        conn = db.connect(self.path)
+        inserted, _ = db.insert_transactions(conn, [transaction])
+        conn.close()
+        self.load()
+        return bool(inserted)
+
+    def rename_account(self, account_id: str, name: str) -> bool:
+        """Change an account's display name, leaving its history alone."""
+        account = next((a for a in self.accounts if a.id == account_id), None)
+        if account is None:
+            return False
+        conn = db.connect(self.path)
+        db.upsert_account(
+            conn,
+            Account(
+                id=account.id,
+                name=name,
+                type=account.type,
+                institution=account.institution,
+                currency=account.currency,
+                external_id=account.external_id,
+                closed=account.closed,
+            ),
+        )
+        conn.close()
+        self.load()
+        return True
 
     def manual_entry(self, series: RecurringSeries) -> dict | None:
         """The stored row behind a tracked series, or None if it was detected.

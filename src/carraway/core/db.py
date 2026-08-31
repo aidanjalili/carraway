@@ -405,6 +405,23 @@ def latest_balances(conn: sqlite3.Connection) -> dict[str, Money]:
     return {r["account_id"]: Money(r["amount_minor"], r["currency"]) for r in rows}
 
 
+def latest_balance_dates(conn: sqlite3.Connection) -> dict[str, date]:
+    """When each account's most recent balance was observed.
+
+    The amount alone is not enough to say what an account holds *now*: a
+    reading from July plus the transactions since is a different figure from
+    the reading itself. Anything reconciling against a balance needs to know
+    how old it is.
+    """
+    rows = conn.execute(
+        """
+        SELECT account_id, MAX(observed_on) AS observed_on
+        FROM balances GROUP BY account_id
+        """
+    ).fetchall()
+    return {r["account_id"]: date.fromisoformat(r["observed_on"]) for r in rows}
+
+
 def balance_history(conn: sqlite3.Connection, account_id: str) -> list[tuple[date, Money]]:
     """Every balance observed for one account, oldest first."""
     rows = conn.execute(
