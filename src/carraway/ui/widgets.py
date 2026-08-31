@@ -60,6 +60,60 @@ class StatCard(Card):
         self.value_label.setText(value)
 
 
+class BalanceBanner(Card):
+    """The headline balance for whatever the screen is currently showing.
+
+    Sits directly above a table and outside its scroll area, so it stays put
+    while the rows move — the number you want while reading a statement is
+    the one you are reading it against, and it should not scroll away.
+
+    Colour carries the sign so the direction reads before the digits do:
+    green for money you have, red for money you owe. That is the same
+    question in both cases, asked of an asset and of a liability, so one
+    control answers both rather than the reader having to remember which kind
+    of account this tab is.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 10, 18, 11)
+        layout.setSpacing(1)
+
+        self.amount = QLabel("")
+        self.amount.setObjectName("BalanceValue")
+        self.caption = QLabel("")
+        self.caption.setObjectName("StatLabel")
+
+        layout.addWidget(self.amount)
+        layout.addWidget(self.caption)
+
+    def show_balance(self, amount: str, caption: str, *, owed: bool) -> None:
+        """Set the figure and its caption. `owed` picks the colour."""
+        from . import theme
+
+        tone = theme.ACTIVE.danger if owed else theme.ACTIVE.accent
+        self.amount.setText(amount)
+        self.amount.setStyleSheet(f"font-size: 30px; font-weight: 700; color: {tone};")
+        self.caption.setText(caption.upper())
+        self.setVisible(True)
+
+    def show_nothing(self, caption: str) -> None:
+        """No figure to show — say so plainly rather than showing a zero.
+
+        A zero and an unknown look identical and mean opposite things, and
+        this app has accounts with no recorded balance at all.
+        """
+        from . import theme
+
+        self.amount.setText("—")
+        self.amount.setStyleSheet(
+            f"font-size: 30px; font-weight: 700; color: {theme.ACTIVE.muted};"
+        )
+        self.caption.setText(caption.upper())
+        self.setVisible(True)
+
+
 class StatRow(QWidget):
     """A row of StatCards across the top of a screen."""
 

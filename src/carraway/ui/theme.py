@@ -71,6 +71,7 @@ def stylesheet(p: Palette) -> str:
     QLabel#Title      {{ font-size: 26px; font-weight: 600; }}
     QLabel#Subtitle   {{ color: {p.muted}; font-size: 14px; }}
     QLabel#StatValue  {{ font-size: 28px; font-weight: 600; }}
+    QLabel#BalanceValue {{ font-size: 30px; font-weight: 700; }}
     QLabel#StatLabel  {{ color: {p.muted}; font-size: 12px;
                          text-transform: uppercase; letter-spacing: 1px; }}
     QLabel#SectionHeading {{ font-size: 16px; font-weight: 600; }}

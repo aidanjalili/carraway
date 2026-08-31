@@ -37,7 +37,7 @@ from ...core.models import Transaction
 from ...core.money import Money
 from .. import theme
 from ..data import Ledger
-from ..widgets import FilterStrip, enable_row_hover
+from ..widgets import BalanceBanner, FilterStrip, enable_row_hover
 
 # Ranges someone actually asks for, with None meaning "everything".
 _PRESETS: dict[str, int | None] = {
@@ -219,9 +219,6 @@ class TransactionsView(QWidget):
         title.setObjectName("Title")
         header.addWidget(title)
         header.addStretch(1)
-        self.balance_label = QLabel("")
-        self.balance_label.setObjectName("Muted")
-        header.addWidget(self.balance_label)
         layout.addLayout(header)
 
         # One button per account, with "All accounts" first. Accounts carry
@@ -295,6 +292,11 @@ class TransactionsView(QWidget):
         self.proxy.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.search.textChanged.connect(self.proxy.setFilterFixedString)
         self.search.textChanged.connect(self._update_count)
+
+        # Above the table rather than beside the title: it describes what the
+        # table is showing, and it stays put while the rows scroll.
+        self.balance = BalanceBanner()
+        layout.addWidget(self.balance)
 
         self.table = QTableView()
         self.table.setModel(self.proxy)
@@ -451,12 +453,15 @@ class TransactionsView(QWidget):
         self._update_count()
 
     def _update_balance(self, account_id: str | None) -> None:
-        """Show the account's balance, when one has been observed."""
+        """Show the balance for whichever account the tabs are filtered to."""
         balances = self.ledger.balances
         if account_id is None:
             if not balances:
-                self.balance_label.setText("")
+                self.balance.show_nothing("no balances recorded yet")
                 return
+            # Liabilities subtract: a card you owe $500 on is -$500 against
+            # what you hold, which is what makes this figure a net worth
+            # rather than a sum of unrelated numbers.
             net = sum(
                 (
                     -abs(balance) if self._is_liability(aid) else balance
@@ -464,16 +469,26 @@ class TransactionsView(QWidget):
                 ),
                 Money.zero(),
             )
-            self.balance_label.setText(f"Across all accounts: {net.format()}")
+            counted = len(balances)
+            self.balance.show_balance(
+                net.format(),
+                f"net across {counted} account{'s' if counted != 1 else ''}",
+                owed=net.minor < 0,
+            )
             return
 
+        name = self.ledger.account_name(account_id)
         balance = balances.get(account_id)
         if balance is None:
-            self.balance_label.setText("No balance recorded for this account")
-        else:
-            owed = self._is_liability(account_id)
-            label = "owed" if owed and balance.minor else "balance"
-            self.balance_label.setText(f"Current {label}: {abs(balance).format()}")
+            self.balance.show_nothing(f"{name} · no balance recorded")
+            return
+
+        owed = self._is_liability(account_id) and balance.minor != 0
+        self.balance.show_balance(
+            abs(balance).format(),
+            f"{name} · {'owed' if owed else 'balance'}",
+            owed=owed,
+        )
 
     def _is_liability(self, account_id: str) -> bool:
         for account in self.ledger.accounts:
