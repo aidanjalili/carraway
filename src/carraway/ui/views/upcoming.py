@@ -14,13 +14,14 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMenu,
     QTableWidget,
     QVBoxLayout,
     QWidget,
@@ -30,7 +31,8 @@ from ...analysis import subscriptions
 from ...core.money import Money, total
 from .. import theme
 from ..data import Ledger
-from ..widgets import SortableItem, StatCard, StatRow, enable_row_hover
+from ..widgets import SortableItem, StatCard, StatRow, enable_row_hover, refresh_everything
+from .classify_dialog import ClassifyDialog
 
 _HEADERS = ["When", "What", "Kind", "Amount", "Confidence", "Why we think so"]
 
@@ -105,7 +107,61 @@ class UpcomingView(QWidget):
         self.footnote.setWordWrap(True)
         layout.addWidget(self.footnote)
 
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._context_menu)
+
         self.refresh()
+
+    # -- correcting a prediction from the screen that shows it -------------
+
+    def _series_at(self, row: int):
+        """The series behind a row, or None.
+
+        A weekly charge fills several rows inside one horizon, so the series
+        is carried on the row rather than looked up by name — and hiding any
+        one of those rows means hiding the series they all come from.
+        """
+        item = self.table.item(row, 0)
+        if item is None:
+            return None
+        return self._rows.get(item.data(Qt.ItemDataRole.UserRole))
+
+    def _context_menu(self, position) -> None:
+        row = self.table.rowAt(position.y())
+        if row < 0:
+            return
+        series = self._series_at(row)
+        if series is None:
+            return
+
+        menu = QMenu(self)
+        classify = QAction(f"What is {series.merchant}?", self)
+        classify.triggered.connect(lambda: self._classify(series))
+        menu.addAction(classify)
+
+        menu.addSeparator()
+        dismiss = QAction("Not recurring — hide this", self)
+        dismiss.setToolTip(
+            "For when detection was wrong. It stops being predicted here, "
+            "leaves the Subscriptions list, and stays hidden through future "
+            "imports. Restore it from the Hidden tab under Subscriptions."
+        )
+        dismiss.triggered.connect(lambda: self._dismiss(series))
+        menu.addAction(dismiss)
+
+        menu.exec(self.table.viewport().mapToGlobal(position))
+
+    def _classify(self, series) -> None:
+        answer = ClassifyDialog.ask(series, self)
+        if answer is None:
+            return
+        self.ledger.set_kind(series, answer)
+        refresh_everything(self)
+
+    def _dismiss(self, series) -> None:
+        """This does not recur. Drop it from every screen, not just this one."""
+        self.ledger.dismiss(series)
+        refresh_everything(self)
 
     def _expected(self, horizon_days: int) -> list[tuple[date, object]]:
         """(date, series) for everything due inside the horizon, soonest first.
@@ -161,6 +217,9 @@ class UpcomingView(QWidget):
 
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(rows))
+        # Sorting reorders rows underneath us, so the series a row shows is
+        # carried on the row itself rather than inferred from its index.
+        self._rows: dict[int, object] = {}
         for index, (when, series) in enumerate(rows):
             days = (when - today).days
             when_text = "today" if days == 0 else ("tomorrow" if days == 1 else f"in {days}d")
@@ -175,6 +234,8 @@ class UpcomingView(QWidget):
                 SortableItem(f"{series.confidence:.0%}", series.confidence),
                 SortableItem(_why(series, self.ledger), series.occurrences),
             ]
+            self._rows[id(series)] = series
+            cells[0].setData(Qt.ItemDataRole.UserRole, id(series))
             for column, cell in enumerate(cells):
                 if column in (3, 4):
                     cell.setTextAlignment(

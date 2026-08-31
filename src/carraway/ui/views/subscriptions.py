@@ -36,6 +36,7 @@ from ..widgets import (
     StatCard,
     StatRow,
     enable_row_hover,
+    refresh_everything,
 )
 from . import add_subscription, edit_series, paid_with
 from .classify_dialog import ClassifyDialog
@@ -472,7 +473,7 @@ class SubscriptionsView(QWidget):
         if choice is None:
             return
         self.ledger.set_paid_with(series, choice)
-        self.refresh()
+        refresh_everything(self)
 
     def _add_manual(self) -> None:
         """Record a subscription no detector can see."""
@@ -480,7 +481,7 @@ class SubscriptionsView(QWidget):
         if values is None:
             return
         self.ledger.add_manual(values)
-        self.refresh()
+        refresh_everything(self)
 
     def _edit(self, series) -> None:
         corrections = edit_series.prompt(series, self.ledger.is_edited(series), self)
@@ -490,16 +491,17 @@ class SubscriptionsView(QWidget):
             self.ledger.reset_series(series)
         else:
             self.ledger.edit_series(series, **corrections)
-        self.refresh()
+        refresh_everything(self)
 
     def _dismiss(self, series) -> None:
+        """This does not recur. Drop it from every screen, Upcoming included."""
         self.ledger.dismiss(series)
-        self.refresh()
+        refresh_everything(self)
 
     def _restore(self, series) -> None:
         self.ledger.restore(series)
         self.ledger.load()
-        self.refresh()
+        refresh_everything(self)
 
     def _delete_manual(self, series) -> None:
         """Remove a tracked entry for good, after asking.
@@ -521,11 +523,11 @@ class SubscriptionsView(QWidget):
             QMessageBox.StandardButton.Cancel,
         )
         if answer == QMessageBox.StandardButton.Yes and self.ledger.delete_manual(series):
-            self.refresh()
+            refresh_everything(self)
 
     def _remove_manual(self, series) -> None:
         if self.ledger.remove_manual(series):
-            self.refresh()
+            refresh_everything(self)
 
     def _edit_selected(self) -> None:
         rows = self.table.selectionModel().selectedRows()
@@ -543,13 +545,19 @@ class SubscriptionsView(QWidget):
         if series is not None:
             self._classify(series)
 
-    def _classify(self, series) -> bool:
-        """Ask about one merchant. Returns False if the user cancelled."""
+    def _classify(self, series, *, redraw: bool = True) -> bool:
+        """Ask about one merchant. Returns False if the user cancelled.
+
+        `redraw` exists for the review loop, which asks about many merchants
+        in a row: rebuilding every screen between two modal dialogs is work
+        nobody sees, so the loop refreshes once at the end instead.
+        """
         dialog = ClassifyDialog(series, self.ledger.kind_of(series), self)
         if dialog.exec() != ClassifyDialog.DialogCode.Accepted:
             return False
         self.ledger.set_kind(series, dialog.chosen)
-        self.refresh()
+        if redraw:
+            refresh_everything(self)
         return True
 
     def _review_unclassified(self) -> None:
@@ -566,5 +574,6 @@ class SubscriptionsView(QWidget):
             self._classify_selected()
             return
         for series in pending:
-            if not self._classify(series):
+            if not self._classify(series, redraw=False):
                 break
+        refresh_everything(self)

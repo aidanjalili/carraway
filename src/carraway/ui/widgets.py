@@ -281,3 +281,24 @@ def enable_row_hover(view) -> HoverRowDelegate:
     delegate = HoverRowDelegate(view)
     view.setItemDelegate(delegate)
     return delegate
+
+
+def refresh_everything(widget: QWidget) -> None:
+    """Rebuild every screen, not just the one the user is looking at.
+
+    A classification is a fact about the ledger rather than about one table.
+    Hiding a series in Subscriptions has to remove it from Upcoming as well,
+    and Upcoming is by definition not the tab in front of the user when it
+    happens — so refreshing only the active view leaves the other tables
+    showing something the ledger no longer contains, until the app restarts.
+
+    Falls back to refreshing just this widget when there is no window to ask,
+    which is how the screens behave in tests.
+    """
+    refresh_all = getattr(widget.window(), "refresh_all", None)
+    if callable(refresh_all):
+        refresh_all()
+        return
+    own = getattr(widget, "refresh", None)
+    if callable(own):
+        own()
