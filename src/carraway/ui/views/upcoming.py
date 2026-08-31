@@ -152,10 +152,10 @@ class UpcomingView(QWidget):
         menu.exec(self.table.viewport().mapToGlobal(position))
 
     def _classify(self, series) -> None:
-        answer = ClassifyDialog.ask(series, self)
-        if answer is None:
+        dialog = ClassifyDialog(series, self.ledger.kind_of(series), self)
+        if dialog.exec() != ClassifyDialog.DialogCode.Accepted:
             return
-        self.ledger.set_kind(series, answer)
+        self.ledger.set_kind(series, dialog.chosen)
         refresh_everything(self)
 
     def _dismiss(self, series) -> None:
