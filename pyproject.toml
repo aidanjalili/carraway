@@ -37,12 +37,12 @@ Homepage = "https://github.com/aidanjalili/carraway"
 Issues = "https://github.com/aidanjalili/carraway/issues"
 
 [tool.hatch.build.targets.wheel]
+# The window icon lives inside the package tree and is picked up with
+# everything else, so an install without a desktop entry still shows
+# something in the taskbar. It used to be force-included as well, which made
+# hatchling add ui/assets/__init__.py twice and fail the build outright — but
+# only for a real install, never for the editable one used in development.
 packages = ["src/carraway"]
-
-# The window icon ships with the package, so an install without a desktop
-# entry still shows something in the taskbar.
-[tool.hatch.build.targets.wheel.force-include]
-"src/carraway/ui/assets" = "carraway/ui/assets"
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "src"]
