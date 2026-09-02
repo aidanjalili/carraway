@@ -886,6 +886,17 @@ class CreateBudgetView(QWidget):
             fixed_costs=_parse(self.fixed_input.text()) if backwards else None,
         )
         self.ledger.save_budget(budget)
+
+        # Tell the phone straight away. The snapshot was only published after
+        # a bank sync, which is rate limited and may not happen for hours --
+        # so the one moment the phone's copy is guaranteed stale, making or
+        # changing a budget, was the one moment nothing refreshed it. Quiet on
+        # failure: the phone shows how old its copy is, and someone who has
+        # just made a budget should not be handed a network error.
+        from .pocket import publish_in_background
+
+        publish_in_background(self, self.ledger)
+
         self.name.clear()
         self._name_is_ours = True
         # Rebuilds the sidebar so the new budget appears under My budgets, and

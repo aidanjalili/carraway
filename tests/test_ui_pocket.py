@@ -343,3 +343,94 @@ def test_a_duplicate_name_is_refused(app, ledger, monkeypatch):
     ledger.load()
     assert warned and "already called" in warned[0]
     assert sorted(a.name for a in ledger.accounts) == ["Card", "Cash"]
+
+
+# -- the phone hears about a budget when it is made ---------------------
+
+
+def _with_history(ledger):
+    """Give the ledger enough spending for the budget screen to work with.
+
+    A budget needs at least one allowance, and the allowances come from what
+    has actually been spent -- so a ledger with no history offers no
+    categories to budget, and nothing can be created.
+    """
+    from datetime import date, timedelta
+
+    from carraway.core import db
+    from carraway.core.models import Transaction
+    from carraway.core.money import Money
+
+    conn = db.connect(ledger.path)
+    first = date.today().replace(day=1)
+    db.insert_transactions(
+        conn,
+        [
+            Transaction(
+                id=f"h{month}",
+                account_id="cash",
+                date=first - timedelta(days=30 * month + 5),
+                amount=Money.parse("-40.00"),
+                description="COFFEE SHOP",
+                merchant="COFFEE SHOP",
+                category="Dining",
+            )
+            for month in range(1, 7)
+        ],
+    )
+    conn.close()
+    ledger.load()
+    return ledger
+
+
+def test_making_a_budget_publishes_to_the_phone(app, paired, monkeypatch):
+    """The snapshot used to publish only after a bank sync -- which is rate
+    limited and may not happen for hours. So the one moment the phone's copy
+    was guaranteed stale, making a budget, was the one moment nothing
+    refreshed it."""
+    from carraway.ui.views import create_budget
+
+    ledger, client = paired
+    _with_history(ledger)
+    view = create_budget.CreateBudgetView(ledger)
+    view.name.setText("Test budget")
+    # A budget needs at least one allowance, and this ledger has no spending
+    # history to suggest any -- so type a total, which splits across the
+    # categories the screen offers.
+    view.by_total.setChecked(True)
+    view.total_input.setText("1200.00")
+
+    before = len(ledger.budgets)
+    view._create()
+
+    ledger.load()
+    assert len(ledger.budgets) == before + 1, "the budget was not saved"
+    _settle(app, view._pocket_publisher)
+    assert client.published, "the phone was never told"
+
+
+def test_deleting_a_budget_takes_it_off_the_phone(app, paired, monkeypatch):
+    """Otherwise the phone goes on showing an allowance that no longer exists."""
+    from carraway.ui.views import budget_detail, create_budget
+
+    ledger, client = paired
+    _with_history(ledger)
+    maker = create_budget.CreateBudgetView(ledger)
+    maker.name.setText("Doomed")
+    maker.by_total.setChecked(True)
+    maker.total_input.setText("1200.00")
+    maker._create()
+    ledger.load()
+    _settle(app, maker._pocket_publisher)
+
+    budget = ledger.budgets[-1]
+    client.published.clear()
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+    detail = budget_detail.BudgetDetailView(ledger, budget.id)
+    detail._delete()
+
+    ledger.load()
+    assert all(b.id != budget.id for b in ledger.budgets)
+    _settle(app, detail._pocket_publisher)
+    assert client.published, "the phone was never told it had gone"

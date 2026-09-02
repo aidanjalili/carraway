@@ -301,6 +301,13 @@ class BudgetDetailView(QWidget):
         if answer != QMessageBox.StandardButton.Yes:
             return
         self.ledger.delete_budget(self.budget_id)
+
+        # And take it off the phone, which would otherwise go on showing an
+        # allowance for a budget that no longer exists.
+        from .pocket import publish_in_background
+
+        publish_in_background(self, self.ledger)
+
         refresh_everything(self)
 
 
