@@ -205,15 +205,22 @@ class AddPhoneDialog(QDialog):
         layout.addWidget(steps)
 
         # The code on its own, because that is what gets typed into the
-        # home-screen app -- where scanning cannot help.
+        # home-screen app -- where scanning cannot help. Shown in two groups
+        # of four: it is read off this screen a chunk at a time, and the
+        # server throws separators away before matching.
         code = url.rsplit("/pair/", 1)[-1]
+        if len(code) == 8:
+            code = f"{code[:4]}-{code[4:]}"
         code_label = QLabel("Pairing code")
         code_label.setObjectName("Muted")
         layout.addWidget(code_label)
 
         code_field = QLineEdit(code)
         code_field.setReadOnly(True)
-        code_field.setFont(QFont("monospace"))
+        font = QFont("monospace")
+        font.setPointSize(font.pointSize() + 6)
+        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 2)
+        code_field.setFont(font)
         code_field.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(code_field)
 
