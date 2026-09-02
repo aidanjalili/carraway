@@ -743,6 +743,10 @@ DEFAULT_SETTINGS: dict[str, object] = {
     # The order of the Subscriptions filter chips, as the user dragged them.
     # Empty means the view's own default.
     "subscriptions_tab_order": [],
+    # Which stretch of time the overview screen opens on, and the dates behind
+    # a custom one.
+    "overview_period": "This month",
+    "overview_custom_range": [],
 }
 
 

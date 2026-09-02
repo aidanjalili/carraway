@@ -60,6 +60,28 @@ class StatCard(Card):
     def set_value(self, value: str) -> None:
         self.value_label.setText(value)
 
+    def set_comparison(self, text: str, tone: str = "Muted") -> None:
+        """A line under the caption saying how this moved. Empty text hides it.
+
+        `tone` is an object name -- "Accent", "Danger" or "Muted" -- so the
+        colours stay in theme.py rather than being spelled out at each call
+        site, the same way the headline value does it.
+
+        Added lazily rather than in __init__ so every StatCard on every other
+        screen keeps exactly the height it has today.
+        """
+        if not hasattr(self, "_comparison"):
+            self._comparison = QLabel("")
+            self.layout().addWidget(self._comparison)
+        self._comparison.setText(text)
+        self._comparison.setVisible(bool(text))
+        self._comparison.setObjectName(tone or "Muted")
+        self._comparison.setStyleSheet("font-size: 11px;")
+        # An object name changed after styling needs the polish redone, or the
+        # new selector is not applied until something else forces a repaint.
+        self._comparison.style().unpolish(self._comparison)
+        self._comparison.style().polish(self._comparison)
+
 
 class BalanceBanner(Card):
     """The headline balance for whatever the screen is currently showing.
