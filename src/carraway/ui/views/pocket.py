@@ -15,6 +15,7 @@ round trips, but a phone tethered on a train is still a phone on a train.
 from __future__ import annotations
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -184,21 +185,39 @@ class AddPhoneDialog(QDialog):
         layout.addWidget(code, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         steps = QLabel(
-            "Open the link, then use <b>Share → Add to Home Screen</b> so it "
-            "opens like an app. The link works once, and expires "
-            f"{expires or 'shortly'}."
+            "On iPhone, use <b>Share → Add to Home Screen</b> <i>first</i>, then "
+            "open Pocket from the icon and type the code below. iOS keeps a "
+            "home-screen app's login separate from Safari, so pairing in Safari "
+            "and adding the icon afterwards leaves the app unpaired."
         )
         steps.setWordWrap(True)
         steps.setTextFormat(Qt.TextFormat.RichText)
         steps.setObjectName("Muted")
         layout.addWidget(steps)
 
-        # The text too: a camera that will not focus is not a reason to be
-        # unable to pair a phone.
+        # The code on its own, because that is what gets typed into the
+        # home-screen app -- where scanning cannot help.
+        code = url.rsplit("/pair/", 1)[-1]
+        code_label = QLabel("Pairing code")
+        code_label.setObjectName("Muted")
+        layout.addWidget(code_label)
+
+        code_field = QLineEdit(code)
+        code_field.setReadOnly(True)
+        code_field.setFont(QFont("monospace"))
+        code_field.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(code_field)
+
+        # And the whole link: a camera that will not focus is not a reason to
+        # be unable to pair a phone.
         field = QLineEdit(url)
         field.setReadOnly(True)
         field.setCursorPosition(0)
         layout.addWidget(field)
+
+        expiry = QLabel(f"Good once, until {expires or 'shortly'}.")
+        expiry.setObjectName("Muted")
+        layout.addWidget(expiry)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
