@@ -506,3 +506,95 @@ def test_contradictions_are_listed_before_mere_overlaps():
 
 def test_nothing_to_say_when_there_are_no_clashes():
     assert budgets.describe_clashes([]) == ""
+
+
+# -- saying where a suggested figure came from ---------------------------
+
+
+def _spend(day: str, amount: str = "-50.00", account: str = "a1") -> Transaction:
+    return _tx(date.fromisoformat(day), amount, "Dining", account)
+
+
+def test_the_basis_counts_months_with_data_not_months_in_the_window():
+    """A ledger imported three weeks ago has six months of window and one
+    month of evidence, and the second number is the one worth saying."""
+    got = budgets.history_basis([_spend("2026-08-10")], asof=date(2026, 9, 15))
+    assert got.months_with_data == 1
+    assert got.months_examined == budgets.DEFAULT_LOOKBACK_MONTHS
+
+
+def test_the_month_in_progress_never_counts_as_evidence():
+    got = budgets.history_basis([_spend("2026-09-10")], asof=date(2026, 9, 15))
+    assert got.months_with_data == 0
+    assert "nothing to suggest" in got.describe()
+
+
+def test_a_thin_history_says_so_rather_than_sounding_certain():
+    thin = budgets.history_basis(
+        [_spend("2026-07-10"), _spend("2026-08-10")], asof=date(2026, 9, 15)
+    )
+    assert thin.confident is False
+    assert "little to go on" in thin.describe()
+
+    thick = budgets.history_basis(
+        [_spend(f"2026-0{month}-10") for month in range(3, 9)], asof=date(2026, 9, 15)
+    )
+    assert thick.confident is True
+    assert "little to go on" not in thick.describe()
+
+
+def test_the_description_names_the_months_and_the_one_left_out():
+    got = budgets.history_basis(
+        [_spend(f"2026-0{month}-10") for month in range(3, 9)], asof=date(2026, 9, 15)
+    )
+    said = got.describe()
+    assert "6 complete months" in said
+    assert "March–August 2026" in said
+    assert "September" in said
+
+
+def test_the_span_reads_the_way_a_person_would_say_it():
+    one = budgets.history_basis([_spend("2026-08-10")], asof=date(2026, 9, 15))
+    assert one.span == "August 2026"
+
+    same_year = budgets.history_basis(
+        [_spend("2026-07-10"), _spend("2026-08-10")], asof=date(2026, 9, 15)
+    )
+    assert same_year.span == "July–August 2026"
+
+    across = budgets.history_basis(
+        [_spend("2025-12-10"), _spend("2026-02-10")], asof=date(2026, 3, 5)
+    )
+    assert across.span == "December 2025 – February 2026"
+
+
+def test_an_empty_ledger_has_no_span_and_no_confidence():
+    got = budgets.history_basis([], asof=date(2026, 9, 15))
+    assert got.span == ""
+    assert got.confident is False
+    assert got.first_month is None
+
+
+def test_income_and_transfers_are_not_spending_history():
+    """Otherwise a payday would count as a month of evidence about spending."""
+    payday = _tx(date(2026, 8, 1), "4000.00", "Income")
+    got = budgets.history_basis([payday], asof=date(2026, 9, 15))
+    assert got.months_with_data == 0
+
+
+def test_the_basis_respects_the_account_scope():
+    """A budget watching one card should describe that card's history."""
+    both = [_spend("2026-07-10", account="a1"), _spend("2026-08-10", account="a2")]
+    assert budgets.history_basis(both, asof=date(2026, 9, 15)).months_with_data == 2
+    narrowed = budgets.history_basis(both, asof=date(2026, 9, 15), accounts=["a2"])
+    assert narrowed.months_with_data == 1
+    assert narrowed.span == "August 2026"
+
+
+def test_an_estimate_carries_its_reason():
+    known = budgets.Estimate(Money.parse("4000.00"), "From your payslips.")
+    assert known.known is True
+    assert known.confident is True
+
+    nothing = budgets.Estimate(Money.zero(), "Nothing found.", confident=False)
+    assert nothing.known is False

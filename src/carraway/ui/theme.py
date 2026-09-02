@@ -106,6 +106,27 @@ def stylesheet(p: Palette) -> str:
         font-weight: 600;
     }}
 
+    /* The "i" beside a control. Quiet until looked for, and it has to stay a
+       circle, so the padding is zero and the radius is half the fixed size. */
+    QPushButton#InfoDot {{
+        border: 1px solid {p.border};
+        border-radius: 8px;
+        background: transparent;
+        color: {p.muted};
+        font-size: 11px;
+        font-weight: 700;
+        font-style: italic;
+        padding: 0px;
+        text-align: center;
+    }}
+    QPushButton#InfoDot:hover {{ color: {p.accent}; border-color: {p.accent}; }}
+
+    QFrame#InfoPopup {{
+        background: {p.surface_alt};
+        border: 1px solid {p.border};
+        border-radius: 8px;
+    }}
+
     QPushButton#FilterChip {{
         background: {p.surface};
         border: 1px solid {p.border};

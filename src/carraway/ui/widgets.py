@@ -27,6 +27,70 @@ from PySide6.QtWidgets import (
 from . import theme
 
 
+class InfoDot(QPushButton):
+    """A small "i" beside a control, explaining what that control does.
+
+    A tooltip would have been less code, but a tooltip is only found by
+    hovering something you already wondered about — which is the wrong way
+    round, since the person who needs the explanation is the one who does not
+    yet know there is a question. A visible dot advertises that there is
+    something to read.
+
+    The text appears in a popup rather than a tooltip so it can be several
+    lines long and stays put while it is read.
+    """
+
+    def __init__(self, text: str, parent: QWidget | None = None) -> None:
+        super().__init__("i", parent)
+        self.setObjectName("InfoDot")
+        self.explanation = text
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedSize(17, 17)
+        self.setFlat(True)
+        # Focusing it would put it in the tab order between a control and its
+        # own input, which is not where anyone is trying to get to.
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setToolTip(text)
+        self.clicked.connect(self.explain)
+
+    def setExplanation(self, text: str) -> None:  # noqa: N802 (Qt naming)
+        self.explanation = text
+        self.setToolTip(text)
+
+    def explain(self) -> None:
+        """Show the popup under the dot."""
+        popup = QFrame(self, Qt.WindowType.Popup)
+        popup.setObjectName("InfoPopup")
+        layout = QVBoxLayout(popup)
+        layout.setContentsMargins(14, 12, 14, 12)
+        label = QLabel(self.explanation)
+        label.setWordWrap(True)
+        label.setObjectName("Muted")
+        # Wide enough to read a sentence without becoming a paragraph-shaped
+        # column, and the popup grows downwards from there.
+        label.setMinimumWidth(300)
+        label.setMaximumWidth(340)
+        layout.addWidget(label)
+        popup.adjustSize()
+        popup.move(self.mapToGlobal(QPoint(0, self.height() + 4)))
+        popup.show()
+
+
+def labelled(text: str, explanation: str, *, heading: bool = False) -> QWidget:
+    """A label with an info dot after it, as one widget a layout can hold."""
+    holder = QWidget()
+    row = QHBoxLayout(holder)
+    row.setContentsMargins(0, 0, 0, 0)
+    row.setSpacing(6)
+    label = QLabel(text)
+    if heading:
+        label.setObjectName("SectionHeading")
+    row.addWidget(label)
+    row.addWidget(InfoDot(explanation))
+    row.addStretch(1)
+    return holder
+
+
 class Card(QFrame):
     """A bordered panel. Everything on a screen sits in one of these."""
 

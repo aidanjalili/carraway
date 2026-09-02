@@ -58,6 +58,25 @@ DEFAULT_LOOKBACK_MONTHS = 6
 # and a transfer is money the user still has.
 NON_SPENDING = frozenset({INCOME, TRANSFER})
 
+# Below this, a median is being taken over so few months that one unusual one
+# still moves it, and saying so is more use than a confident-looking figure.
+MIN_MONTHS_FOR_CONFIDENCE = 3
+
+_MONTH_NAMES = (
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+)
+
 
 # -- what a budget is -----------------------------------------------------
 
@@ -133,6 +152,130 @@ class Budget:
             if envelope.category == category:
                 return envelope.allowance
         return None
+
+
+# -- saying where a figure came from --------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Basis:
+    """How much history a suggestion rests on, and which months.
+
+    Every figure this module suggests is a median over complete calendar
+    months, and how many of those there were changes how much the number is
+    worth. Six months of history and one month of history produce a figure
+    that looks identical on screen, so the difference has to be said out loud
+    rather than left for the user to guess at.
+    """
+
+    months_with_data: int
+    months_examined: int
+    first_month: tuple[int, int] | None
+    last_month: tuple[int, int] | None
+    asof: date
+
+    @property
+    def confident(self) -> bool:
+        return self.months_with_data >= MIN_MONTHS_FOR_CONFIDENCE
+
+    @property
+    def span(self) -> str:
+        """The months covered, as a person would say them."""
+        if self.first_month is None or self.last_month is None:
+            return ""
+        first_year, first_month = self.first_month
+        last_year, last_month = self.last_month
+        first = _MONTH_NAMES[first_month - 1]
+        last = _MONTH_NAMES[last_month - 1]
+        if self.first_month == self.last_month:
+            return f"{first} {first_year}"
+        if first_year == last_year:
+            return f"{first}–{last} {first_year}"
+        return f"{first} {first_year} – {last} {last_year}"
+
+    def describe(self) -> str:
+        """One sentence a screen can show beside the numbers."""
+        if not self.months_with_data:
+            return (
+                "No complete months of spending to go on yet, so there is nothing "
+                "to suggest. Type the figures you want."
+            )
+        current = _MONTH_NAMES[self.asof.month - 1]
+        months = self.months_with_data
+        plural = "" if months == 1 else "s"
+        base = f"Median of your {months} complete month{plural} of spending ({self.span})."
+        if not self.confident:
+            return (
+                f"{base} That is little to go on — one unusual month still moves it, "
+                "so treat these as a starting point rather than a finding."
+            )
+        return (
+            f"{base} {current} so far is left out, since a month in progress "
+            "drags every figure down."
+        )
+
+
+def history_basis(
+    transactions: Sequence[Transaction],
+    *,
+    asof: date | None = None,
+    lookback_months: int = DEFAULT_LOOKBACK_MONTHS,
+    categories: Mapping[str, str] | None = None,
+    accounts: Sequence[str] | None = None,
+) -> Basis:
+    """Which complete months a suggestion would actually be drawn from.
+
+    Counts the months that contain spending rather than the months in the
+    window: a ledger imported three weeks ago has six months of window and one
+    month of evidence, and the second number is the one that matters.
+    """
+    today = asof or date.today()
+    cutoff = today.replace(day=1)
+    earliest = cutoff
+    for _ in range(lookback_months):
+        earliest = (earliest - timedelta(days=1)).replace(day=1)
+
+    scope = set(accounts) if accounts else None
+    seen: set[tuple[int, int]] = set()
+    for tx in transactions:
+        if not (earliest <= tx.date < cutoff):
+            continue
+        if scope is not None and tx.account_id not in scope:
+            continue
+        if _category_of(tx, categories) in NON_SPENDING or tx.is_transfer:
+            continue
+        if tx.amount.minor >= 0:
+            continue
+        seen.add((tx.date.year, tx.date.month))
+
+    ordered = sorted(seen)
+    return Basis(
+        months_with_data=len(ordered),
+        months_examined=lookback_months,
+        first_month=ordered[0] if ordered else None,
+        last_month=ordered[-1] if ordered else None,
+        asof=today,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class Estimate:
+    """A figure the app worked out, and the reason it believes it.
+
+    The reason travels with the number because a prefilled box is a claim.
+    Someone who cannot see where $6,450 came from has to either accept it on
+    faith or delete it, and both are worse than being told it is the monthly
+    rate of the two things they marked as income.
+    """
+
+    amount: Money
+    source: str
+    confident: bool = True
+
+    @property
+    def known(self) -> bool:
+        """Whether there is a figure worth offering at all."""
+        return self.amount.minor > 0
 
 
 # -- reaching the numbers -------------------------------------------------

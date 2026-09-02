@@ -328,6 +328,62 @@ class Ledger:
             self.transactions, categories=self.categories, accounts=accounts
         )
 
+    def history_basis(self, accounts=None):
+        """How much history the suggestions rest on, so a screen can say so."""
+        return budgets_mod.history_basis(
+            self.transactions, categories=self.categories, accounts=accounts
+        )
+
+    def income_estimate(self):
+        """What the app thinks you make each month, and why it thinks it.
+
+        Only recurring income counts, because that is the part that can be
+        relied on next month. A one-off deposit is real money but budgeting
+        against it plans to receive it again.
+        """
+        series = [s for s in self.series if self.kind_of(s) == subscriptions.INCOME]
+        amount = self.typical_monthly_income()
+        if not amount.minor:
+            return budgets_mod.Estimate(
+                amount,
+                "No recurring income found yet, so there is nothing to offer — "
+                "type what you expect to make.",
+                confident=False,
+            )
+        names = sorted(s.merchant for s in series)
+        shown = ", ".join(names[:2]) + (f" and {len(names) - 2} more" if len(names) > 2 else "")
+        subject = "the one thing" if len(names) == 1 else f"the {len(names)} things"
+        return budgets_mod.Estimate(
+            amount,
+            f"The monthly rate of {subject} you have marked as income ({shown}).",
+        )
+
+    def fixed_costs_estimate(self):
+        """What is already spoken for each month, and where that comes from.
+
+        Bills and subscriptions only. A habit is discretionary spending, and
+        the whole point of the question is to separate the two.
+        """
+        committed = [s for s in self.series if self.kind_of(s) in budget_mod.COMMITTED_KINDS]
+        amount = self.committed_per_month()
+        if not amount.minor:
+            return budgets_mod.Estimate(
+                amount,
+                "Nothing is classified as a bill or subscription yet, so there is "
+                "nothing to add up.",
+                confident=False,
+            )
+        subject = (
+            "the one bill Carraway knows about"
+            if len(committed) == 1
+            else f"the {len(committed)} bills and subscriptions Carraway knows about"
+        )
+        return budgets_mod.Estimate(
+            amount,
+            f"The monthly rate of {subject}. Habits are left out — those are "
+            "spending, and they belong in the table below.",
+        )
+
     def committed_per_month(self) -> Money:
         """What recurring bills and subscriptions cost in a typical month.
 

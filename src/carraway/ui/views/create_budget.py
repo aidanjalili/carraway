@@ -10,6 +10,13 @@ already spend before they can decide what to change.
 So all three doors open onto the same room — a table of per-category
 allowances — and every figure in it stays editable. The history is evidence,
 not an instruction.
+
+Every suggested figure says where it came from. A prefilled box is a claim,
+and a claim with no source can only be accepted on faith or deleted; being
+told it is the monthly rate of the two things you marked as income is what
+makes it possible to disagree with. The same reasoning puts an "i" beside
+each control rather than a tooltip: the person who needs the explanation is
+the one who does not yet know there is a question to ask.
 """
 
 from __future__ import annotations
@@ -31,6 +38,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QRadioButton,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -40,13 +48,109 @@ from PySide6.QtWidgets import (
 from ...analysis import budgets as budgets_mod
 from ...core.money import Money
 from ..data import Ledger
-from ..widgets import Card, FlowLayout, enable_row_hover, refresh_everything
+from ..widgets import Card, FlowLayout, InfoDot, enable_row_hover, refresh_everything
 
 _HEADERS = ["Category", "You usually spend", "Allowance"]
 
 # Ranges people actually budget over. "Custom" is last because it is the
 # fallback, not the expectation.
 _PRESETS = ["This month", "Next month", "Next 30 days", "Next 7 days", "Custom"]
+
+# The explanations behind each "i". Kept together so they can be read as a
+# set and checked for contradicting each other, which is how help text goes
+# stale — one sentence gets corrected and its neighbour does not.
+_HELP = {
+    "window": (
+        "The stretch of days this budget covers. Both ends count, so 1–30 "
+        "September is thirty days.\n\n"
+        "It does not have to be a month. A budget for the eleven days you are "
+        "away is a perfectly good budget, and every suggested figure is scaled "
+        "to whatever length you pick."
+    ),
+    "accounts": (
+        "Which accounts count as spending against this budget.\n\n"
+        "All of them, normally: a card, a debit card and cash are all just ways "
+        "of spending, and dinner paid for on a credit card is not cheaper than "
+        "dinner paid for in cash. Narrow it only when one account is genuinely "
+        "a separate pot — a shared card, or a trip paid for out of one place."
+    ),
+    "history": (
+        "Fills the table with what these categories normally cost you, scaled "
+        "to the length of this budget.\n\n"
+        "This is not advice to spend that much. It is what will happen if "
+        "nothing changes, which is the number you need in front of you before "
+        "you can decide what to cut."
+    ),
+    "total": (
+        "You name one figure, and it is divided between your categories in "
+        "proportion to what you normally spend on each.\n\n"
+        "Proportional rather than equal on purpose: finding $50 in a $600 "
+        "grocery bill and $50 in a $60 coffee habit are very different "
+        "requests, and only one of them is reasonable."
+    ),
+    "backwards": (
+        "Start from your payslip instead of your spending. Whatever is left "
+        "after saving what you want to save and paying what you have to pay is "
+        "what you are free to spend.\n\n"
+        "Carraway fills in income and fixed costs from what it already knows; "
+        "the savings target is yours to set, since it is a decision rather "
+        "than a fact."
+    ),
+    "income": (
+        "What you expect to receive over this budget's window — not per month, "
+        "unless the window happens to be a month.\n\n"
+        "The suggested figure counts only recurring income, because that is "
+        "the part you can rely on arriving again. A one-off deposit is real "
+        "money, but budgeting against it plans to receive it twice."
+    ),
+    "saving": (
+        "What you want to put aside over this window, taken off the top before "
+        "anything is allocated to spending.\n\n"
+        "Left empty because it is a decision, not something the app can read "
+        "off your history. Saving what happens to be left over is how people "
+        "end up saving nothing."
+    ),
+    "fixed": (
+        "The part already spoken for: rent, bills, subscriptions.\n\n"
+        "These get their own lines in the table at their real size rather than "
+        "a share of the leftover, so rent is not budgeted for twice. Habits are "
+        "deliberately not counted here — those are spending, and the point of "
+        "the question is to keep the two apart."
+    ),
+    "usual": (
+        "The median of what you spent on this category in each complete "
+        "calendar month, converted to a daily rate and scaled to this budget's "
+        "window.\n\n"
+        "The median rather than the average, so one December or one wedding "
+        "does not raise the figure permanently. The month in progress is left "
+        "out entirely: it is always short, and including it would make a "
+        "budget set on the 3rd come out at a tenth of the truth."
+    ),
+    "allowance": (
+        "What you are allowing yourself. Type over any of these — a figure you "
+        "chose beats one the app worked out, and nothing here is recalculated "
+        "behind you once you have edited it."
+    ),
+}
+
+
+def _let_it_wrap(label: QLabel) -> None:
+    """Make a layout give a wrapped label the height it actually needs.
+
+    A word-wrapped QLabel reports the width of one long line and a single
+    line's height, so a two-line explanation gets its second line clipped by
+    whatever card it sits in. Turning on height-for-width is what makes the
+    layout ask the label how tall it wants to be at the width it was given.
+    """
+    label.setWordWrap(True)
+    policy = label.sizePolicy()
+    policy.setHeightForWidth(True)
+    policy.setVerticalPolicy(QSizePolicy.Policy.MinimumExpanding)
+    label.setSizePolicy(policy)
+    # Height-for-width alone still leaves the last line grazing the card edge,
+    # because the card is sized before the label has been given its width.
+    # Two lines' worth of room is what these notes actually run to.
+    label.setMinimumHeight(label.fontMetrics().height() * 2 + 2)
 
 
 def _parse(text: str) -> Money | None:
@@ -88,6 +192,9 @@ class CreateBudgetView(QWidget):
         self._account_boxes: dict[str, QCheckBox] = {}
         self._filling = False
         self._warning = ""
+        # A note about something the user just did, shown when nothing is
+        # actually wrong. Rendered by _update_total like everything else.
+        self._hint = ""
         # True while income and fixed costs still hold figures the app
         # suggested, so they can be rescaled when the window changes.
         self._backwards_is_ours = True
@@ -109,6 +216,210 @@ class CreateBudgetView(QWidget):
 
         layout.addWidget(self._build_basics())
         layout.addWidget(self._build_method())
+        layout.addWidget(self._build_table(), stretch=1)
+
+        buttons = QHBoxLayout()
+        self.note = QLabel("")
+        self.note.setObjectName("Muted")
+        self.note.setWordWrap(True)
+        buttons.addWidget(self.note, stretch=1)
+        self.create = QPushButton("Create budget")
+        self.create.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.create.clicked.connect(self._create)
+        buttons.addWidget(self.create)
+        layout.addLayout(buttons)
+
+        self.refresh()
+
+    # -- the panels -------------------------------------------------------
+
+    def _build_basics(self) -> QWidget:
+        card = Card()
+        outer = QVBoxLayout(card)
+        outer.setContentsMargins(18, 14, 18, 14)
+        outer.setSpacing(8)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(QLabel("Name"))
+        self.name = QLineEdit()
+        self.name.setPlaceholderText("September")
+        self.name.setMinimumWidth(160)
+        # A name the app suggested keeps following the dates; one the user
+        # typed never gets overwritten. Without the distinction, picking
+        # "Next month" after "This month" leaves a budget called August
+        # covering September.
+        self._name_is_ours = True
+        self.name.textEdited.connect(lambda _: setattr(self, "_name_is_ours", False))
+        row.addWidget(self.name)
+
+        row.addSpacing(10)
+        self.preset = QComboBox()
+        self.preset.addItems(_PRESETS)
+        self.preset.currentTextChanged.connect(self._preset_chosen)
+        row.addWidget(self.preset)
+
+        self.starts = QDateEdit()
+        self.starts.setCalendarPopup(True)
+        self.starts.setDisplayFormat("yyyy-MM-dd")
+        self.starts.dateChanged.connect(lambda _: self._dates_edited())
+        row.addWidget(self.starts)
+        row.addWidget(QLabel("to"))
+        self.ends = QDateEdit()
+        self.ends.setCalendarPopup(True)
+        self.ends.setDisplayFormat("yyyy-MM-dd")
+        self.ends.dateChanged.connect(lambda _: self._dates_edited())
+        row.addWidget(self.ends)
+        row.addWidget(InfoDot(_HELP["window"]))
+        row.addStretch(1)
+        outer.addLayout(row)
+
+        # Collapsed by default. Every account is the answer nearly every time,
+        # and eleven checkboxes wrapped over three lines made the least-changed
+        # setting on the screen the loudest thing on it.
+        scope_row = QHBoxLayout()
+        scope_row.setSpacing(6)
+        self.scope_summary = QLabel("")
+        self.scope_summary.setObjectName("Muted")
+        scope_row.addWidget(self.scope_summary)
+        scope_row.addWidget(InfoDot(_HELP["accounts"]))
+        self.scope_toggle = QPushButton("Change")
+        self.scope_toggle.setFlat(True)
+        self.scope_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.scope_toggle.setObjectName("Accent")
+        self.scope_toggle.clicked.connect(self._toggle_scope)
+        scope_row.addWidget(self.scope_toggle)
+        scope_row.addStretch(1)
+        outer.addLayout(scope_row)
+
+        self.accounts_holder = QWidget()
+        self.accounts_flow = FlowLayout(self.accounts_holder)
+        self.accounts_holder.setVisible(False)
+        outer.addWidget(self.accounts_holder)
+        return card
+
+    def _build_method(self) -> QWidget:
+        card = Card()
+        outer = QVBoxLayout(card)
+        outer.setContentsMargins(18, 14, 18, 14)
+        outer.setSpacing(8)
+
+        heading = QLabel("Where should the numbers come from?")
+        heading.setObjectName("SectionHeading")
+        outer.addWidget(heading)
+
+        self.method = QButtonGroup(self)
+        self.method.setExclusive(True)
+
+        history_row = QHBoxLayout()
+        history_row.setSpacing(6)
+        self.by_history = QRadioButton("What I usually spend")
+        self.by_history.setChecked(True)
+        self.method.addButton(self.by_history, 0)
+        history_row.addWidget(self.by_history)
+        history_row.addWidget(InfoDot(_HELP["history"]))
+        history_row.addStretch(1)
+        outer.addLayout(history_row)
+
+        total_row = QHBoxLayout()
+        total_row.setSpacing(6)
+        self.by_total = QRadioButton("A total of")
+        self.method.addButton(self.by_total, 1)
+        total_row.addWidget(self.by_total)
+        self.total_input = QLineEdit()
+        self.total_input.setPlaceholderText("1200.00")
+        self.total_input.setMaximumWidth(110)
+        total_row.addWidget(self.total_input)
+        total_row.addWidget(InfoDot(_HELP["total"]))
+        total_row.addStretch(1)
+        outer.addLayout(total_row)
+
+        back_row = QHBoxLayout()
+        back_row.setSpacing(6)
+        self.by_backwards = QRadioButton("Work backwards")
+        self.method.addButton(self.by_backwards, 2)
+        back_row.addWidget(self.by_backwards)
+        back_row.addWidget(InfoDot(_HELP["backwards"]))
+        back_row.addStretch(1)
+        outer.addLayout(back_row)
+
+        # Indented under its radio button, so the three inputs read as
+        # belonging to that method rather than to the card.
+        inputs_row = QHBoxLayout()
+        inputs_row.setSpacing(6)
+        inputs_row.addSpacing(24)
+        self.backwards_label = QLabel("I'll make")
+        self.backwards_label.setObjectName("Muted")
+        inputs_row.addWidget(self.backwards_label)
+        self.income_input = QLineEdit()
+        self.income_input.setMaximumWidth(100)
+        inputs_row.addWidget(self.income_input)
+        self.income_info = InfoDot(_HELP["income"])
+        inputs_row.addWidget(self.income_info)
+
+        save_label = QLabel("save")
+        save_label.setObjectName("Muted")
+        inputs_row.addWidget(save_label)
+        self.saving_input = QLineEdit()
+        self.saving_input.setMaximumWidth(100)
+        self.saving_input.setPlaceholderText("0.00")
+        inputs_row.addWidget(self.saving_input)
+        inputs_row.addWidget(InfoDot(_HELP["saving"]))
+
+        fixed_label = QLabel("fixed costs")
+        fixed_label.setObjectName("Muted")
+        inputs_row.addWidget(fixed_label)
+        self.fixed_input = QLineEdit()
+        self.fixed_input.setMaximumWidth(100)
+        inputs_row.addWidget(self.fixed_input)
+        self.fixed_info = InfoDot(_HELP["fixed"])
+        inputs_row.addWidget(self.fixed_info)
+        inputs_row.addStretch(1)
+        outer.addLayout(inputs_row)
+
+        # One line under the whole card, describing whichever method is live.
+        # Three permanent explanations would be three-quarters noise.
+        self.method_note = QLabel("")
+        self.method_note.setObjectName("Muted")
+        self.method_note.setWordWrap(True)
+        _let_it_wrap(self.method_note)
+        outer.addWidget(self.method_note)
+
+        # Typing in a method's own box is a clearer statement of intent than
+        # the radio button beside it, so it selects that method too.
+        self.total_input.textEdited.connect(lambda _: self.by_total.setChecked(True))
+        for box in (self.income_input, self.saving_input, self.fixed_input):
+            box.textEdited.connect(lambda _: self.by_backwards.setChecked(True))
+            box.textEdited.connect(lambda _: setattr(self, "_backwards_is_ours", False))
+        self.method.idToggled.connect(lambda _i, on: self._fill() if on else None)
+        for box in (self.total_input, self.income_input, self.saving_input, self.fixed_input):
+            box.textChanged.connect(lambda _: self._fill())
+        return card
+
+    def _build_table(self) -> QWidget:
+        card = Card()
+        outer = QVBoxLayout(card)
+        outer.setContentsMargins(18, 14, 18, 14)
+        outer.setSpacing(8)
+
+        head_row = QHBoxLayout()
+        head_row.setSpacing(6)
+        heading = QLabel("What you may spend")
+        heading.setObjectName("SectionHeading")
+        head_row.addWidget(heading)
+        head_row.addWidget(InfoDot(_HELP["allowance"]))
+        head_row.addStretch(1)
+        self.total_label = QLabel("")
+        self.total_label.setObjectName("SectionHeading")
+        head_row.addWidget(self.total_label)
+        outer.addLayout(head_row)
+
+        # Where the middle column's numbers come from. Said once, above the
+        # table, rather than hidden in a tooltip on every cell.
+        self.basis_note = QLabel("")
+        self.basis_note.setObjectName("Muted")
+        _let_it_wrap(self.basis_note)
+        outer.addWidget(self.basis_note)
 
         self.table = QTableWidget(0, len(_HEADERS))
         self.table.setHorizontalHeaderLabels(_HEADERS)
@@ -126,174 +437,28 @@ class CreateBudgetView(QWidget):
                 Qt.AlignmentFlag.AlignLeft if column == 0 else Qt.AlignmentFlag.AlignRight
             ) | Qt.AlignmentFlag.AlignVCenter
             self.table.horizontalHeaderItem(column).setTextAlignment(align)
+        self.table.horizontalHeaderItem(1).setToolTip(_HELP["usual"])
         self.table.itemChanged.connect(self._allowance_edited)
-        layout.addWidget(self.table, stretch=1)
+        outer.addWidget(self.table, stretch=1)
 
         footer = QHBoxLayout()
-        self.add_category = QComboBox()
-        self.add_category.setToolTip("Budget for something you have not spent on before.")
+        footer.setSpacing(6)
         footer.addWidget(QLabel("Add a category"))
+        self.add_category = QComboBox()
         footer.addWidget(self.add_category)
         add = QPushButton("Add")
         add.setCursor(Qt.CursorShape.PointingHandCursor)
         add.clicked.connect(self._add_category)
         footer.addWidget(add)
+        footer.addWidget(
+            InfoDot(
+                "Budget for something you have not spent on before, or have not "
+                "spent on lately.\n\nA category with no history has no suggested "
+                "figure, so you type the allowance yourself."
+            )
+        )
         footer.addStretch(1)
-
-        self.total_label = QLabel("")
-        self.total_label.setObjectName("SectionHeading")
-        footer.addWidget(self.total_label)
-        layout.addLayout(footer)
-
-        self.note = QLabel("")
-        self.note.setObjectName("Muted")
-        self.note.setWordWrap(True)
-        layout.addWidget(self.note)
-
-        buttons = QHBoxLayout()
-        buttons.addStretch(1)
-        self.create = QPushButton("Create budget")
-        self.create.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.create.clicked.connect(self._create)
-        buttons.addWidget(self.create)
-        layout.addLayout(buttons)
-
-        self.refresh()
-
-    # -- the panels -------------------------------------------------------
-
-    def _build_basics(self) -> QWidget:
-        card = Card()
-        outer = QVBoxLayout(card)
-        outer.setContentsMargins(18, 14, 18, 14)
-        outer.setSpacing(10)
-
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        row.addWidget(QLabel("Name"))
-        self.name = QLineEdit()
-        self.name.setPlaceholderText("September")
-        self.name.setMinimumWidth(180)
-        # A name the app suggested keeps following the dates; one the user
-        # typed never gets overwritten. Without the distinction, picking
-        # "Next month" after "This month" leaves a budget called August
-        # covering September.
-        self._name_is_ours = True
-        self.name.textEdited.connect(lambda _: setattr(self, "_name_is_ours", False))
-        row.addWidget(self.name)
-
-        row.addSpacing(12)
-        row.addWidget(QLabel("From"))
-        self.starts = QDateEdit()
-        self.starts.setCalendarPopup(True)
-        self.starts.setDisplayFormat("yyyy-MM-dd")
-        self.starts.dateChanged.connect(lambda _: self._dates_edited())
-        row.addWidget(self.starts)
-        row.addWidget(QLabel("to"))
-        self.ends = QDateEdit()
-        self.ends.setCalendarPopup(True)
-        self.ends.setDisplayFormat("yyyy-MM-dd")
-        self.ends.dateChanged.connect(lambda _: self._dates_edited())
-        row.addWidget(self.ends)
-
-        self.preset = QComboBox()
-        self.preset.addItems(_PRESETS)
-        self.preset.currentTextChanged.connect(self._preset_chosen)
-        row.addWidget(self.preset)
-        row.addStretch(1)
-        outer.addLayout(row)
-
-        # A wrapping row rather than a menu: ten accounts in a dropdown hides
-        # most of them, and this is a question the user should be able to
-        # answer at a glance.
-        accounts_row = QHBoxLayout()
-        accounts_row.setSpacing(8)
-        label = QLabel("Counts spending on")
-        label.setObjectName("Muted")
-        accounts_row.addWidget(label, alignment=Qt.AlignmentFlag.AlignTop)
-
-        holder = QWidget()
-        self.accounts_flow = FlowLayout(holder)
-        accounts_row.addWidget(holder, stretch=1)
-        outer.addLayout(accounts_row)
-        return card
-
-    def _build_method(self) -> QWidget:
-        card = Card()
-        outer = QVBoxLayout(card)
-        outer.setContentsMargins(18, 14, 18, 14)
-        outer.setSpacing(9)
-
-        heading = QLabel("Where should the numbers come from?")
-        heading.setObjectName("SectionHeading")
-        outer.addWidget(heading)
-
-        self.method = QButtonGroup(self)
-        self.method.setExclusive(True)
-
-        self.by_history = QRadioButton("What I usually spend")
-        self.by_history.setToolTip(
-            "Fills the table with your median monthly spending, scaled to this "
-            "window. Not advice — this is what happens if nothing changes."
-        )
-        self.by_history.setChecked(True)
-        self.method.addButton(self.by_history, 0)
-        outer.addWidget(self.by_history)
-
-        total_row = QHBoxLayout()
-        total_row.setSpacing(8)
-        self.by_total = QRadioButton("A total of")
-        self.by_total.setToolTip(
-            "Split across categories in proportion to what you normally spend."
-        )
-        self.method.addButton(self.by_total, 1)
-        total_row.addWidget(self.by_total)
-        self.total_input = QLineEdit()
-        self.total_input.setPlaceholderText("1200.00")
-        self.total_input.setMaximumWidth(120)
-        total_row.addWidget(self.total_input)
-        total_row.addStretch(1)
-        outer.addLayout(total_row)
-
-        back_row = QHBoxLayout()
-        back_row.setSpacing(8)
-        self.by_backwards = QRadioButton("Work backwards:")
-        self.by_backwards.setToolTip(
-            "Whatever is left after saving what you want and paying what you must "
-            "is what you may spend."
-        )
-        self.method.addButton(self.by_backwards, 2)
-        back_row.addWidget(self.by_backwards)
-        self.backwards_label = QLabel("I'll make")
-        back_row.addWidget(self.backwards_label)
-        self.income_input = QLineEdit()
-        self.income_input.setMaximumWidth(100)
-        back_row.addWidget(self.income_input)
-        back_row.addWidget(QLabel("· save"))
-        self.saving_input = QLineEdit()
-        self.saving_input.setMaximumWidth(100)
-        back_row.addWidget(self.saving_input)
-        back_row.addWidget(QLabel("· fixed costs"))
-        self.fixed_input = QLineEdit()
-        self.fixed_input.setMaximumWidth(100)
-        back_row.addWidget(self.fixed_input)
-        back_row.addStretch(1)
-        outer.addLayout(back_row)
-
-        self.method_note = QLabel("")
-        self.method_note.setObjectName("Muted")
-        self.method_note.setWordWrap(True)
-        outer.addWidget(self.method_note)
-
-        # Typing in a method's own box is a clearer statement of intent than
-        # the radio button beside it, so it selects that method too.
-        self.total_input.textEdited.connect(lambda _: self.by_total.setChecked(True))
-        for box in (self.income_input, self.saving_input, self.fixed_input):
-            box.textEdited.connect(lambda _: self.by_backwards.setChecked(True))
-            box.textEdited.connect(lambda _: setattr(self, "_backwards_is_ours", False))
-        self.method.idToggled.connect(lambda _i, on: self._fill() if on else None)
-        for box in (self.total_input, self.income_input, self.saving_input, self.fixed_input):
-            box.textChanged.connect(lambda _: self._fill())
+        outer.addLayout(footer)
         return card
 
     # -- state ------------------------------------------------------------
@@ -322,10 +487,6 @@ class CreateBudgetView(QWidget):
 
         every = QCheckBox("All accounts")
         every.setChecked(True)
-        every.setToolTip(
-            "A card, a debit card and cash are all just ways of spending. Untick "
-            "to watch only some of them."
-        )
         every.toggled.connect(self._all_accounts_toggled)
         self._all_accounts = every
         self.accounts_flow.addWidget(every)
@@ -339,6 +500,27 @@ class CreateBudgetView(QWidget):
             box.toggled.connect(lambda _on: self._account_toggled())
             self._account_boxes[account.id] = box
             self.accounts_flow.addWidget(box)
+        self._describe_scope()
+
+    def _toggle_scope(self) -> None:
+        """Show or hide the account checkboxes."""
+        showing = not self.accounts_holder.isVisible()
+        self.accounts_holder.setVisible(showing)
+        self.scope_toggle.setText("Done" if showing else "Change")
+
+    def _describe_scope(self) -> None:
+        """Say which accounts count, in a line rather than eleven checkboxes."""
+        chosen = self.chosen_accounts()
+        if not chosen:
+            self.scope_summary.setText("Counts spending on every account")
+            return
+        names = [a.name for a in self.ledger.accounts if a.id in chosen]
+        if len(names) <= 2:
+            self.scope_summary.setText(f"Counts spending on {' and '.join(names)}")
+            return
+        self.scope_summary.setText(
+            f"Counts spending on {names[0]} and {len(names) - 1} other accounts"
+        )
 
     def _all_accounts_toggled(self, on: bool) -> None:
         if on:
@@ -346,6 +528,7 @@ class CreateBudgetView(QWidget):
             for box in self._account_boxes.values():
                 box.setChecked(False)
             self._filling = False
+        self._describe_scope()
         self._fill()
 
     def _account_toggled(self) -> None:
@@ -361,6 +544,7 @@ class CreateBudgetView(QWidget):
             self._filling = True
             self._all_accounts.setChecked(True)
             self._filling = False
+        self._describe_scope()
         self._fill()
 
     def chosen_accounts(self) -> tuple[str, ...]:
@@ -423,13 +607,33 @@ class CreateBudgetView(QWidget):
             return
         start, end = self.date_range()
         days = max((end - start).days + 1, 1)
-        income = budgets_mod.scale_to_window(self.ledger.typical_monthly_income(), days)
-        fixed = budgets_mod.scale_to_window(self.ledger.committed_per_month(), days)
+        self._income = self.ledger.income_estimate()
+        self._fixed = self.ledger.fixed_costs_estimate()
+        income = budgets_mod.scale_to_window(self._income.amount, days)
+        fixed = budgets_mod.scale_to_window(self._fixed.amount, days)
         self._filling = True
         self.income_input.setText(f"{income.decimal:.2f}" if income.minor else "")
         self.fixed_input.setText(f"{fixed.decimal:.2f}" if fixed.minor else "")
         self._filling = False
         self.backwards_label.setText(f"Over these {days} days I'll make")
+
+        # The "i" beside each box carries the general explanation plus where
+        # this particular figure came from, since that is what someone
+        # staring at a prefilled number actually wants to know.
+        self.income_info.setExplanation(
+            f"{_HELP['income']}\n\nThis {income.format()} is "
+            f"{self._income.amount.format()} a month scaled to {days} days. "
+            f"{self._income.source}"
+            if income.minor
+            else f"{_HELP['income']}\n\n{self._income.source}"
+        )
+        self.fixed_info.setExplanation(
+            f"{_HELP['fixed']}\n\nThis {fixed.format()} is "
+            f"{self._fixed.amount.format()} a month scaled to {days} days. "
+            f"{self._fixed.source}"
+            if fixed.minor
+            else f"{_HELP['fixed']}\n\n{self._fixed.source}"
+        )
 
     # -- filling the table ------------------------------------------------
 
@@ -444,6 +648,8 @@ class CreateBudgetView(QWidget):
         days = (end - start).days + 1
 
         accounts = self.chosen_accounts() or None
+        basis = self.ledger.history_basis(accounts)
+        self.basis_note.setText(basis.describe())
         suggested = {
             line.category: line.allowance
             for line in self.ledger.suggest_envelopes(start, end, accounts)
@@ -452,8 +658,9 @@ class CreateBudgetView(QWidget):
         if self.by_history.isChecked():
             lines = [budgets_mod.Envelope(c, a) for c, a in suggested.items()]
             self.method_note.setText(
-                f"What {len(lines)} categories would cost over these {days} "
-                "days at your usual rate."
+                f"What {len(lines)} categories would cost over these {days} days at "
+                "your usual rate — not a recommendation, just what happens if "
+                "nothing changes."
             )
         else:
             weights = self.ledger.spending_weights(accounts)
@@ -464,7 +671,8 @@ class CreateBudgetView(QWidget):
                     return
                 lines = budgets_mod.split(total, weights)
                 self.method_note.setText(
-                    f"{total.format()} split in proportion to what you normally spend."
+                    f"{total.format()} split across {len(lines)} categories in "
+                    "proportion to what you normally spend on each."
                 )
             else:
                 income = _parse(self.income_input.text())
@@ -494,10 +702,16 @@ class CreateBudgetView(QWidget):
                 fixed_lines = budgets_mod.split(fixed, committed)
                 free = {n: w for n, w in weights.items() if n not in committed}
                 lines = fixed_lines + budgets_mod.split(spendable, free or weights)
+                twice = (
+                    f" The first {len(fixed_lines)} lines below are those "
+                    "commitments, at their real size."
+                    if fixed_lines
+                    else ""
+                )
                 self.method_note.setText(
-                    f"{income.format()} less {saving.format()} saved leaves "
-                    f"{(income - saving).format()}: {fixed.format()} of it already "
-                    f"committed, {spendable.format()} free to spend."
+                    f"{income.format()} in, less {saving.format()} saved and "
+                    f"{fixed.format()} already committed, leaves "
+                    f"{spendable.format()} to spend freely.{twice}"
                 )
         self._show(lines, "", suggested)
 
@@ -514,11 +728,12 @@ class CreateBudgetView(QWidget):
             typical = QTableWidgetItem(usual.format() if usual else "—")
             typical.setFlags(typical.flags() & ~Qt.ItemFlag.ItemIsEditable)
             typical.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            if usual:
-                typical.setToolTip(
-                    "Your median monthly spend here, scaled to this window. "
-                    "Evidence, not an instruction."
-                )
+            typical.setToolTip(
+                _HELP["usual"]
+                if usual
+                else "Nothing spent here in the months this is drawn from, so there "
+                "is no usual figure to compare against."
+            )
 
             allowance = QTableWidgetItem(f"{line.allowance.decimal:.2f}")
             allowance.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -527,6 +742,9 @@ class CreateBudgetView(QWidget):
             self.table.setItem(row, 2, allowance)
         self._filling = False
         self._warning = warning
+        # A hint is about a row that has just been added, so rebuilding the
+        # table retires it.
+        self._hint = ""
         self._update_total()
 
     def _allowance_edited(self, item: QTableWidgetItem) -> None:
@@ -589,8 +807,15 @@ class CreateBudgetView(QWidget):
         # user cannot act on "overlaps September" while the numbers in front
         # of them do not add up. Overlaps warn rather than block, because
         # "the trip is meant to blow the month" is a thing a person may decide.
-        message = self._warning or self._check_clashes()
-        self.note.setObjectName("Danger" if message else "Muted")
+        # A hint comes last and is not an error, so it is not painted as one.
+        #
+        # Everything that has something to say routes through here rather than
+        # writing to the label itself: "Added Travel" used to be set and then
+        # wiped by this method a line later, so the one message the user had
+        # just asked for was the one that never appeared.
+        problem = self._warning or self._check_clashes()
+        message = problem or self._hint
+        self.note.setObjectName("Danger" if problem else "Muted")
         self.note.setText(message)
         self.note.style().unpolish(self.note)
         self.note.style().polish(self.note)
@@ -601,7 +826,8 @@ class CreateBudgetView(QWidget):
             return
         existing = {self.table.item(r, 0).text() for r in range(self.table.rowCount())}
         if name in existing:
-            self.note.setText(f"{name} is already in this budget.")
+            self._hint = f"{name} is already in this budget."
+            self._update_total()
             return
         self._filling = True
         row = self.table.rowCount()
@@ -617,7 +843,7 @@ class CreateBudgetView(QWidget):
         self.table.setItem(row, 1, typical)
         self.table.setItem(row, 2, amount)
         self._filling = False
-        self.note.setText(f"Added {name}. Type what you want to allow for it.")
+        self._hint = f"Added {name}. Type what you want to allow for it."
         self.table.editItem(amount)
         self._update_total()
 

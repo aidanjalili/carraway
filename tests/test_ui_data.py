@@ -770,3 +770,75 @@ def test_money_coming_in_is_never_a_subscription_charge(tmp_path):
     ledger.load()
     series = next(s for s in ledger.series if s.merchant == "Headspace")
     assert ledger.suggest_billed_on(series) is None
+
+
+# -- estimates that say where they came from -----------------------------
+
+
+def _income_ledger(tmp_path) -> Ledger:
+    """Recurring pay, a recurring bill, and one one-off windfall."""
+    import io
+
+    rows = ["Date,Description,Amount"]
+    for month in range(1, 9):
+        rows.append(f"2026-{month:02d}-01,ACME CORP PAYROLL,4000.00")
+        rows.append(f"2026-{month:02d}-03,GREAT LANDLORD RENT,-1200.00")
+    # A single large deposit, which must not be mistaken for monthly income.
+    rows.append("2026-05-20,SOLD THE CAR,9000.00")
+
+    path = tmp_path / "income.db"
+    conn = db.connect(path)
+    db.upsert_account(conn, Account(id="a1", name="Checking", type=AccountType.CHECKING))
+    txs, _ = import_csv(io.StringIO("\n".join(rows) + "\n"), "a1")
+    db.insert_transactions(conn, txs)
+    conn.close()
+    ledger = Ledger(path=path)
+    ledger.load()
+    return ledger
+
+
+def test_the_income_estimate_says_what_it_counted(tmp_path):
+    estimate = _income_ledger(tmp_path).income_estimate()
+    assert estimate.known is True
+    assert "marked as income" in estimate.source
+
+
+def test_a_one_off_windfall_is_not_treated_as_income(tmp_path):
+    """Budgeting against a car sale plans to sell the car again."""
+    ledger = _income_ledger(tmp_path)
+    # Only the recurring payroll counts, so the figure stays near one payslip
+    # rather than being dragged up by the $9,000.
+    assert ledger.income_estimate().amount == Money.parse("4000.00")
+
+
+def test_no_recurring_income_says_so_instead_of_offering_zero(tmp_path):
+    estimate = _ledger(tmp_path, _statement("-8.43")).income_estimate()
+    assert estimate.known is False
+    assert estimate.confident is False
+    assert "type what you expect" in estimate.source.lower()
+
+
+def test_the_fixed_costs_estimate_names_its_source(tmp_path):
+    estimate = _income_ledger(tmp_path).fixed_costs_estimate()
+    assert "Carraway knows about" in estimate.source
+    # Habits are spending and belong in the table, not in the fixed figure.
+    assert "Habits are left out" in estimate.source
+
+
+def test_nothing_classified_yet_is_reported_rather_than_guessed(tmp_path):
+    empty = Ledger(path=tmp_path / "bare.db")
+    empty.load()
+    estimate = empty.fixed_costs_estimate()
+    assert estimate.known is False
+    assert estimate.confident is False
+
+
+def test_the_ledger_hands_back_the_history_basis(tmp_path):
+    basis = _income_ledger(tmp_path).history_basis()
+    assert basis.months_with_data > 0
+    assert "complete month" in basis.describe()
+
+
+def test_the_basis_follows_the_account_scope(tmp_path):
+    # An account with nothing on it has no history to describe.
+    assert _income_ledger(tmp_path).history_basis(["nonexistent"]).months_with_data == 0
