@@ -223,12 +223,19 @@ class Ledger:
         if not entries:
             return {"configured": True, "added": 0, "skipped": 0, "unmatched": []}
 
-        ready, unmatched = to_transactions(entries, {a.name: a.id for a in self.accounts})
+        by_name = {a.name: a.id for a in self.accounts}
+        ready, unmatched = to_transactions(entries, by_name)
         added = skipped = 0
         if ready:
             conn = db.connect(self.path)
             added, skipped = db.insert_transactions(conn, ready)
             conn.close()
+            # The spends have to land before any count is reconciled, or the
+            # difference is measured against a ledger that is missing them
+            # and the correction swallows the very spends just collected.
+            self.load()
+
+        corrections = self._apply_counts(entries, by_name, unmatched)
 
         # Only claim what was actually stored. An entry naming an account
         # this ledger does not have stays on the server, so it is not lost
@@ -238,11 +245,45 @@ class Ledger:
 
         self.load()
         return {
+            "corrections": corrections,
             "configured": True,
             "added": added,
             "skipped": skipped,
             "unmatched": [e.description for e in unmatched],
         }
+
+    def _apply_counts(self, entries, by_name: dict, unmatched: list) -> list[dict]:
+        """Turn "this is what is in my wallet" into a correction, per count.
+
+        The phone can only say what it can see -- a total in a pocket. What
+        that means depends on everything this ledger already knows, so the
+        subtraction happens here and nowhere else.
+
+        Counts are applied oldest first, so two in one collection settle in
+        the order they were made rather than the order they arrived.
+        """
+        lowered = {name.lower(): account_id for name, account_id in by_name.items()}
+        made: list[dict] = []
+
+        for entry in sorted(
+            (e for e in entries if getattr(e, "is_count", False)),
+            key=lambda e: e.occurred_on,
+        ):
+            account_id = lowered.get(entry.account.lower())
+            if account_id is None or not self.is_cash_account(account_id):
+                # A count only means anything for an account whose balance
+                # nobody else reports. Left on the server rather than guessed.
+                unmatched.append(entry)
+                continue
+            gap = self.set_cash_balance(account_id, entry.amount, correction=True)
+            made.append(
+                {
+                    "account": self.account_name(account_id),
+                    "counted": entry.amount,
+                    "correction": gap,
+                }
+            )
+        return made
 
     def pocket_snapshot(self) -> dict:
         """The small summary the phone shows: what is left, per budget line.

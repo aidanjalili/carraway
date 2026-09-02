@@ -418,9 +418,24 @@ class PocketCard(Card):
             added = result.get("added", 0)
             skipped = result.get("skipped", 0)
             unmatched = result.get("unmatched") or []
+            corrections = result.get("corrections") or []
             parts = [f"Brought in {added}."] if added else ["Nothing new to bring in."]
             if skipped:
                 parts.append(f"{skipped} were already here.")
+            for made in corrections:
+                # Named outright: a transaction nobody typed should never
+                # appear in the ledger without having been mentioned.
+                gap = made["correction"]
+                if gap.minor:
+                    parts.append(
+                        f"You counted {made['counted'].format()} in {made['account']}, "
+                        f"so {gap.format()} was added to square it up."
+                    )
+                else:
+                    parts.append(
+                        f"You counted {made['counted'].format()} in {made['account']}, "
+                        "which is exactly what was expected."
+                    )
             if unmatched:
                 # Named an account this ledger does not have. Left on the
                 # server rather than filed under a guess.

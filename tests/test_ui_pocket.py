@@ -44,9 +44,18 @@ class FakeClient:
     def __init__(self) -> None:
         self.revoked: list[str] = []
         self.published: list[dict] = []
+        self.entries: list = []
+        self.claimed: list[str] = []
 
     def status(self) -> dict:
         return {"pending": 2, "oldest_days": 3}
+
+    def pending(self) -> list:
+        return list(self.entries)
+
+    def claim(self, ids: list) -> int:
+        self.claimed.extend(ids)
+        return len(ids)
 
     def devices(self) -> list[dict]:
         return [
@@ -434,3 +443,161 @@ def test_deleting_a_budget_takes_it_off_the_phone(app, paired, monkeypatch):
     assert all(b.id != budget.id for b in ledger.budgets)
     _settle(app, detail._pocket_publisher)
     assert client.published, "the phone was never told it had gone"
+
+
+# -- counting your wallet from the phone --------------------------------
+
+
+def _cash_ledger(tmp_path):
+    """A cash account with a known balance and some spending after it."""
+    from datetime import date, timedelta
+
+    from carraway.core import db
+    from carraway.core.models import Account, AccountType, Transaction
+    from carraway.core.money import Money
+
+    path = tmp_path / "cash.db"
+    conn = db.connect(path)
+    db.upsert_account(conn, Account(id="cash", name="Cash", type=AccountType.CASH))
+    anchor = date.today() - timedelta(days=10)
+    db.record_balance(conn, "cash", Money.parse("100.00"), anchor)
+    db.insert_transactions(
+        conn,
+        [
+            Transaction(
+                id="spend1",
+                account_id="cash",
+                date=anchor + timedelta(days=1),
+                amount=Money.parse("-30.00"),
+                description="LUNCH",
+                merchant="LUNCH",
+            )
+        ],
+    )
+    conn.close()
+    led = Ledger(path)
+    led.load()
+    return led
+
+
+def _count_entry(amount: str, account: str = "Cash"):
+    from datetime import date
+
+    from carraway.core.money import Money
+    from carraway.sync.pocket import InboxEntry
+
+    return InboxEntry(
+        id="count1",
+        occurred_on=date.today(),
+        amount=Money.parse(amount),
+        description="Wallet count",
+        category="",
+        account=account,
+        kind="count",
+    )
+
+
+def test_counting_less_than_expected_writes_a_negative_correction(app, tmp_path, monkeypatch):
+    """You had $100, spent $30, so the ledger says $70. You count $55 -- the
+    missing $15 went somewhere you never logged."""
+    from carraway.core.money import Money
+
+    ledger = _cash_ledger(tmp_path)
+    assert ledger.implied_balance("cash") == Money.parse("70.00")
+
+    client = FakeClient()
+    client.entries = [_count_entry("55.00")]
+    monkeypatch.setattr(Ledger, "pocket_client", lambda self: client)
+    ledger.save_setting("pocket_url", "https://money.example.com")
+
+    result = ledger.collect_from_pocket()
+    made = result["corrections"]
+    assert len(made) == 1
+    assert made[0]["correction"] == Money.parse("-15.00")
+    assert ledger.implied_balance("cash") == Money.parse("55.00")
+
+
+def test_counting_more_than_expected_writes_a_positive_correction(app, tmp_path, monkeypatch):
+    """Over-logged, or found a note in a coat. Either way the count wins."""
+    from carraway.core.money import Money
+
+    ledger = _cash_ledger(tmp_path)
+    client = FakeClient()
+    client.entries = [_count_entry("90.00")]
+    monkeypatch.setattr(Ledger, "pocket_client", lambda self: client)
+    ledger.save_setting("pocket_url", "https://money.example.com")
+
+    result = ledger.collect_from_pocket()
+    assert result["corrections"][0]["correction"] == Money.parse("20.00")
+    assert ledger.implied_balance("cash") == Money.parse("90.00")
+
+
+def test_a_count_that_matches_makes_no_correction(app, tmp_path, monkeypatch):
+    """Nothing invented when the records were already right."""
+    from carraway.core.money import Money
+
+    ledger = _cash_ledger(tmp_path)
+    client = FakeClient()
+    client.entries = [_count_entry("70.00")]
+    monkeypatch.setattr(Ledger, "pocket_client", lambda self: client)
+    ledger.save_setting("pocket_url", "https://money.example.com")
+
+    result = ledger.collect_from_pocket()
+    assert result["corrections"][0]["correction"] == Money.parse("0.00")
+    adjustments = [t for t in ledger.transactions if t.description == "Cash adjustment"]
+    assert adjustments == []
+
+
+def test_spends_land_before_the_count_is_reconciled(app, tmp_path, monkeypatch):
+    """Otherwise the correction is measured against a ledger missing the very
+    spends being collected, and swallows them."""
+    from datetime import date
+
+    from carraway.core.money import Money
+    from carraway.sync.pocket import InboxEntry
+
+    ledger = _cash_ledger(tmp_path)
+    client = FakeClient()
+    client.entries = [
+        InboxEntry(
+            id="spend1",
+            occurred_on=date.today(),
+            amount=Money.parse("-10.00"),
+            description="BUS FARE",
+            category="Transport",
+            account="Cash",
+        ),
+        _count_entry("55.00"),
+    ]
+    monkeypatch.setattr(Ledger, "pocket_client", lambda self: client)
+    ledger.save_setting("pocket_url", "https://money.example.com")
+
+    result = ledger.collect_from_pocket()
+    assert result["added"] == 1
+    # $70 less the $10 just collected is $60; counting $55 leaves $5 missing,
+    # not $15 -- the bus fare is accounted for rather than corrected away.
+    assert result["corrections"][0]["correction"] == Money.parse("-5.00")
+
+
+def test_a_count_for_a_non_cash_account_is_not_guessed_at(app, tmp_path, monkeypatch):
+    """A card balance comes from the bank; a typed figure would be replaced
+    on the next sync, so it is left on the server instead."""
+    from carraway.core import db
+    from carraway.core.models import Account, AccountType
+
+    ledger = _cash_ledger(tmp_path)
+    conn = db.connect(ledger.path)
+    db.upsert_account(conn, Account(id="card", name="Card", type=AccountType.CREDIT_CARD))
+    conn.close()
+    ledger.load()
+
+    client = FakeClient()
+    client.entries = [_count_entry("55.00", account="Card")]
+    monkeypatch.setattr(Ledger, "pocket_client", lambda self: client)
+    ledger.save_setting("pocket_url", "https://money.example.com")
+
+    result = ledger.collect_from_pocket()
+    assert result["corrections"] == []
+    assert result["unmatched"]
+    # And it stays on the server rather than being claimed away.
+    assert "count1" not in client.claimed

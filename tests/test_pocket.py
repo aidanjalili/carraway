@@ -7,6 +7,7 @@ from the server until it is safely in the local database.
 
 import json
 import urllib.error
+import uuid
 from datetime import date
 
 import pytest
@@ -169,3 +170,71 @@ def test_publish_sends_the_snapshot_body(monkeypatch):
     assert method == "PUT"
     assert url.endswith("/api/snapshot")
     assert json.loads(data) == {"budgets": []}
+
+
+# -- counting your wallet from the phone --------------------------------
+
+
+def _wire_entry(**fields):
+    from carraway.sync.pocket import InboxEntry
+
+    base = {
+        "id": uuid.uuid4().hex,
+        "occurred_on": date(2026, 9, 2),
+        "amount": Money.parse("-12.00"),
+        "description": "Coffee",
+        "category": "Dining",
+        "account": "Cash",
+    }
+    return InboxEntry(**{**base, **fields})
+
+
+def test_a_count_carries_its_kind_off_the_wire():
+    from carraway.sync.pocket import InboxEntry
+
+    entry = InboxEntry.from_json(
+        {
+            "id": "e1",
+            "occurred_on": "2026-09-02",
+            "amount": "40.00",
+            "description": "Wallet count",
+            "kind": "count",
+        }
+    )
+    assert entry.is_count is True
+
+
+def test_an_entry_with_no_kind_is_a_spend():
+    from carraway.sync.pocket import InboxEntry
+
+    entry = InboxEntry.from_json(
+        {"id": "e1", "occurred_on": "2026-09-02", "amount": "-8.00", "description": "Tea"}
+    )
+    assert entry.is_count is False
+
+
+def test_a_count_never_becomes_a_transaction_of_its_own():
+    """It is a statement about a total, not a movement. Turning it into one
+    would add the whole wallet to the ledger as though it had been spent."""
+    from carraway.sync.pocket import to_transactions
+
+    ready, unmatched = to_transactions(
+        [_wire_entry(kind="count", amount=Money.parse("40.00"), description="Wallet count")],
+        {"Cash": "cash"},
+    )
+    assert ready == []
+    assert unmatched == []
+
+
+def test_spends_alongside_a_count_still_come_through():
+    from carraway.sync.pocket import to_transactions
+
+    ready, _ = to_transactions(
+        [
+            _wire_entry(),
+            _wire_entry(kind="count", amount=Money.parse("40.00")),
+        ],
+        {"Cash": "cash"},
+    )
+    assert len(ready) == 1
+    assert ready[0].description == "Coffee"

@@ -52,6 +52,15 @@ class InboxEntry:
     description: str
     category: str
     account: str
+    # "spend" is a movement. "count" is the user saying how much cash is
+    # actually in their wallet, which is not a transaction: the difference
+    # against what this ledger implies is, and only this end can work that
+    # out, because the phone never learns the balance.
+    kind: str = "spend"
+
+    @property
+    def is_count(self) -> bool:
+        return self.kind == "count"
 
     @classmethod
     def from_json(cls, payload: dict) -> InboxEntry:
@@ -64,6 +73,7 @@ class InboxEntry:
             description=str(payload["description"]),
             category=str(payload.get("category") or ""),
             account=str(payload.get("account") or "Cash"),
+            kind=str(payload.get("kind") or "spend"),
         )
 
 
@@ -196,6 +206,10 @@ def to_transactions(
     lowered = {name.lower(): account_id for name, account_id in accounts_by_name.items()}
 
     for entry in entries:
+        # A count is not a movement and has no transaction of its own. The
+        # caller reconciles it against the ledger and writes the difference.
+        if entry.is_count:
+            continue
         account_id = lowered.get(entry.account.lower())
         if account_id is None:
             unmatched.append(entry)
