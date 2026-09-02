@@ -14,7 +14,9 @@ round trips, but a phone tethered on a train is still a phone on a train.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, Qt, QThread, Signal
+import atexit
+
+from PySide6.QtCore import QCoreApplication, QObject, Qt, QThread, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QDialog,
@@ -38,6 +40,46 @@ from ..widgets import Card, QRCode
 # has to outlive the widget, and this is what keeps it referenced until it
 # has actually finished.
 _IN_FLIGHT: set = set()
+
+
+def _wait_for_in_flight() -> None:
+    """Let any outstanding request finish before the process goes away.
+
+    Qt aborts if a QThread is destroyed while still running, so an app that
+    quits during a publish takes a SIGABRT on the way out -- create a budget,
+    close the window straight away, and the last thing Carraway does is crash.
+    Holding the threads in `_IN_FLIGHT` kept them alive; nothing waited for
+    them. Two seconds each is generous for a request that has already been
+    given twenty, and it is a bounded wait rather than a hang.
+    """
+    for thread in list(_IN_FLIGHT):
+        thread.quit()
+        thread.wait(2000)
+    _IN_FLIGHT.clear()
+
+
+_ATEXIT_ARMED = False
+
+
+def _arm_shutdown() -> None:
+    """Make sure the wait happens however the process ends.
+
+    Two hooks, because they cover different exits. `aboutToQuit` fires when a
+    running event loop is asked to stop -- the normal case, closing the
+    window. `atexit` catches the rest: a script that never ran an event loop,
+    or an interpreter shutting down for any other reason. Either way the
+    QThread must not be collected while it is still running, or Qt aborts.
+    """
+    global _ATEXIT_ARMED
+    if not _ATEXIT_ARMED:
+        atexit.register(_wait_for_in_flight)
+        _ATEXIT_ARMED = True
+
+    app = QCoreApplication.instance()
+    if app is None or getattr(app, "_pocket_shutdown_armed", False):
+        return
+    app.aboutToQuit.connect(_wait_for_in_flight)
+    app._pocket_shutdown_armed = True
 
 
 class _Task(QObject):
@@ -97,6 +139,7 @@ class _Runner(QObject):
         self._thread.started.connect(self._task.run)
         self._task.done.connect(self._done)
         self._task.failed.connect(self._failed)
+        _arm_shutdown()
         _IN_FLIGHT.add(self._thread)
         self._thread.finished.connect(lambda t=self._thread: _IN_FLIGHT.discard(t))
         self._thread.start()

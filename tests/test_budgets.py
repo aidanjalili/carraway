@@ -817,3 +817,143 @@ def test_a_locked_category_with_no_spending_is_not_invented():
     weights = {"Dining": _money("900.00")}
     lines = budgets.plan(_money("900.00"), weights, {})
     assert [line.category for line in lines] == ["Dining"]
+
+
+# -- how much is left for the rest of the month, week, and today --------
+
+
+def _running(spends, *, asof, starts, ends, allowance="3000.00"):
+    """A budget with some spending in it, as of a given day."""
+    from carraway.core.models import Transaction
+
+    budget = budgets.Budget(
+        id="b",
+        name="Test",
+        starts_on=starts,
+        ends_on=ends,
+        envelopes=(budgets.Envelope("Dining", _money(allowance)),),
+    )
+    txs = [
+        Transaction(
+            id=f"t{index}",
+            account_id="a1",
+            date=when,
+            amount=_money(amount),
+            description="X",
+            merchant="X",
+            category="Dining",
+        )
+        for index, (when, amount) in enumerate(spends)
+    ]
+    return budgets.status(budget, txs, asof=asof, categories={t.id: "Dining" for t in txs})
+
+
+def test_what_is_left_per_day_falls_as_the_month_runs_out():
+    from datetime import date
+
+    starts, ends = date(2026, 9, 1), date(2026, 9, 30)
+    early = _running([], asof=date(2026, 9, 1), starts=starts, ends=ends)
+    late = _running([], asof=date(2026, 9, 28), starts=starts, ends=ends)
+    assert early.days_left == 30
+    assert late.days_left == 3
+    assert late.daily_remaining > early.daily_remaining
+
+
+def test_spending_today_is_counted_separately():
+    from datetime import date
+
+    asof = date(2026, 9, 15)
+    state = _running(
+        [(date(2026, 9, 14), "-40.00"), (asof, "-25.00")],
+        asof=asof,
+        starts=date(2026, 9, 1),
+        ends=date(2026, 9, 30),
+    )
+    assert state.spent_today == _money("25.00")
+    assert state.spent == _money("65.00")
+
+
+def test_this_week_means_the_week_you_are_living_in():
+    """Monday to Sunday, not a rolling seven days: "this week" means the one
+    ending on Sunday to everybody who is not a computer."""
+    from datetime import date
+
+    # 2026-09-15 is a Tuesday, so the week began on Monday the 14th.
+    asof = date(2026, 9, 15)
+    state = _running(
+        [
+            (date(2026, 9, 11), "-100.00"),  # the Friday before: last week
+            (date(2026, 9, 14), "-30.00"),  # Monday: this week
+            (asof, "-20.00"),  # today
+        ],
+        asof=asof,
+        starts=date(2026, 9, 1),
+        ends=date(2026, 9, 30),
+    )
+    assert state.spent_this_week == _money("50.00")
+    assert state.spent == _money("150.00")
+
+
+def test_the_week_never_reaches_back_before_the_budget_began():
+    from datetime import date
+
+    # Budget starts Wednesday; asking on Thursday, the week is two days old.
+    state = _running(
+        [(date(2026, 9, 16), "-10.00")],
+        asof=date(2026, 9, 17),
+        starts=date(2026, 9, 16),
+        ends=date(2026, 9, 30),
+    )
+    assert state.spent_this_week == _money("10.00")
+
+
+def test_the_weekly_figure_is_this_weeks_share_not_the_whole_remainder():
+    """Spending the month's entire remainder before Sunday is the thing this
+    is meant to prevent."""
+    from datetime import date
+
+    state = _running([], asof=date(2026, 9, 1), starts=date(2026, 9, 1), ends=date(2026, 9, 30))
+    assert state.weekly_remaining < state.remaining
+    assert state.weekly_remaining.minor == state.daily_remaining.minor * state.days_left_this_week
+
+
+def test_the_week_is_clipped_to_what_is_left_of_the_budget():
+    from datetime import date
+
+    # The 29th is a Tuesday; the week runs to Sunday but the budget ends on
+    # the 30th, so there are two days left, not six.
+    state = _running([], asof=date(2026, 9, 29), starts=date(2026, 9, 1), ends=date(2026, 9, 30))
+    assert state.days_left == 2
+    assert state.days_left_this_week == 2
+
+
+def test_what_is_left_today_takes_off_what_has_gone_already():
+    from datetime import date
+
+    asof = date(2026, 9, 15)
+    state = _running([(asof, "-20.00")], asof=asof, starts=date(2026, 9, 1), ends=date(2026, 9, 30))
+    assert state.left_today.minor == state.daily_remaining.minor - _money("20.00").minor
+
+
+def test_a_closed_budget_has_nothing_left_for_today():
+    from datetime import date
+
+    state = _running([], asof=date(2026, 10, 5), starts=date(2026, 9, 1), ends=date(2026, 9, 30))
+    assert state.finished is True
+    assert state.daily_remaining is None
+    assert state.left_today is None
+    assert state.weekly_remaining is None
+    assert state.days_left_this_week == 0
+
+
+def test_overspending_leaves_a_negative_figure_rather_than_a_comforting_zero():
+    from datetime import date
+
+    state = _running(
+        [(date(2026, 9, 2), "-4000.00")],
+        asof=date(2026, 9, 15),
+        starts=date(2026, 9, 1),
+        ends=date(2026, 9, 30),
+    )
+    assert state.remaining.minor < 0
+    assert state.daily_remaining.minor < 0

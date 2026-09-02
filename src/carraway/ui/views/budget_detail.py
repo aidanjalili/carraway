@@ -71,13 +71,19 @@ class BudgetDetailView(QWidget):
         self.subtitle.setObjectName("Subtitle")
         layout.addWidget(self.subtitle)
 
-        self.spent_card = StatCard("Spent", "-")
-        self.left_card = StatCard("Left", "-")
+        # The three horizons a person actually decides on, then the pace
+        # that says whether the month as a whole is going to hold. "Left this
+        # month" alone does not answer "can I buy this now".
+        self.left_card = StatCard("Left today", "-")
+        self.week_card = StatCard("Left this week", "-")
+        self.month_card = StatCard("Left in all", "-")
+        self.spent_card = StatCard("Spent so far", "-")
         self.perday_card = StatCard("Left per day", "-")
         self.pace_card = StatCard("Pace", "-")
-        layout.addWidget(
-            StatRow([self.spent_card, self.left_card, self.perday_card, self.pace_card])
-        )
+        layout.addWidget(StatRow([self.left_card, self.week_card, self.month_card]))
+        # The context row: what has gone, the rate that would just hold, and
+        # where the month should be by now.
+        layout.addWidget(StatRow([self.spent_card, self.perday_card, self.pace_card]))
 
         self.verdict = QLabel("")
         self.verdict.setWordWrap(True)
@@ -132,8 +138,15 @@ class BudgetDetailView(QWidget):
         self.title.setText(budget.name)
         self.subtitle.setText(self._describe(budget, state))
 
-        self.spent_card.set_value(state.spent.format())
-        self.left_card.set_value(state.remaining.format())
+        # Shown even when negative on the shorter horizons: "you are $12 past
+        # today's share" is something a person can act on this afternoon,
+        # unlike a per-day figure that has gone negative for the whole month.
+        left_today = state.left_today
+        left_week = state.left_this_week
+        self.left_card.set_value(left_today.format() if left_today is not None else "—")
+        self.week_card.set_value(left_week.format() if left_week is not None else "—")
+        self.month_card.set_value(state.remaining.format())
+        self.spent_card.set_value(f"{state.spent.format()}  ({state.spent_today.format()} today)")
         # A negative allowance per day is not a number anyone can act on —
         # "you may spend -$70.53 today" is noise. The verdict line above
         # already says how far over it is.

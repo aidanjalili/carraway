@@ -552,6 +552,11 @@ class BudgetStatus:
     elapsed_days: int
     total_days: int
     lines: list[EnvelopeStatus] = field(default_factory=list)
+    # What has gone out over the shorter horizons. A month's figure answers
+    # "am I on track"; these answer "can I buy this now", which is the
+    # question actually being asked while standing in a shop.
+    spent_today: Money = field(default_factory=Money.zero)
+    spent_this_week: Money = field(default_factory=Money.zero)
 
     @property
     def started(self) -> bool:
@@ -616,6 +621,49 @@ class BudgetStatus:
         return Money(self.remaining.minor // self.days_left, self.remaining.currency)
 
     @property
+    def days_left_this_week(self) -> int:
+        """Days left in the calendar week, and inside the budget. At least one.
+
+        The calendar week rather than a rolling seven days, because "this
+        week" means the one ending on Sunday to everybody who is not a
+        computer -- and a budget's weekly figure is only useful if it matches
+        the week the user is living in.
+        """
+        if self.days_left <= 0:
+            return 0
+        # Monday is 0, so this is however many days remain including today.
+        to_sunday = 7 - self.asof.weekday()
+        return max(1, min(to_sunday, self.days_left))
+
+    @property
+    def weekly_remaining(self) -> Money | None:
+        """What is left to spend between now and Sunday.
+
+        The daily figure multiplied by the days left this week rather than the
+        whole remaining balance: spending the month's entire remainder before
+        Sunday is exactly the thing this is meant to prevent.
+        """
+        per_day = self.daily_remaining
+        if per_day is None:
+            return None
+        return Money(per_day.minor * self.days_left_this_week, per_day.currency)
+
+    @property
+    def left_today(self) -> Money | None:
+        """Today's share, less what has already gone out today."""
+        per_day = self.daily_remaining
+        if per_day is None:
+            return None
+        return Money(per_day.minor - self.spent_today.minor, per_day.currency)
+
+    @property
+    def left_this_week(self) -> Money | None:
+        weekly = self.weekly_remaining
+        if weekly is None:
+            return None
+        return Money(weekly.minor - self.spent_this_week.minor, weekly.currency)
+
+    @property
     def overspent(self) -> list[EnvelopeStatus]:
         """Lines behind schedule, worst first — what to put in front of someone."""
         return sorted(
@@ -656,7 +704,11 @@ def status(
     else:
         elapsed = min((today - budget.starts_on).days + 1, total_days)
 
+    # Monday of the week `today` falls in, never earlier than the budget.
+    week_starts = max(today - timedelta(days=today.weekday()), budget.starts_on)
+
     spent: dict[str, int] = {}
+    today_minor = week_minor = 0
     for tx in transactions:
         if not budget.covers(tx.date) or tx.date > today:
             continue
@@ -665,7 +717,12 @@ def status(
         category = _category_of(tx, categories)
         if category in NON_SPENDING or tx.is_transfer:
             continue
-        spent[category] = spent.get(category, 0) - tx.amount.minor
+        outflow = -tx.amount.minor
+        spent[category] = spent.get(category, 0) + outflow
+        if tx.date == today:
+            today_minor += outflow
+        if tx.date >= week_starts:
+            week_minor += outflow
 
     fraction = Decimal(elapsed) / Decimal(total_days) if total_days else Decimal(0)
     lines: list[EnvelopeStatus] = []
@@ -702,6 +759,8 @@ def status(
         elapsed_days=elapsed,
         total_days=total_days,
         lines=lines,
+        spent_today=Money(max(today_minor, 0)),
+        spent_this_week=Money(max(week_minor, 0)),
     )
 
 

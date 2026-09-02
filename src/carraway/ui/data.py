@@ -36,6 +36,15 @@ def _squash(text: str) -> str:
     return "".join(ch for ch in without_asides.lower() if ch.isalnum())
 
 
+def _wire(amount) -> str | None:
+    """An amount as the wire wants it: a decimal string, or null.
+
+    Never a float. The phone parses these back with Number() only for
+    display; every figure that matters is computed on this side.
+    """
+    return None if amount is None else f"{amount.decimal:.2f}"
+
+
 @dataclass
 class Ledger:
     """Everything the UI needs, loaded once and recomputed on demand."""
@@ -286,17 +295,43 @@ class Ledger:
         return made
 
     def pocket_snapshot(self) -> dict:
-        """The small summary the phone shows: what is left, per budget line.
+        """The small summary the phone shows.
 
-        Deliberately the least that answers "can I afford this?" — category
-        names and three figures each. No merchants, no transactions, no
-        account names, nothing that says where the money is.
+        Two parts. A headline per live budget -- what is left for the rest of
+        it, for the rest of this week, and for today -- because "can I buy
+        this now" is the question actually being asked while standing in a
+        shop, and a monthly figure does not answer it. Then the categories
+        underneath, for when the answer is "on what".
+
+        Still deliberately the least that answers it: category names and
+        figures. No merchants, no transactions, no account names, nothing
+        that says where the money is or how to reach it. That constraint is
+        what lets the server hold this at all.
         """
-        out: list[dict] = []
+        summaries: list[dict] = []
+        lines: list[dict] = []
+
         for budget in self.budgets:
             state = self.budget_status(budget)
             if state.finished or not state.started:
                 continue
+
+            summaries.append(
+                {
+                    "name": budget.name,
+                    "allowance": _wire(state.allowance),
+                    "spent": _wire(state.spent),
+                    "remaining": _wire(state.remaining),
+                    "days_left": state.days_left,
+                    "spent_today": _wire(state.spent_today),
+                    "spent_this_week": _wire(state.spent_this_week),
+                    "left_today": _wire(state.left_today),
+                    "left_this_week": _wire(state.left_this_week),
+                    "per_day": _wire(state.daily_remaining),
+                    "on_track": state.on_track,
+                }
+            )
+
             for line in state.lines:
                 if line.unbudgeted:
                     continue
@@ -305,19 +340,20 @@ class Ledger:
                     if state.days_left > 0
                     else None
                 )
-                out.append(
+                lines.append(
                     {
                         "category": line.category,
-                        "allowance": f"{line.allowance.decimal:.2f}",
-                        "spent": f"{line.spent.decimal:.2f}",
-                        "remaining": f"{line.remaining.decimal:.2f}",
+                        "allowance": _wire(line.allowance),
+                        "spent": _wire(line.spent),
+                        "remaining": _wire(line.remaining),
                         "note": (
                             f"{budget.name} · {state.days_left} days left"
                             + (f" · {per_day.format()}/day" if per_day else "")
                         ),
                     }
                 )
-        return {"budgets": out}
+
+        return {"budgets": lines, "summaries": summaries}
 
     def publish_to_pocket(self) -> str | None:
         """Send the summary. Returns when the server stored it, or None."""

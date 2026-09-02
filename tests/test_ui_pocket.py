@@ -8,6 +8,7 @@ here with its dialogs and its network stubbed.
 
 from __future__ import annotations
 
+import threading
 import time
 
 import pytest
@@ -601,3 +602,43 @@ def test_a_count_for_a_non_cash_account_is_not_guessed_at(app, tmp_path, monkeyp
     assert result["unmatched"]
     # And it stays on the server rather than being claimed away.
     assert "count1" not in client.claimed
+
+
+def test_a_request_in_flight_does_not_crash_the_app_on_the_way_out(app, paired):
+    """Qt aborts if a QThread is destroyed while running.
+
+    Creating a budget starts a publish; closing the window straight after
+    used to take a SIGABRT on the way out, so the last thing Carraway did
+    was crash. Found by scripting exactly that.
+    """
+    from PySide6.QtWidgets import QWidget
+
+    from carraway.ui.views import pocket as view
+
+    ledger, _ = paired
+    owner = QWidget()
+
+    slow = threading.Event()
+
+    def work():
+        slow.wait(2.0)
+        return "done"
+
+    runner = view._Runner(owner)
+    assert runner.start(work, lambda _: None, lambda _: None) is True
+    assert runner.busy is True
+
+    # What shutdown does. It must return rather than hang or abort.
+    slow.set()
+    view._wait_for_in_flight()
+    assert not view._IN_FLIGHT
+
+
+def test_shutdown_is_armed_the_first_time_something_is_sent(app, paired):
+    from PySide6.QtWidgets import QApplication, QWidget
+
+    from carraway.ui.views import pocket as view
+
+    ledger, _ = paired
+    view.publish_in_background(QWidget(), ledger)
+    assert getattr(QApplication.instance(), "_pocket_shutdown_armed", False) is True
