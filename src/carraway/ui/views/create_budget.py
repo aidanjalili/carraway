@@ -25,6 +25,7 @@ import uuid
 from datetime import date, timedelta
 
 from PySide6.QtCore import QDate, Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
@@ -47,10 +48,16 @@ from PySide6.QtWidgets import (
 
 from ...analysis import budgets as budgets_mod
 from ...core.money import Money
+from .. import theme
 from ..data import Ledger
 from ..widgets import Card, FlowLayout, InfoDot, enable_row_hover, refresh_everything
 
-_HEADERS = ["Category", "You usually spend", "Allowance"]
+_HEADERS = ["Category", "You usually spend", "Allowance", "Change"]
+
+# The two halves of the table. Everything above the divider is a choice;
+# everything below it is a bill that has already been decided.
+_FLEXIBLE_HEADING = "You can change these"
+_LOCKED_HEADING = "You cannot change these this month"
 
 # Ranges people actually budget over. "Custom" is last because it is the
 # fallback, not the expectation.
@@ -327,6 +334,8 @@ class CreateBudgetView(QWidget):
         self.method.addButton(self.by_total, 1)
         total_row.addWidget(self.by_total)
         self.total_input = QLineEdit()
+        # Filled in from real spending by `_fill`; this is only what shows
+        # before there is any history to draw on.
         self.total_input.setPlaceholderText("1200.00")
         self.total_input.setMaximumWidth(110)
         total_row.addWidget(self.total_input)
@@ -431,6 +440,7 @@ class CreateBudgetView(QWidget):
         head.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         head.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         head.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        head.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         # Headers must sit over their columns: text left, numbers right.
         for column in range(len(_HEADERS)):
             align = (
@@ -440,6 +450,32 @@ class CreateBudgetView(QWidget):
         self.table.horizontalHeaderItem(1).setToolTip(_HELP["usual"])
         self.table.itemChanged.connect(self._allowance_edited)
         outer.addWidget(self.table, stretch=1)
+
+        # The total sits below the table rather than in it. As the last row of
+        # a scrolling table it was under the fold exactly when it mattered --
+        # a dozen categories is enough to push it out of sight, and the total
+        # is the line that says whether the plan adds up.
+        self.totals_row = QWidget()
+        totals_layout = QHBoxLayout(self.totals_row)
+        totals_layout.setContentsMargins(4, 6, 0, 0)
+        totals_layout.setSpacing(0)
+        self.total_cells: list[QLabel] = []
+        for index, text in enumerate(("Total", "", "", "")):
+            cell = QLabel(text)
+            font = cell.font()
+            font.setBold(True)
+            cell.setFont(font)
+            cell.setAlignment(
+                (Qt.AlignmentFlag.AlignLeft if index == 0 else Qt.AlignmentFlag.AlignRight)
+                | Qt.AlignmentFlag.AlignVCenter
+            )
+            self.total_cells.append(cell)
+            totals_layout.addWidget(cell, stretch=1 if index == 0 else 0)
+        outer.addWidget(self.totals_row)
+
+        # Column widths are the table's, so the footer reads as its last row
+        # rather than as a separate thing that happens to sit underneath.
+        self.table.horizontalHeader().sectionResized.connect(lambda *_: self._align_totals())
 
         footer = QHBoxLayout()
         footer.setSpacing(6)
@@ -655,6 +691,15 @@ class CreateBudgetView(QWidget):
             for line in self.ledger.suggest_envelopes(start, end, accounts)
         }
 
+        # What the whole lot costs at the usual rate. Shown as the total box's
+        # placeholder so "a total of…" starts from a real number the user can
+        # nudge, rather than from a figure with no relationship to their life.
+        usual_total = Money(sum(a.minor for a in suggested.values()))
+        if usual_total.minor > 0:
+            self.total_input.setPlaceholderText(
+                f"{usual_total.decimal:.2f}  (you usually spend this)"
+            )
+
         if self.by_history.isChecked():
             lines = [budgets_mod.Envelope(c, a) for c, a in suggested.items()]
             self.method_note.setText(
@@ -677,90 +722,247 @@ class CreateBudgetView(QWidget):
             else:
                 income = _parse(self.income_input.text())
                 saving = _parse(self.saving_input.text()) or Money.zero()
-                fixed = _parse(self.fixed_input.text()) or Money.zero()
                 if income is None:
                     self._show([], "Say what you expect to make.", suggested)
                     return
-                spendable = budgets_mod.spendable(income, saving, fixed)
-                if spendable.minor <= 0:
-                    self._show(
-                        [],
-                        f"Saving {saving.format()} and paying {fixed.format()} leaves nothing "
-                        f"out of {income.format()} — {abs(spendable).format()} short. "
-                        "Something has to give before this is a budget.",
-                        suggested,
-                    )
-                    return
-                # The fixed costs the user just declared are the rent and the
-                # bills. Splitting the leftover across every category would
-                # budget for rent a second time, so commitments take their own
-                # line at their own size and only the remainder is shared out
-                # -- but shared across every category, weighted by what each
-                # has left after its commitment. A category is rarely only a
-                # commitment, and one that holds a subscription still needs an
-                # allowance for the ordinary spending alongside it.
+
+                budgeted = income - saving
                 committed = {
                     name: budgets_mod.scale_to_window(amount, days)
                     for name, amount in self.ledger.committed_by_category().items()
                 }
-                fixed_lines = budgets_mod.split(fixed, committed)
-                sized = {line.category: line.allowance for line in fixed_lines}
-                lines = budgets_mod.split_with_commitments(spendable, weights, sized)
-                # Said as a subtraction in the order it happens, because the
-                # earlier wording put the committed money "of" the free money
-                # when it is precisely the part that is not free.
-                budgeted = income - saving
-                if fixed_lines:
-                    note = (
-                        f"{income.format()} in, less {saving.format()} saved, "
-                        f"leaves {budgeted.format()} to budget. "
-                        f"{fixed.format()} of that is already committed across "
-                        f"{len(fixed_lines)} "
-                        f"{'category' if len(fixed_lines) == 1 else 'categories'}"
-                        ", which keep it at its real size; the other "
-                        f"{spendable.format()} is shared out in proportion to "
-                        "what each category has left to spend freely."
+                fixed = Money(sum(a.minor for a in committed.values()))
+                # Kept in step with the estimate, because it is derived from
+                # the same commitments and a stale figure beside a live one
+                # invites the reader to trust the wrong one.
+                if not self.fixed_input.hasFocus():
+                    self.fixed_input.setText(f"{fixed.decimal:.2f}")
+
+                if budgeted.minor <= fixed.minor:
+                    short = Money(fixed.minor - budgeted.minor + 1)
+                    self._show(
+                        [],
+                        f"Saving {saving.format()} out of {income.format()} leaves "
+                        f"{budgeted.format()}, and {fixed.format()} of that is already "
+                        f"committed — {short.format()} short before you spend anything. "
+                        "The savings target has to come down, or the commitments do.",
+                        suggested,
+                    )
+                    return
+
+                # `suggested`, not `weights`: the weights are monthly medians
+                # and the budget is for this window. Mixing the two showed a
+                # $948 monthly rent against a 30-day budget that had allowed
+                # $934 for it, and on a one-week window it would be out by a
+                # factor of four.
+                lines = budgets_mod.plan(budgeted, suggested, committed)
+                spare = Money(budgeted.minor - fixed.minor)
+                needed = Money(sum(line.change.minor for line in lines if not line.locked))
+                if needed.minor < 0:
+                    verdict = (
+                        f" To save {saving.format()} you need to find "
+                        f"{abs(needed).format()} across the categories above the line."
                     )
                 else:
-                    note = (
-                        f"{income.format()} in, less {saving.format()} saved, "
-                        f"leaves {spendable.format()} shared across your "
-                        "categories in proportion to what you normally spend."
-                    )
-                self.method_note.setText(note)
+                    verdict = " You are already inside that, with room to spare."
+                self.method_note.setText(
+                    f"{income.format()} in, less {saving.format()} saved, leaves "
+                    f"{budgeted.format()}. {fixed.format()} of that is committed and "
+                    f"cannot move this month, so {spare.format()} is shared across "
+                    f"what you choose to spend.{verdict}"
+                )
         self._show(lines, "", suggested)
 
     def _show(self, lines, warning: str, suggested: dict | None = None) -> None:
-        """Put `lines` in the table, with the usual spend beside each."""
+        """Put `lines` in the table, split into what can and cannot change.
+
+        `lines` may be plain Envelopes or the richer Lines that carry a
+        commitment; the ones that do get a divider, a change column and a
+        total, and the ones that do not are shown the simple way.
+        """
         suggested = suggested or {}
         self._filling = True
-        self.table.setRowCount(len(lines))
-        for row, line in enumerate(lines):
-            name = QTableWidgetItem(line.category)
-            name.setFlags(name.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        self.table.clearSpans()
 
-            usual = suggested.get(line.category)
-            typical = QTableWidgetItem(usual.format() if usual else "—")
-            typical.setFlags(typical.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            typical.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            typical.setToolTip(
-                _HELP["usual"]
-                if usual
-                else "Nothing spent here in the months this is drawn from, so there "
-                "is no usual figure to compare against."
-            )
+        rich = [line for line in lines if hasattr(line, "committed")]
+        if rich:
+            self._show_split(rich)
+        else:
+            self._show_flat(lines, suggested)
 
-            allowance = QTableWidgetItem(f"{line.allowance.decimal:.2f}")
-            allowance.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.table.setItem(row, 0, name)
-            self.table.setItem(row, 1, typical)
-            self.table.setItem(row, 2, allowance)
         self._filling = False
         self._warning = warning
         # A hint is about a row that has just been added, so rebuilding the
         # table retires it.
         self._hint = ""
         self._update_total()
+
+    def _show_flat(self, lines, suggested: dict) -> None:
+        """One row per envelope, with no commitment to separate out."""
+        self.totals_row.setVisible(False)
+        self.table.setRowCount(len(lines))
+        for row, line in enumerate(lines):
+            usual = suggested.get(line.category)
+            self._write_row(row, line.category, usual, line.allowance, change=None)
+
+    def _show_split(self, lines) -> None:
+        """Flexible lines, a divider, locked lines, then a total.
+
+        The divider is the point of the screen. "Spend $262 less on dining" is
+        an instruction; "spend less on rent" is not, and mixing the two into
+        one list leaves the reader to work out which is which.
+        """
+        flexible = [line for line in lines if not line.locked]
+        locked = [line for line in lines if line.locked]
+
+        rows = len(flexible) + len(locked)
+        rows += 1 if flexible else 0
+        rows += 1 if locked else 0
+        self.table.setRowCount(rows)
+
+        row = 0
+        if flexible:
+            self._write_heading(row, _FLEXIBLE_HEADING, budgets_mod.totals(flexible))
+            row += 1
+            for line in flexible:
+                self._write_row(
+                    row,
+                    line.category,
+                    line.usual,
+                    line.allowance,
+                    change=line.change,
+                    committed=line.committed,
+                )
+                row += 1
+        if locked:
+            self._write_heading(row, _LOCKED_HEADING, budgets_mod.totals(locked))
+            row += 1
+            for line in locked:
+                self._write_row(
+                    row,
+                    line.category,
+                    line.usual,
+                    line.allowance,
+                    change=None,
+                    committed=line.committed,
+                    locked=True,
+                )
+                row += 1
+
+        self._show_totals(budgets_mod.totals(lines))
+
+    def _show_totals(self, summary) -> None:
+        """The pinned footer under the table: what it all comes to."""
+        self.total_cells[1].setText(summary.usual.format())
+        self.total_cells[2].setText(summary.allowance.format())
+        change = summary.change
+        self.total_cells[3].setText(change.format() if change.minor else "no change")
+        self.total_cells[3].setObjectName(
+            "Danger" if change.minor < 0 else "Accent" if change.minor > 0 else "Muted"
+        )
+        self.total_cells[3].style().unpolish(self.total_cells[3])
+        self.total_cells[3].style().polish(self.total_cells[3])
+        self.totals_row.setVisible(True)
+        self._align_totals()
+
+    def _align_totals(self) -> None:
+        head = self.table.horizontalHeader()
+        for index in range(1, len(self.total_cells)):
+            self.total_cells[index].setFixedWidth(head.sectionSize(index))
+
+    def _write_heading(self, row: int, text: str, summary=None) -> None:
+        """A band across the whole table, dividing the two halves.
+
+        Carries its own subtotal. Without one, the note above the table asks
+        the user to find $810 across the flexible categories while the total
+        underneath says $806 -- both true, since a locked line can drift a few
+        dollars from its usual, but two unexplained figures for what looks
+        like one question. The subtotal is where they reconcile.
+        """
+        label = text
+        if summary is not None:
+            label = f"{text}  —  {summary.allowance.format()} of {summary.usual.format()}"
+            if summary.change.minor:
+                label += f", {summary.change.format()}"
+        item = QTableWidgetItem(label)
+        item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+        item.setData(Qt.ItemDataRole.UserRole, False)
+        font = item.font()
+        font.setBold(True)
+        item.setFont(font)
+        item.setForeground(QColor(theme.ACTIVE.muted))
+        self.table.setItem(row, 0, item)
+        self.table.setSpan(row, 0, 1, len(_HEADERS))
+
+    def _write_row(
+        self,
+        row: int,
+        category: str,
+        usual,
+        allowance,
+        *,
+        change=None,
+        committed=None,
+        locked: bool = False,
+        editable: bool = True,
+        bold: bool = False,
+    ) -> None:
+        name = QTableWidgetItem(category)
+        name.setFlags(name.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        # Flags this as a real category rather than a heading or the total.
+        # Without it `envelopes()` read the Total row as another category and
+        # counted the whole budget twice -- the header said $7,650.85 for a
+        # $3,358.24 budget, and "Total" would have been saved as a line.
+        name.setData(Qt.ItemDataRole.UserRole, bool(editable))
+
+        typical = QTableWidgetItem(usual.format() if usual else "—")
+        typical.setFlags(typical.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        typical.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        typical.setToolTip(
+            _HELP["usual"]
+            if usual
+            else "Nothing spent here in the months this is drawn from, so there "
+            "is no usual figure to compare against."
+        )
+
+        allowance_item = QTableWidgetItem(f"{allowance.decimal:.2f}")
+        allowance_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        if not editable:
+            allowance_item.setFlags(allowance_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        if committed is not None and committed.minor > 0 and not locked:
+            allowance_item.setToolTip(
+                f"Includes {committed.format()} already committed, which is not "
+                "yours to reduce this month."
+            )
+
+        if locked:
+            text = "locked"
+        elif change is None:
+            text = "—"
+        else:
+            text = f"{change.format()}" if change.minor else "no change"
+        change_item = QTableWidgetItem(text)
+        change_item.setFlags(change_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        change_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        if change is not None and change.minor < 0:
+            # Spending less than you do now is the thing being asked for, so
+            # it is marked as a demand rather than as a failure.
+            change_item.setForeground(QColor(theme.ACTIVE.danger))
+        elif change is not None and change.minor > 0:
+            change_item.setForeground(QColor(theme.ACTIVE.accent))
+        if locked:
+            change_item.setToolTip("Already committed in full, so there is nothing here to change.")
+
+        if bold:
+            for item in (name, typical, allowance_item, change_item):
+                font = item.font()
+                font.setBold(True)
+                item.setFont(font)
+
+        self.table.setItem(row, 0, name)
+        self.table.setItem(row, 1, typical)
+        self.table.setItem(row, 2, allowance_item)
+        self.table.setItem(row, 3, change_item)
 
     def _allowance_edited(self, item: QTableWidgetItem) -> None:
         """A hand-typed allowance is the user's decision and outranks the method."""
@@ -769,11 +971,15 @@ class CreateBudgetView(QWidget):
         self._update_total()
 
     def envelopes(self) -> list:
+        """The category lines, skipping the headings and the total row."""
         out = []
         for row in range(self.table.rowCount()):
             name = self.table.item(row, 0)
-            amount = _parse(self.table.item(row, 2).text()) if self.table.item(row, 2) else None
-            if name is None or amount is None or amount.minor <= 0:
+            if name is None or not name.data(Qt.ItemDataRole.UserRole):
+                continue
+            cell = self.table.item(row, 2)
+            amount = _parse(cell.text()) if cell else None
+            if amount is None or amount.minor <= 0:
                 continue
             out.append(budgets_mod.Envelope(name.text(), abs(amount)))
         return out

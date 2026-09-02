@@ -20,7 +20,7 @@ import pytest
 
 pytest.importorskip("PySide6", reason="GUI tests need the [gui] extra")
 
-from PySide6.QtCore import QDate  # noqa: E402
+from PySide6.QtCore import QDate, Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 from carraway.core import db  # noqa: E402
@@ -112,10 +112,11 @@ def test_each_method_explains_itself_once_it_is_chosen(view):
 
     view.by_backwards.setChecked(True)
     said = view.method_note.text()
-    # Checked for substance rather than an exact phrase: the wording changed
-    # once already, and what matters is that every figure is accounted for.
+    # Checked for substance rather than exact phrasing: what matters is that
+    # the income, the saving and the committed money are all accounted for.
     assert "in, less" in said
-    assert "to spend freely" in said
+    assert "saved" in said
+    assert "committed" in said
 
 
 # -- income and fixed costs come from real history ----------------------
@@ -315,3 +316,73 @@ def test_preset_ranges_are_what_they_say(view):
     assert (start, end) == (today, today + timedelta(days=6))
 
     assert create_budget.preset_range("Custom", today) is None
+
+
+# -- the table's two halves, and its totals -----------------------------
+
+
+def _backwards(view, saving: str = "500"):
+    """This ledger makes about $3,900 with $1,180 committed, so the savings
+    figures here stay well inside what it can actually absorb."""
+    view.by_backwards.setChecked(True)
+    view.saving_input.setText(saving)
+    return view
+
+
+def _bands(view) -> list[str]:
+    out = []
+    for row in range(view.table.rowCount()):
+        item = view.table.item(row, 0)
+        if item is not None and not item.data(Qt.ItemDataRole.UserRole):
+            out.append(item.text())
+    return out
+
+
+def test_the_table_is_divided_into_what_can_and_cannot_change(view):
+    _backwards(view)
+    bands = _bands(view)
+    assert any("can change" in band for band in bands)
+
+
+def test_the_total_row_is_pinned_below_the_table(view):
+    """As the last row of a scrolling table it was under the fold exactly
+    when it mattered."""
+    _backwards(view)
+    assert view.totals_row.isVisibleTo(view)
+    assert view.total_cells[0].text() == "Total"
+    assert view.total_cells[2].text().startswith("$")
+
+
+def test_the_total_row_is_not_mistaken_for_a_category(view):
+    """It used to be read back as another envelope, counting the whole
+    budget twice and offering to save a category called "Total"."""
+    _backwards(view)
+    names = [envelope.category for envelope in view.envelopes()]
+    assert "Total" not in names
+    assert not any(band in names for band in _bands(view))
+
+
+def test_the_header_total_matches_the_pinned_total(view):
+    _backwards(view)
+    total = view.total_cells[2].text()
+    assert total in view.total_label.text()
+
+
+def test_typing_a_savings_target_moves_every_allowance(view):
+    """The whole point of the screen: it answers as you change your mind."""
+    _backwards(view, "200")
+    relaxed = view.total_cells[2].text()
+    _backwards(view, "1500")
+    tight = view.total_cells[2].text()
+    assert relaxed != tight
+
+
+def test_a_savings_target_that_cannot_be_met_says_so(view):
+    _backwards(view, "999999")
+    assert "short" in view.note.text().lower() or "short" in view.method_note.text().lower()
+
+
+def test_the_total_box_suggests_what_is_usually_spent(view):
+    """Rather than a made-up figure with no relation to the user's life."""
+    view.by_history.setChecked(True)
+    assert "usually spend" in view.total_input.placeholderText()

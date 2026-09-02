@@ -675,3 +675,111 @@ def test_the_biggest_line_comes_first():
     weights = {"Fees": _money("3.00"), "Dining": _money("900.00")}
     lines = budgets.split_with_commitments(_money("400.00"), weights, {})
     assert lines[0].category == "Dining"
+
+
+# -- what can change, and what cannot -----------------------------------
+
+
+def test_the_squeeze_lands_only_on_what_can_change():
+    """Saving more money is a decision to spend less on what you choose.
+
+    Rent does not get smaller because the savings target grew, so the whole
+    of the reduction has to fall on the discretionary lines.
+    """
+    weights = {"Rent/Mortgage": _money("900.00"), "Dining": _money("400.00")}
+    committed = {"Rent/Mortgage": _money("900.00")}
+    lines = {line.category: line for line in budgets.plan(_money("1100.00"), weights, committed)}
+
+    assert lines["Rent/Mortgage"].allowance == _money("900.00")
+    assert lines["Rent/Mortgage"].change == _money("0.00")
+    assert lines["Dining"].allowance == _money("200.00")
+    assert lines["Dining"].change == _money("-200.00")
+
+
+def test_a_line_says_what_has_to_change_and_by_how_much():
+    line = budgets.Line("Dining", _money("903.07"), _money("0.00"), _money("640.98"))
+    assert line.change == _money("-262.09")
+    assert line.percent_change == pytest.approx(-29.0, abs=0.5)
+    assert line.locked is False
+
+
+def test_rent_reads_as_locked_despite_the_two_estimates_disagreeing():
+    """The commitment and the usual spend measure the same bill differently.
+
+    A detected series against a median of what was paid differ by a few
+    dollars, and without a tolerance rent came out "flexible" on the strength
+    of a $13 gap -- putting the one line nobody can act on at the top of the
+    list of things to change.
+    """
+    line = budgets.Line("Rent/Mortgage", _money("948.00"), _money("934.37"), _money("934.37"))
+    assert line.locked is True
+
+
+def test_a_mostly_discretionary_line_is_not_locked():
+    line = budgets.Line("Shopping", _money("307.79"), _money("20.03"), _money("224.28"))
+    assert line.locked is False
+    assert line.discretionary == _money("287.76")
+
+
+def test_a_commitment_bigger_than_the_usual_spend_is_locked():
+    line = budgets.Line("Insurance", _money("83.23"), _money("87.39"), _money("87.39"))
+    assert line.locked is True
+    assert line.discretionary == _money("0.00")
+
+
+def test_locked_lines_sort_to_the_bottom():
+    """The answer to "what do I change" is never among them."""
+    weights = {"Rent/Mortgage": _money("900.00"), "Dining": _money("400.00")}
+    committed = {"Rent/Mortgage": _money("900.00")}
+    lines = budgets.plan(_money("1100.00"), weights, committed)
+    assert [line.category for line in lines] == ["Dining", "Rent/Mortgage"]
+
+
+def test_commitments_that_overrun_the_budget_do_not_go_negative():
+    """Sharing out a negative leftover would hand every category a negative
+    allowance, which is not a plan. The caller reports the shortfall."""
+    weights = {"Rent/Mortgage": _money("900.00"), "Dining": _money("400.00")}
+    committed = {"Rent/Mortgage": _money("900.00")}
+    lines = {line.category: line for line in budgets.plan(_money("500.00"), weights, committed)}
+    assert lines["Rent/Mortgage"].allowance == _money("900.00")
+    assert lines["Dining"].allowance == _money("0.00")
+    assert all(line.allowance.minor >= 0 for line in lines.values())
+
+
+def test_the_totals_row_adds_up_the_lot():
+    weights = {"Rent/Mortgage": _money("900.00"), "Dining": _money("400.00")}
+    committed = {"Rent/Mortgage": _money("900.00")}
+    lines = budgets.plan(_money("1100.00"), weights, committed)
+    summary = budgets.totals(lines)
+    assert summary.usual == _money("1300.00")
+    assert summary.allowance == _money("1100.00")
+    assert summary.change == _money("-200.00")
+
+
+def test_the_subtotals_reconcile_with_the_total():
+    """The flexible band, the locked band and the total must agree, or the
+    screen shows two different answers to what looks like one question."""
+    weights = {
+        "Rent/Mortgage": _money("948.00"),
+        "Insurance": _money("83.23"),
+        "Dining": _money("903.07"),
+    }
+    committed = {"Rent/Mortgage": _money("934.37"), "Insurance": _money("87.39")}
+    lines = budgets.plan(_money("1800.00"), weights, committed)
+
+    flexible = budgets.totals([line for line in lines if not line.locked])
+    locked = budgets.totals([line for line in lines if line.locked])
+    everything = budgets.totals(lines)
+    assert flexible.change.minor + locked.change.minor == everything.change.minor
+    assert flexible.allowance.minor + locked.allowance.minor == everything.allowance.minor
+
+
+def test_more_saving_means_a_smaller_allowance_every_time():
+    """The screen is only useful if dragging the savings target moves this."""
+    weights = {"Dining": _money("400.00"), "Travel": _money("200.00")}
+    previous = None
+    for budgeted in ("600.00", "450.00", "300.00", "150.00"):
+        total = budgets.totals(budgets.plan(_money(budgeted), weights, {}))
+        if previous is not None:
+            assert total.allowance.minor < previous
+        previous = total.allowance.minor

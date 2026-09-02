@@ -787,3 +787,123 @@ def split_with_commitments(
     return [
         Envelope(category=name, allowance=amount) for name, amount in ordered if amount.minor > 0
     ]
+
+
+@dataclass(frozen=True, slots=True)
+class Line:
+    """One category in a plan: what it costs now, and what it may cost.
+
+    Carries the commitment as well as the allowance, because the difference
+    between "spend $80 less on this" and "you cannot spend less on this" is
+    the whole question a budget is trying to answer.
+    """
+
+    category: str
+    usual: Money
+    committed: Money
+    allowance: Money
+
+    @property
+    def change(self) -> Money:
+        """What has to change. Negative means spending less than you do now."""
+        return Money(self.allowance.minor - self.usual.minor, self.usual.currency)
+
+    # How much of a category must be committed before there is no point
+    # asking the user to change it. Not 100%: the commitment and the usual
+    # spend are two different estimates of the same bill -- a detected series
+    # against a median of what was actually paid -- and they disagree by a few
+    # dollars. Without the tolerance, rent came out "flexible" on the strength
+    # of a $13 difference, and the one line nobody can do anything about was
+    # sitting at the top of the list of things to change.
+    LOCKED_AT = 0.9
+
+    @property
+    def locked(self) -> bool:
+        """True when essentially the whole of it is already spoken for.
+
+        Rent is not a decision this month. Neither is an insurance premium
+        that costs more than the average of what has lately been paid. A line
+        with nothing discretionary in it cannot be part of the answer to
+        "what do I change", so it is shown apart from the ones that can.
+        """
+        if self.usual.minor <= 0:
+            return self.committed.minor > 0
+        return self.committed.minor >= self.usual.minor * self.LOCKED_AT
+
+    @property
+    def discretionary(self) -> Money:
+        """The part of the usual spend that is a choice."""
+        return Money(max(0, self.usual.minor - self.committed.minor), self.usual.currency)
+
+    @property
+    def percent_change(self) -> float | None:
+        """How far it has to move, or None when there is no base to divide by."""
+        if self.usual.minor == 0:
+            return None
+        return self.change.minor / abs(self.usual.minor) * 100
+
+
+def plan(
+    budgeted: Money,
+    weights: Mapping[str, Money],
+    committed: Mapping[str, Money],
+) -> list[Line]:
+    """What each category may cost, given what is committed and what is left.
+
+    `budgeted` is everything available to spend -- income less savings -- and
+    every commitment comes out of it first, at its real size. A commitment is
+    not a suggestion: rent does not get smaller because the savings target
+    grew. What is left over is then shared across the categories that have
+    something discretionary in them, in proportion to how much.
+
+    That last part is the point. Deciding to save more money can only ever be
+    a decision to spend less on the things you choose, so the whole of that
+    squeeze lands on them and none of it on the rent.
+
+    Locked lines come last, since the answer to "what do I change" is never
+    among them.
+    """
+    spare = Money(budgeted.minor - sum(a.minor for a in committed.values()), budgeted.currency)
+
+    discretionary: dict[str, Money] = {}
+    for name, usual in weights.items():
+        already = committed.get(name)
+        remainder = usual.minor - already.minor if already is not None else usual.minor
+        if remainder > 0:
+            discretionary[name] = Money(remainder, usual.currency)
+
+    # A negative spare means the commitments alone overrun the budget. Sharing
+    # out a negative number would hand every category a negative allowance,
+    # which is not a plan; the caller reports the shortfall instead.
+    shares = (
+        {e.category: e.allowance for e in split(spare, discretionary)}
+        if spare.minor > 0 and discretionary
+        else {}
+    )
+
+    lines = [
+        Line(
+            category=name,
+            usual=usual,
+            committed=committed.get(name, Money(0, usual.currency)),
+            allowance=Money(
+                committed.get(name, Money(0, usual.currency)).minor
+                + shares.get(name, Money(0, usual.currency)).minor,
+                usual.currency,
+            ),
+        )
+        for name, usual in weights.items()
+    ]
+    lines.sort(key=lambda line: (line.locked, -line.allowance.minor, line.category))
+    return lines
+
+
+def totals(lines: Sequence[Line]) -> Line:
+    """One row summing the lot, for the bottom of the table."""
+    currency = lines[0].usual.currency if lines else "USD"
+    return Line(
+        category="Total",
+        usual=Money(sum(line.usual.minor for line in lines), currency),
+        committed=Money(sum(line.committed.minor for line in lines), currency),
+        allowance=Money(sum(line.allowance.minor for line in lines), currency),
+    )
