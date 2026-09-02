@@ -969,6 +969,47 @@ def cmd_todo(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_pocket_vault_key(args) -> int:
+    """Show the vault key, or the public half of it.
+
+    The private side is printed only on request and only to a terminal: it is
+    the thing that makes the encrypted history readable, and it belongs in a
+    password manager and on your phone, nowhere else.
+
+    The public half is safe anywhere. It is what the server needs in order to
+    seal what it fetches to you, and it cannot open any of it.
+    """
+    import json
+
+    from .sync import credentials
+    from .sync.vault import format_key, new_key, public_jwk
+
+    if args.new:
+        key = new_key()
+        where = credentials.store("pocket_vault_key", key)
+        print(f"A new vault key has been made and stored in {where}.")
+        print("Everything published under the old key is now unreadable.\n")
+    else:
+        key = credentials.load("pocket_vault_key")
+        if not key:
+            print("No vault key yet. Make one with:  carraway pocket vault-key --new")
+            return 1
+
+    if args.public:
+        # Deliberately the only thing printed in this mode, so it can be
+        # piped straight into a file on the server without an editor.
+        print(json.dumps(public_jwk(key)))
+        return 0
+
+    print(f"Vault key:  {format_key(key)}")
+    print()
+    print("Type this into Pocket on your phone, once. It never reaches the server.")
+    print("To let the server fetch for you, install the public half there:")
+    print("  carraway pocket vault-key --public | ssh root@YOUR-SERVER \\")
+    print("    'cat > /etc/pocket/vault.jwk && chown root:pocketfetch /etc/pocket/vault.jwk'")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="carraway",
@@ -1175,6 +1216,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_summary = sub.add_parser("summary", help="show totals across imported data")
     p_summary.add_argument("--account", help="limit to one account id")
     p_summary.set_defaults(func=cmd_summary)
+
+    p_pocket = sub.add_parser("pocket", help="the phone inbox: keys and status")
+    pocket_sub = p_pocket.add_subparsers(dest="pocket_command", required=True)
+
+    p_vault = pocket_sub.add_parser(
+        "vault-key", help="the key that encrypts your history for the phone"
+    )
+    p_vault.add_argument(
+        "--public",
+        action="store_true",
+        help="print the public half, for installing on the server",
+    )
+    p_vault.add_argument(
+        "--new", action="store_true", help="mint a new key, replacing any existing"
+    )
+    p_vault.set_defaults(func=cmd_pocket_vault_key)
 
     return parser
 

@@ -409,3 +409,55 @@ def test_the_derived_scalar_is_always_a_usable_key():
     for _ in range(50):
         scalar = vault._scalar(vault.new_key())
         assert 0 < scalar < order
+
+
+# -- the command that hands the public key to the server ----------------
+
+
+def test_the_public_command_prints_only_the_public_key(monkeypatch, capsys):
+    """It is meant to be piped straight into a file on the server, so a word
+    of explanation in the output would corrupt what it writes."""
+    from carraway import cli
+    from carraway.sync import credentials
+
+    key = vault.new_key()
+    monkeypatch.setattr(credentials, "load", lambda name: key)
+
+    assert cli.main(["pocket", "vault-key", "--public"]) == 0
+    printed = capsys.readouterr().out.strip()
+
+    parsed = json.loads(printed)  # the whole output is the key, and nothing else
+    assert parsed == vault.public_jwk(key)
+    assert "d" not in parsed
+
+
+def test_the_public_command_never_prints_the_private_key(monkeypatch, capsys):
+    from carraway import cli
+    from carraway.sync import credentials
+
+    key = vault.new_key()
+    monkeypatch.setattr(credentials, "load", lambda name: key)
+    cli.main(["pocket", "vault-key", "--public"])
+    assert key not in capsys.readouterr().out
+
+
+def test_with_no_key_it_says_how_to_make_one(monkeypatch, capsys):
+    from carraway import cli
+    from carraway.sync import credentials
+
+    monkeypatch.setattr(credentials, "load", lambda name: None)
+    assert cli.main(["pocket", "vault-key"]) == 1
+    assert "--new" in capsys.readouterr().out
+
+
+def test_showing_the_key_groups_it_for_typing(monkeypatch, capsys):
+    from carraway import cli
+    from carraway.sync import credentials
+
+    key = vault.new_key()
+    monkeypatch.setattr(credentials, "load", lambda name: key)
+    cli.main(["pocket", "vault-key"])
+    out = capsys.readouterr().out
+    assert vault.format_key(key) in out
+    # And it says the thing that makes the whole design work.
+    assert "never reaches the server" in out
