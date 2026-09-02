@@ -737,3 +737,53 @@ def _sum(amounts) -> Money:
     for amount in amounts:
         out = out + amount
     return out
+
+
+def split_with_commitments(
+    spare: Money,
+    weights: Mapping[str, Money],
+    committed: Mapping[str, Money],
+) -> list[Envelope]:
+    """Share `spare` out, on top of commitments that already have a size.
+
+    Rent is not a suggestion, so it takes its own line at what it actually
+    costs and is not scaled by whatever is left over. But a category is rarely
+    *only* a commitment: a Shopping line can hold a $20 subscription and $290
+    of ordinary shopping, and the ordinary part still needs an allowance.
+
+    Excluding any category that held a commitment from the leftover was the
+    bug this replaces. It budgeted $20.03 for Shopping against $307.79 usually
+    spent -- seven per cent, blown on the first purchase -- while Dining, which
+    happened to contain no commitment, kept ninety-seven per cent of its usual.
+    The totals were right and the plan was unusable.
+
+    So the leftover is shared across every category, weighted by what each has
+    left *after* its commitment. A category that is nothing but commitment
+    draws none of it, which is correct: its cost is already covered.
+    """
+    discretionary: dict[str, Money] = {}
+    for name, usual in weights.items():
+        already = committed.get(name)
+        remainder = usual.minor - already.minor if already is not None else usual.minor
+        if remainder > 0:
+            discretionary[name] = Money(remainder, usual.currency)
+
+    # Nothing discretionary anywhere: every category is spoken for, so the
+    # leftover has no sensible home but the usual proportions.
+    shares = split(spare, discretionary or weights)
+
+    totals: dict[str, Money] = dict(committed)
+    for envelope in shares:
+        running = totals.get(envelope.category)
+        totals[envelope.category] = (
+            Money(running.minor + envelope.allowance.minor, running.currency)
+            if running is not None
+            else envelope.allowance
+        )
+
+    # Biggest first, so the lines a person most needs to argue with are at the
+    # top rather than sorted by an accident of which held a subscription.
+    ordered = sorted(totals.items(), key=lambda item: (-item[1].minor, item[0]))
+    return [
+        Envelope(category=name, allowance=amount) for name, amount in ordered if amount.minor > 0
+    ]

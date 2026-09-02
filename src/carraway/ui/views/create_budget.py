@@ -694,25 +694,40 @@ class CreateBudgetView(QWidget):
                 # The fixed costs the user just declared are the rent and the
                 # bills. Splitting the leftover across every category would
                 # budget for rent a second time, so commitments take their own
-                # line at their own size and only the remainder is shared out.
+                # line at their own size and only the remainder is shared out
+                # -- but shared across every category, weighted by what each
+                # has left after its commitment. A category is rarely only a
+                # commitment, and one that holds a subscription still needs an
+                # allowance for the ordinary spending alongside it.
                 committed = {
                     name: budgets_mod.scale_to_window(amount, days)
                     for name, amount in self.ledger.committed_by_category().items()
                 }
                 fixed_lines = budgets_mod.split(fixed, committed)
-                free = {n: w for n, w in weights.items() if n not in committed}
-                lines = fixed_lines + budgets_mod.split(spendable, free or weights)
-                twice = (
-                    f" The first {len(fixed_lines)} lines below are those "
-                    "commitments, at their real size."
-                    if fixed_lines
-                    else ""
-                )
-                self.method_note.setText(
-                    f"{income.format()} in, less {saving.format()} saved and "
-                    f"{fixed.format()} already committed, leaves "
-                    f"{spendable.format()} to spend freely.{twice}"
-                )
+                sized = {line.category: line.allowance for line in fixed_lines}
+                lines = budgets_mod.split_with_commitments(spendable, weights, sized)
+                # Said as a subtraction in the order it happens, because the
+                # earlier wording put the committed money "of" the free money
+                # when it is precisely the part that is not free.
+                budgeted = income - saving
+                if fixed_lines:
+                    note = (
+                        f"{income.format()} in, less {saving.format()} saved, "
+                        f"leaves {budgeted.format()} to budget. "
+                        f"{fixed.format()} of that is already committed across "
+                        f"{len(fixed_lines)} "
+                        f"{'category' if len(fixed_lines) == 1 else 'categories'}"
+                        ", which keep it at its real size; the other "
+                        f"{spendable.format()} is shared out in proportion to "
+                        "what each category has left to spend freely."
+                    )
+                else:
+                    note = (
+                        f"{income.format()} in, less {saving.format()} saved, "
+                        f"leaves {spendable.format()} shared across your "
+                        "categories in proportion to what you normally spend."
+                    )
+                self.method_note.setText(note)
         self._show(lines, "", suggested)
 
     def _show(self, lines, warning: str, suggested: dict | None = None) -> None:

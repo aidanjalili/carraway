@@ -111,7 +111,11 @@ def test_each_method_explains_itself_once_it_is_chosen(view):
     assert "proportion" in view.method_note.text()
 
     view.by_backwards.setChecked(True)
-    assert "to spend freely" in view.method_note.text()
+    said = view.method_note.text()
+    # Checked for substance rather than an exact phrase: the wording changed
+    # once already, and what matters is that every figure is accounted for.
+    assert "in, less" in said
+    assert "to spend freely" in said
 
 
 # -- income and fixed costs come from real history ----------------------

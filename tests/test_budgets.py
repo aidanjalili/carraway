@@ -598,3 +598,80 @@ def test_an_estimate_carries_its_reason():
 
     nothing = budgets.Estimate(Money.zero(), "Nothing found.", confident=False)
     assert nothing.known is False
+
+
+# -- sharing the leftover when some categories are already committed -----
+
+
+def _money(text: str) -> Money:
+    return Money.parse(text)
+
+
+def test_a_category_with_a_commitment_still_gets_an_allowance():
+    """The bug this exists for, with the numbers it was found on.
+
+    Shopping was budgeted $20.03 against $307.79 usually spent -- seven per
+    cent -- because it happened to contain a $20 subscription, while Dining
+    kept ninety-seven per cent for containing none. The totals added up and
+    the plan was unusable.
+    """
+    weights = {"Shopping": _money("307.79"), "Dining": _money("903.07")}
+    committed = {"Shopping": _money("20.03")}
+    lines = budgets.split_with_commitments(_money("500.00"), weights, committed)
+    allowances = {line.category: line.allowance for line in lines}
+
+    assert allowances["Shopping"] > _money("20.03"), "the commitment swallowed the category"
+    # Both squeezed by comparable amounts, rather than one bearing all of it.
+    shopping_kept = allowances["Shopping"].minor / weights["Shopping"].minor
+    dining_kept = allowances["Dining"].minor / weights["Dining"].minor
+    assert abs(shopping_kept - dining_kept) < 0.25
+
+
+def test_the_total_is_the_commitments_plus_the_leftover():
+    weights = {"Shopping": _money("300.00"), "Dining": _money("900.00")}
+    committed = {"Shopping": _money("20.00")}
+    lines = budgets.split_with_commitments(_money("500.00"), weights, committed)
+    total = sum(line.allowance.minor for line in lines)
+    assert total == _money("520.00").minor
+
+
+def test_a_category_that_is_only_commitment_draws_none_of_the_leftover():
+    """Rent's cost is already covered; giving it a share would double-count."""
+    weights = {"Rent/Mortgage": _money("900.00"), "Dining": _money("400.00")}
+    committed = {"Rent/Mortgage": _money("900.00")}
+    lines = budgets.split_with_commitments(_money("400.00"), weights, committed)
+    allowances = {line.category: line.allowance for line in lines}
+    assert allowances["Rent/Mortgage"] == _money("900.00")
+    assert allowances["Dining"] == _money("400.00")
+
+
+def test_a_commitment_larger_than_the_usual_spend_keeps_its_real_size():
+    """What is actually owed beats what has lately been paid."""
+    weights = {"Insurance": _money("83.23"), "Dining": _money("400.00")}
+    committed = {"Insurance": _money("87.39")}
+    lines = budgets.split_with_commitments(_money("200.00"), weights, committed)
+    allowances = {line.category: line.allowance for line in lines}
+    assert allowances["Insurance"] == _money("87.39")
+
+
+def test_with_nothing_committed_it_is_an_ordinary_proportional_split():
+    weights = {"Dining": _money("300.00"), "Travel": _money("100.00")}
+    lines = budgets.split_with_commitments(_money("400.00"), weights, {})
+    allowances = {line.category: line.allowance for line in lines}
+    assert allowances["Dining"] == _money("300.00")
+    assert allowances["Travel"] == _money("100.00")
+
+
+def test_everything_committed_still_shares_the_leftover_somewhere():
+    """A leftover has to land somewhere, or the budget silently loses money."""
+    weights = {"Rent/Mortgage": _money("900.00"), "Utilities": _money("100.00")}
+    committed = {"Rent/Mortgage": _money("900.00"), "Utilities": _money("100.00")}
+    lines = budgets.split_with_commitments(_money("300.00"), weights, committed)
+    total = sum(line.allowance.minor for line in lines)
+    assert total == _money("1300.00").minor
+
+
+def test_the_biggest_line_comes_first():
+    weights = {"Fees": _money("3.00"), "Dining": _money("900.00")}
+    lines = budgets.split_with_commitments(_money("400.00"), weights, {})
+    assert lines[0].category == "Dining"
