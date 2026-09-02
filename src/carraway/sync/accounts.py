@@ -144,6 +144,10 @@ _GENERIC: list[tuple[tuple[str, ...], AccountType]] = [
             "schwab",
             "etrade",
             "robinhood",
+            # Brokerages often name the account for what it holds rather than
+            # what it is: Alpaca calls its account "Portfolio Value", which
+            # says nothing a keyword list of account types would catch.
+            "portfolio",
         ),
         AccountType.INVESTMENT,
     ),
@@ -156,9 +160,37 @@ _NETWORKS = ("visa", "mastercard", "master card", "amex", "discover", "diners cl
 
 _DEBIT = re.compile(r"\bdebit\b")
 
+# Institutions that only hold investments. Consulted when the account's own
+# name gives nothing away -- a brokerage may call an account "Portfolio Value"
+# or "Individual", which no list of account-type words will ever match. The
+# name is always tried first, because a broker can hold a cash account too.
+_BROKERS = (
+    "alpaca",
+    "robinhood",
+    "schwab",
+    "vanguard",
+    "fidelity",
+    "etrade",
+    "e*trade",
+    "td ameritrade",
+    "interactive brokers",
+    "webull",
+    "merrill",
+    "tastytrade",
+    "m1 finance",
+    "betterment",
+    "wealthfront",
+    "stash",
+    "public.com",
+)
 
-def classify_account(name: str, balance: str | float | Decimal | None = None) -> AccountType:
-    """Best guess at an account's type from its name, and its balance if known.
+
+def classify_account(
+    name: str,
+    balance: str | float | Decimal | None = None,
+    institution: str = "",
+) -> AccountType:
+    """Best guess at an account's type from its name, balance, and who holds it.
 
     >>> classify_account("Chase Freedom Unlimited (6550)")
     <AccountType.CREDIT_CARD: 'credit_card'>
@@ -166,6 +198,13 @@ def classify_account(name: str, balance: str | float | Decimal | None = None) ->
     <AccountType.CHECKING: 'checking'>
     >>> classify_account("CHASE SAVINGS (6571)")
     <AccountType.SAVINGS: 'savings'>
+
+    The institution is the last resort, not the first. A bank holds current
+    accounts and cards alike, so it says nothing -- but a brokerage holds only
+    investments, which rescues an account named "Portfolio Value":
+
+    >>> classify_account("Portfolio Value (0388)", institution="Alpaca Markets")
+    <AccountType.INVESTMENT: 'investment'>
     """
     lowered = " ".join(name.lower().split())
     # Punctuation inside a plan name is meaningless but breaks matching:
@@ -193,6 +232,12 @@ def classify_account(name: str, balance: str | float | Decimal | None = None) ->
     # an asset account sits at or above zero nearly always, a card below it
     # nearly always. Wrong for an overdrawn current account, which the user can
     # correct — better than calling every unrecognised account chequing.
+    # The name gave nothing. Who holds it is the next best evidence: an
+    # account at a brokerage is an investment, whatever it has been called.
+    held_by = " ".join(institution.lower().split())
+    if held_by and any(broker in held_by for broker in _BROKERS):
+        return AccountType.INVESTMENT
+
     if balance is not None:
         try:
             if Decimal(str(balance)) < 0:

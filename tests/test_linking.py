@@ -66,3 +66,35 @@ def test_noise_words_alone_are_not_a_match():
     # "Card" and "Account" appear in half the account names in existence.
     value, _ = score(local("Some Card Account"), local("Another Card Account"))
     assert value == 0.0
+
+
+def test_a_brokerage_account_named_for_what_it_holds():
+    """Alpaca calls its account "Portfolio Value", which names no account type.
+
+    This was a real miss: the account synced fine, landed as `checking`, and
+    so counted as money available to spend.
+    """
+    from carraway.sync.accounts import classify_account
+
+    assert classify_account("Portfolio Value (0388)") is AccountType.INVESTMENT
+    assert (
+        classify_account("Individual", institution="Alpaca Markets Login") is AccountType.INVESTMENT
+    )
+
+
+def test_the_institution_never_overrides_a_clear_name():
+    """A broker can hold a cash account, so the name is tried first."""
+    from carraway.sync.accounts import classify_account
+
+    assert (
+        classify_account("Chase Freedom Unlimited (6550)", institution="Robinhood")
+        is AccountType.CREDIT_CARD
+    )
+    assert classify_account("CHASE SAVINGS (6571)", institution="Schwab") is AccountType.SAVINGS
+
+
+def test_a_plain_bank_says_nothing_about_the_type():
+    """Only brokerages are a signal: a bank holds current accounts and cards."""
+    from carraway.sync.accounts import classify_account
+
+    assert classify_account("Mystery Account", institution="Chase Bank") is AccountType.CHECKING

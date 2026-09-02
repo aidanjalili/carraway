@@ -266,11 +266,12 @@ def _messages_in(body: str) -> list[str]:
 def _to_account(node: dict[str, Any], local_id: str) -> Account:
     name = clean_name(str(node.get("name") or "Account")) or "Account"
     org = node.get("org") if isinstance(node.get("org"), dict) else {}
+    institution = str(org.get("name") or node.get("conn_id") or "")
     return Account(
         id=local_id,
         name=name,
-        type=classify_account(name, node.get("balance")),
-        institution=str(org.get("name") or node.get("conn_id") or ""),
+        type=classify_account(name, node.get("balance"), institution),
+        institution=institution,
         currency=str(node.get("currency") or "USD"),
         external_id=str(node.get("id") or ""),
     )
