@@ -298,6 +298,17 @@ def seal_to_public(payload: dict, recipient: dict) -> dict:
     numbers = ephemeral.public_key().public_numbers()
     return {
         "algorithm": "ECDH-P256+AES-256-GCM",
+        # Who this was sealed for. Public, and carried along so the reader can
+        # build its own private key from the vault key plus these coordinates
+        # -- Web Crypto needs x and y to import a private EC key, and they are
+        # not secret. A server that substituted them would produce a shared
+        # secret that fails authentication rather than a readable lie.
+        "recipient": {
+            "kty": "EC",
+            "crv": "P-256",
+            "x": str(recipient["x"]),
+            "y": str(recipient["y"]),
+        },
         "epk": {
             "kty": "EC",
             "crv": "P-256",

@@ -461,3 +461,24 @@ def test_showing_the_key_groups_it_for_typing(monkeypatch, capsys):
     assert vault.format_key(key) in out
     # And it says the thing that makes the whole design work.
     assert "never reaches the server" in out
+
+
+def test_the_sealed_blob_says_who_it_was_sealed_for():
+    """Web Crypto needs x and y to import a private EC key, and they are not
+    secret. Carrying them means the reader needs only the vault key."""
+    key = vault.new_key()
+    public = vault.public_jwk(key)
+    blob = vault.seal_to_public(_payload(), public)
+    assert blob["recipient"] == public
+    assert "d" not in blob["recipient"]
+
+
+def test_substituting_the_recipient_does_not_make_it_readable():
+    """A server that changed those coordinates would produce a shared secret
+    that fails authentication, not a plausible lie."""
+    key = vault.new_key()
+    blob = vault.seal_to_public(_payload(), vault.public_jwk(key))
+    blob["recipient"] = vault.public_jwk(vault.new_key())
+    # The real key still opens it: the recipient field is a convenience for
+    # the reader, not an input to the arithmetic.
+    assert vault.open_to_public(blob, key) == _payload()
