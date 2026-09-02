@@ -7,7 +7,7 @@ numeric sorting, card chrome — are written once.
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -126,6 +126,87 @@ class BalanceBanner(Card):
         )
         self.caption.setText(caption.upper())
         self.setVisible(True)
+
+
+class QRCode(QWidget):
+    """A QR code drawn at whatever size it is given.
+
+    Always black on white, whatever the theme is doing. A phone camera is
+    looking for a dark-on-light pattern, and a code rendered in the dark
+    palette's foreground on its background is a code that does not scan --
+    which is the kind of bug you find standing in a shop, so it is worth
+    the small inconsistency here.
+    """
+
+    # Four modules of clear space on every side, which the spec requires and
+    # decoders genuinely rely on to find the code at all.
+    QUIET = 4
+
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._grid: list[list[int]] = []
+        self.setText(text)
+
+    def setText(self, text: str) -> None:
+        from .qr import encode
+
+        self._grid = encode(text) if text else []
+        self.updateGeometry()
+        self.update()
+
+    def sizeHint(self) -> QSize:
+        return QSize(240, 240)
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(160, 160)
+
+    def paintEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        if not self._grid:
+            return
+        modules = len(self._grid) + self.QUIET * 2
+        side = min(self.width(), self.height())
+
+        # Whole pixels per module, or the resampling blurs module edges into
+        # each other and a marginal camera stops reading it.
+        scale = max(1, side // modules)
+        drawn = scale * modules
+        left = (self.width() - drawn) // 2
+        top = (self.height() - drawn) // 2
+
+        painter = QPainter(self)
+        painter.fillRect(left, top, drawn, drawn, QColor("#ffffff"))
+        painter.setBrush(QColor("#000000"))
+        painter.setPen(Qt.PenStyle.NoPen)
+        for row, cells in enumerate(self._grid):
+            for column, cell in enumerate(cells):
+                if cell:
+                    painter.drawRect(
+                        left + (column + self.QUIET) * scale,
+                        top + (row + self.QUIET) * scale,
+                        scale,
+                        scale,
+                    )
+        painter.end()
+
+    def pixmap(self, scale: int = 8) -> QPixmap:
+        """The same code as an image, for saving or copying."""
+        modules = len(self._grid) + self.QUIET * 2
+        out = QPixmap(modules * scale, modules * scale)
+        out.fill(QColor("#ffffff"))
+        painter = QPainter(out)
+        painter.setBrush(QColor("#000000"))
+        painter.setPen(Qt.PenStyle.NoPen)
+        for row, cells in enumerate(self._grid):
+            for column, cell in enumerate(cells):
+                if cell:
+                    painter.drawRect(
+                        (column + self.QUIET) * scale,
+                        (row + self.QUIET) * scale,
+                        scale,
+                        scale,
+                    )
+        painter.end()
+        return out
 
 
 class StatRow(QWidget):

@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 from ...core.money import Money, total
 from ..data import Ledger
 from ..widgets import Card
+from .pocket import PocketCard
 
 
 class SettingsView(QWidget):
@@ -57,6 +58,7 @@ class SettingsView(QWidget):
         layout.addWidget(self._category_list_card())
         layout.addWidget(self._accounts_card())
         layout.addWidget(self._defaults_card())
+        layout.addWidget(PocketCard(self.ledger))
         layout.addWidget(self._data_card())
         layout.addStretch(1)
 
@@ -389,9 +391,18 @@ class SettingsView(QWidget):
         where.setWordWrap(True)
         layout.addWidget(where)
 
+        # The last sentence has to stay honest. With Pocket connected a small
+        # summary does leave, so say which one rather than repeating a claim
+        # that has quietly stopped being true.
+        leaves = (
+            "Nothing leaves this device."
+            if not self.ledger.pocket_configured
+            else "The only thing that leaves is the Pocket summary: category "
+            "names and what is left in each."
+        )
         counts = QLabel(
             f"{len(self.ledger.transactions):,} transactions across "
-            f"{len(self.ledger.accounts)} accounts. Nothing leaves this device."
+            f"{len(self.ledger.accounts)} accounts. {leaves}"
         )
         counts.setObjectName("Muted")
         layout.addWidget(counts)

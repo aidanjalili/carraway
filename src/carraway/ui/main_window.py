@@ -241,6 +241,12 @@ class MainWindow(QMainWindow):
             note += f" · {warnings[0][:50]}"
         self.sync_status.setText(note)
 
+        # Freshly synced numbers are the ones worth having on the phone.
+        # Quiet on failure: see publish_in_background.
+        from .views.pocket import publish_in_background
+
+        publish_in_background(self, self.ledger)
+
     def _sync_failed(self, message: str) -> None:
         self.refresh_button.setEnabled(True)
         self.refresh_button.setText("Refresh from banks")

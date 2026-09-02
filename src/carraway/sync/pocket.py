@@ -134,6 +134,52 @@ class PocketClient:
         return self._request("GET", "/api/status")
 
 
+def redeem(pairing_url: str, name: str = "Carraway on this computer") -> tuple[str, str]:
+    """Trade a one-time pairing link for `(base_url, token)`.
+
+    The link comes from `pocket-admin pair` on the server the first time, and
+    from an already-paired device after that. Redeeming it is what makes this
+    computer trusted; the token then lives in the system keyring, not here.
+    """
+    url = pairing_url.strip()
+    if "/pair/" not in url:
+        raise PocketError(
+            "That does not look like a pairing link. It should end in /pair/ "
+            "followed by a code."
+        )
+    base = url.split("/pair/", 1)[0]
+    if not base.startswith("https://"):
+        # The token comes back in this response. Over plain HTTP it would be
+        # readable by anything on the path, which is the whole credential.
+        raise PocketError("A pairing link must be https, so the token stays private.")
+
+    request = urllib.request.Request(
+        url,
+        data=json.dumps({"name": name, "want_token": True}).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json", "User-Agent": _USER_AGENT},
+    )
+    try:
+        with urlopen(request, timeout=TIMEOUT) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        with contextlib.suppress(Exception):
+            detail = json.loads(exc.read().decode("utf-8")).get("error", "")
+        if exc.code == 400:
+            raise PocketError(
+                detail or "That pairing link has already been used, or has expired."
+            ) from exc
+        raise PocketError(f"Pairing failed ({exc.code}). {detail}".strip()) from exc
+    except urllib.error.URLError as exc:
+        raise PocketError(f"Could not reach {base}: {exc.reason}") from exc
+
+    token = str(payload.get("token") or "")
+    if not token:
+        raise PocketError("The server paired this computer but sent no token back.")
+    return base, token
+
+
 def to_transactions(
     entries: list[InboxEntry], accounts_by_name: dict[str, str]
 ) -> tuple[list[Transaction], list[InboxEntry]]:

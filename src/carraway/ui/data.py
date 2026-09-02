@@ -161,6 +161,36 @@ class Ledger:
             return None
         return PocketClient(str(url), token)
 
+    def pair_pocket(self, pairing_url: str) -> str:
+        """Redeem a pairing link so this computer can use the inbox.
+
+        Returns where the secret ended up, so Settings can say so plainly
+        rather than implying a safety the fallback store does not have.
+        """
+        from ..sync import credentials
+        from ..sync.pocket import redeem
+
+        base, token = redeem(pairing_url)
+        where = credentials.store("pocket_token", token)
+        self.save_setting("pocket_url", base)
+        return where
+
+    def unpair_pocket(self) -> None:
+        """Forget the inbox on this end.
+
+        This does not revoke the device on the server -- that needs a working
+        token, which is exactly what is being thrown away. Settings revokes
+        first and calls this second.
+        """
+        from ..sync import credentials
+
+        credentials.delete("pocket_token")
+        self.save_setting("pocket_url", "")
+
+    @property
+    def pocket_configured(self) -> bool:
+        return self.pocket_client() is not None
+
     def collect_from_pocket(self) -> dict:
         """Bring in everything typed on the phone. Returns what happened.
 
