@@ -957,3 +957,105 @@ def test_overspending_leaves_a_negative_figure_rather_than_a_comforting_zero():
     )
     assert state.remaining.minor < 0
     assert state.daily_remaining.minor < 0
+
+
+# -- what a trip costs the month it sits inside -------------------------
+
+
+def _window(name, starts, ends, **lines):
+    from datetime import date as _d
+
+    return budgets.Budget(
+        id=name.lower(),
+        name=name,
+        starts_on=_d.fromisoformat(starts),
+        ends_on=_d.fromisoformat(ends),
+        envelopes=tuple(budgets.Envelope(c, _money(a)) for c, a in lines.items()),
+    )
+
+
+def test_a_trip_says_what_it_leaves_the_rest_of_the_month():
+    """The question is "can I afford this", and "it contradicts your month"
+    does not answer it. The arithmetic does."""
+    month = _window("September", "2026-09-01", "2026-09-30", Travel="600.00", Dining="740.00")
+    trip = _window("Trip", "2026-09-20", "2026-09-22", Travel="800.00", Dining="200.00")
+
+    made = budgets.impact(trip, month)
+    assert made is not None
+    assert made.fits is True
+    assert made.days == 3
+    assert made.other_days == 27
+    assert made.left_for_the_rest == _money("340.00")
+    assert "27 days" in made.describe()
+
+
+def test_a_trip_that_does_not_fit_says_how_short():
+    month = _window("September", "2026-09-01", "2026-09-30", Travel="600.00")
+    trip = _window("Trip", "2026-09-20", "2026-09-22", Travel="900.00")
+
+    made = budgets.impact(trip, month)
+    assert made.fits is False
+    assert "short" in made.describe()
+
+
+def test_the_squeeze_is_stated_per_day_because_that_is_what_changes():
+    month = _window("September", "2026-09-01", "2026-09-30", Dining="3000.00")
+    trip = _window("Trip", "2026-09-10", "2026-09-12", Dining="900.00")
+
+    made = budgets.impact(trip, month)
+    assert made.normal_per_day == _money("100.00")
+    assert made.per_day_after == _money("77.77")  # 2100 over 27 days
+    assert made.squeeze.minor > 0
+
+
+def test_a_budget_that_only_overlaps_is_not_measured():
+    """Its spending could land in the days they do not share, so the
+    arithmetic would be a guess dressed as an answer."""
+    month = _window("September", "2026-09-01", "2026-09-30", Travel="600.00")
+    straddle = _window("Trip", "2026-09-28", "2026-10-04", Travel="500.00")
+    assert budgets.impact(straddle, month) is None
+
+
+def test_budgets_watching_different_accounts_do_not_eat_each_other():
+    from datetime import date as _d
+
+    month = budgets.Budget(
+        id="m",
+        name="September",
+        starts_on=_d(2026, 9, 1),
+        ends_on=_d(2026, 9, 30),
+        envelopes=(budgets.Envelope("Travel", _money("600.00")),),
+        accounts=("card",),
+    )
+    trip = budgets.Budget(
+        id="t",
+        name="Trip",
+        starts_on=_d(2026, 9, 20),
+        ends_on=_d(2026, 9, 22),
+        envelopes=(budgets.Envelope("Travel", _money("800.00")),),
+        accounts=("cash",),
+    )
+    assert budgets.impact(trip, month) is None
+
+
+def test_a_budget_never_reports_eating_into_itself():
+    month = _window("September", "2026-09-01", "2026-09-30", Travel="600.00")
+    assert budgets.impacts(month, [month]) == []
+
+
+def test_the_tightest_squeeze_is_reported_first():
+    tight = _window("Tight", "2026-09-01", "2026-09-30", Travel="900.00")
+    loose = _window("Loose", "2026-09-01", "2026-09-30", Travel="9000.00")
+    trip = _window("Trip", "2026-09-20", "2026-09-22", Travel="800.00")
+    found = budgets.impacts(trip, [loose, tight])
+    assert found[0].outer.name == "Tight"
+
+
+def test_a_trip_filling_the_whole_window_leaves_no_other_days():
+    """Dividing by zero other days would be the obvious way to crash this."""
+    month = _window("September", "2026-09-01", "2026-09-30", Travel="600.00")
+    same = _window("Same", "2026-09-01", "2026-09-30", Travel="500.00")
+    made = budgets.impact(same, month)
+    assert made.other_days == 0
+    assert made.per_day_after == _money("0.00")
+    assert made.describe()

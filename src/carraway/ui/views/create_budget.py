@@ -1098,6 +1098,20 @@ class CreateBudgetView(QWidget):
             return ""
         return budgets_mod.describe_clashes(budgets_mod.clashes(draft, self.ledger.budgets))
 
+    def _describe_impact(self) -> str:
+        """What this budget would cost the ones it sits inside.
+
+        Computed on the draft, so it answers before anything is saved --
+        which is the whole point. "Can I afford three days away" is not
+        answered by "this contradicts your month"; it is answered by what
+        the other twenty-seven days are left with.
+        """
+        draft = self._provisional()
+        if draft is None or not draft.envelopes:
+            return ""
+        found = budgets_mod.impacts(draft, self.ledger.budgets)
+        return found[0].describe() if found else ""
+
     def _update_total(self) -> None:
         lines = self.envelopes()
         total = Money.zero()
@@ -1123,8 +1137,12 @@ class CreateBudgetView(QWidget):
         # writing to the label itself: "Added Travel" used to be set and then
         # wiped by this method a line later, so the one message the user had
         # just asked for was the one that never appeared.
+        # A problem outranks the impact, and the impact outranks a hint: a
+        # budget that does not add up cannot be reasoned about, but one that
+        # merely eats into another is a decision the user is entitled to make
+        # with the arithmetic in front of them.
         problem = self._warning or self._check_clashes()
-        message = problem or self._hint
+        message = problem or self._describe_impact() or self._hint
         self.note.setObjectName("Danger" if problem else "Muted")
         self.note.setText(message)
         self.note.style().unpolish(self.note)

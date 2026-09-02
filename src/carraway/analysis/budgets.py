@@ -994,3 +994,104 @@ def totals(lines: Sequence[Line]) -> Line:
         committed=Money(sum(line.committed.minor for line in lines), currency),
         allowance=Money(sum(line.allowance.minor for line in lines), currency),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class Impact:
+    """What one budget does to another it sits inside.
+
+    "This contradicts that" is true and not much help when the question is
+    "can I afford the trip". What answers it is the arithmetic: this many
+    days cost this much, which leaves that much for the days either side, and
+    here is what those days were going to get.
+    """
+
+    outer: Budget
+    inner: Budget
+    days: int  # days the inner one occupies
+    outer_days: int
+    fits: bool
+    inner_total: Money
+    outer_total: Money
+    left_for_the_rest: Money
+    normal_per_day: Money
+    per_day_after: Money
+
+    @property
+    def other_days(self) -> int:
+        return max(self.outer_days - self.days, 0)
+
+    @property
+    def squeeze(self) -> Money:
+        """How much less each remaining day gets. Negative means more."""
+        return Money(
+            self.normal_per_day.minor - self.per_day_after.minor,
+            self.normal_per_day.currency,
+        )
+
+    def describe(self) -> str:
+        """One paragraph a person can decide on."""
+        span = f"{self.days} day{'s' if self.days != 1 else ''}"
+        if not self.fits:
+            short = Money(-self.left_for_the_rest.minor, self.outer_total.currency)
+            return (
+                f"{self.inner_total.format()} over {span} is more than "
+                f"“{self.outer.name}” has left in total ({self.outer_total.format()}). "
+                f"You would be {short.format()} short before the other "
+                f"{self.other_days} days start."
+            )
+        return (
+            f"{self.inner_total.format()} over {span} leaves "
+            f"{self.left_for_the_rest.format()} for the other {self.other_days} days of "
+            f"“{self.outer.name}” — {self.per_day_after.format()} a day instead of "
+            f"{self.normal_per_day.format()}."
+        )
+
+
+def impact(inner: Budget, outer: Budget) -> Impact | None:
+    """What `inner` costs `outer`, or None when it does not sit inside it.
+
+    Only computed for a nested window, for the same reason `clashes` only
+    claims a contradiction there: if every day of the inner budget falls
+    inside the outer one, every dollar it permits also comes out of the outer
+    one. Partial overlap could have its spending land in unshared days, and
+    the arithmetic would be a guess dressed as an answer.
+    """
+    if not (inner.starts_on >= outer.starts_on and inner.ends_on <= outer.ends_on):
+        return None
+    if not _shares_accounts(inner, outer):
+        return None
+
+    inner_days = inner.days
+    outer_days = outer.days
+    other_days = max(outer_days - inner_days, 0)
+
+    left = Money(outer.total.minor - inner.total.minor, outer.total.currency)
+    normal = (
+        Money(outer.total.minor // outer_days, outer.total.currency) if outer_days else Money(0)
+    )
+    after = Money(left.minor // other_days, left.currency) if other_days else Money(0)
+
+    return Impact(
+        outer=outer,
+        inner=inner,
+        days=inner_days,
+        outer_days=outer_days,
+        fits=left.minor >= 0,
+        inner_total=inner.total,
+        outer_total=outer.total,
+        left_for_the_rest=left,
+        normal_per_day=normal,
+        per_day_after=after,
+    )
+
+
+def impacts(inner: Budget, others: Sequence[Budget]) -> list[Impact]:
+    """Every existing budget this one would eat into, tightest first."""
+    found = [
+        made
+        for other in others
+        if other.id != inner.id and (made := impact(inner, other)) is not None
+    ]
+    found.sort(key=lambda made: (made.fits, -made.squeeze.minor))
+    return found
