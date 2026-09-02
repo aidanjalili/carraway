@@ -67,14 +67,29 @@ class InboxEntry:
         return cls(
             id=str(payload["id"]),
             occurred_on=date.fromisoformat(str(payload["occurred_on"])),
-            # A decimal string on the wire, parsed exactly. The server rejects
-            # floats for the same reason Money.parse does.
-            amount=Money.parse(str(payload["amount"])),
+            # A decimal string on the wire, parsed exactly.
+            #
+            # The float check is repeated here rather than left to the server.
+            # `str()` on a float launders it into something Money.parse will
+            # happily accept -- 12.345 becomes "12.345" and quietly rounds --
+            # so deferring to the far end meant the one rule Carraway enforces
+            # everywhere had a hole in it on the only path that crosses a
+            # network. The server is the user's own box, but it is also the
+            # part that faces the internet, which makes it the part to treat
+            # as a claim rather than a fact.
+            amount=_amount(payload["amount"]),
             description=str(payload["description"]),
             category=str(payload.get("category") or ""),
             account=str(payload.get("account") or "Cash"),
             kind=str(payload.get("kind") or "spend"),
         )
+
+
+def _amount(raw: object) -> Money:
+    """Parse an amount off the wire, refusing anything that lost precision."""
+    if isinstance(raw, float):
+        raise ValueError(f"amount must be a decimal string, not a float; got {raw!r}")
+    return Money.parse(str(raw))
 
 
 class PocketClient:

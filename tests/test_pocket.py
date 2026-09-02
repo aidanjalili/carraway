@@ -238,3 +238,74 @@ def test_spends_alongside_a_count_still_come_through():
     )
     assert len(ready) == 1
     assert ready[0].description == "Coffee"
+
+
+# -- what a hostile inbox could do to the ledger ------------------------
+#
+# The server is the user's own box, but it is the one part of Carraway that
+# faces the internet, so it is the part to assume is lying. Everything it
+# sends must be treated as a claim rather than a fact.
+
+
+def _hostile(payload: dict):
+    from carraway.sync.pocket import InboxEntry
+
+    return InboxEntry.from_json(payload)
+
+
+def test_an_entry_naming_an_unknown_account_cannot_pick_one(tmp_path):
+    """The one thing a hostile inbox must not do is get money filed
+    somewhere the user did not choose."""
+    from carraway.sync.pocket import to_transactions
+
+    entry = _wire_entry(account="Definitely Not An Account")
+    ready, unmatched = to_transactions([entry], {"Cash": "cash", "Card": "card"})
+    assert ready == []
+    assert unmatched == [entry]
+
+
+def test_an_entry_cannot_choose_its_own_transaction_id():
+    """Ids are minted here. A server that could pick them could collide with
+    an existing transaction and overwrite it."""
+    from carraway.sync.pocket import to_transactions
+
+    ready, _ = to_transactions([_wire_entry(id="../../etc/passwd")], {"Cash": "cash"})
+    assert ready[0].id != "../../etc/passwd"
+    assert len(ready[0].id) == 32
+
+
+def test_a_float_amount_from_the_server_is_refused():
+    with pytest.raises((TypeError, ValueError, ArithmeticError)):
+        _hostile({"id": "e", "occurred_on": "2026-09-02", "amount": 12.5, "description": "x"})
+
+
+@pytest.mark.parametrize("amount", ["", "abc", "NaN", "Infinity", "1e400"])
+def test_junk_amounts_from_the_server_are_refused(amount):
+    with pytest.raises((TypeError, ValueError, ArithmeticError)):
+        _hostile({"id": "e", "occurred_on": "2026-09-02", "amount": amount, "description": "x"})
+
+
+@pytest.mark.parametrize("when", ["", "not-a-date", "2026-13-01", "0000-00-00"])
+def test_junk_dates_from_the_server_are_refused(when):
+    with pytest.raises(ValueError):
+        _hostile({"id": "e", "occurred_on": when, "amount": "-1.00", "description": "x"})
+
+
+def test_a_missing_field_is_an_error_rather_than_a_guess():
+    with pytest.raises((KeyError, ValueError, TypeError)):
+        _hostile({"id": "e", "description": "x"})
+
+
+def test_an_unknown_kind_is_treated_as_a_spend_not_as_a_count():
+    """A count writes a correction, so anything unrecognised must fall to the
+    safer of the two rather than the one that adjusts a balance."""
+    entry = _hostile(
+        {
+            "id": "e",
+            "occurred_on": "2026-09-02",
+            "amount": "-1.00",
+            "description": "x",
+            "kind": "something-new",
+        }
+    )
+    assert entry.is_count is False
