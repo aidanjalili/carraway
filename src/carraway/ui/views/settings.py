@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -28,7 +29,7 @@ from PySide6.QtWidgets import (
 
 from ...core.money import Money, total
 from ..data import Ledger
-from ..widgets import Card
+from ..widgets import Card, refresh_everything
 from .pocket import PocketCard
 
 
@@ -302,14 +303,17 @@ class SettingsView(QWidget):
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(8)
 
-        heading = QLabel("Accounts counted towards net worth")
+        heading = QLabel("Your accounts")
         heading.setObjectName("SectionHeading")
         layout.addWidget(heading)
 
         blurb = QLabel(
-            "Leave out anything you cannot spend — a pension or a brokerage "
-            "account — to see what you actually have available. The total is "
-            "recalculated straight away."
+            "Ticked accounts count towards net worth. Leave out anything you "
+            "cannot spend — a pension or a brokerage account — to see what you "
+            "actually have available. The total is recalculated straight away.\n\n"
+            "Rename any of them: banks name accounts for their own filing, not "
+            "for you, and the new name is used everywhere and kept through "
+            "future refreshes."
         )
         blurb.setObjectName("Muted")
         blurb.setWordWrap(True)
@@ -333,6 +337,14 @@ class SettingsView(QWidget):
             detail = QLabel(balance.format() if balance else "no balance recorded")
             detail.setObjectName("Muted")
             row.addWidget(detail)
+
+            rename = QPushButton("Rename…")
+            rename.setCursor(Qt.CursorShape.PointingHandCursor)
+            rename.setToolTip(f"Change what {account.name} is called")
+            rename.clicked.connect(
+                lambda _=False, account_id=account.id: self._rename_account(account_id)
+            )
+            row.addWidget(rename)
             layout.addLayout(row)
 
         self.excluded_total = QLabel("")
@@ -417,6 +429,51 @@ class SettingsView(QWidget):
         return card
 
     # -- actions ---------------------------------------------------------
+
+    def _rename_account(self, account_id: str) -> None:
+        """Let the user call an account what they call it.
+
+        Renaming is display-only: the account keeps its id, its history and
+        its link to the provider, so a refresh lands in the same place rather
+        than creating a second copy under the bank's own name.
+        """
+        account = next((a for a in self.ledger.accounts if a.id == account_id), None)
+        if account is None:
+            return
+
+        name, agreed = QInputDialog.getText(
+            self,
+            "Rename account",
+            f"What should “{account.name}” be called?",
+            text=account.name,
+        )
+        if not agreed:
+            return
+        name = name.strip()
+        if not name or name == account.name:
+            return
+
+        clash = next(
+            (
+                a
+                for a in self.ledger.accounts
+                if a.id != account_id and a.name.lower() == name.lower()
+            ),
+            None,
+        )
+        if clash is not None:
+            # Two accounts with one name makes every list ambiguous, and the
+            # Pocket inbox matches on the name outright.
+            QMessageBox.warning(
+                self,
+                "That name is taken",
+                f"Another account is already called “{clash.name}”. "
+                "Pick something that tells them apart.",
+            )
+            return
+
+        self.ledger.rename_account(account_id, name)
+        refresh_everything(self)
 
     def _toggle(self, account_id: str, included: bool) -> None:
         excluded = self.ledger.excluded_accounts

@@ -120,3 +120,119 @@ def test_every_context_menu_handler_is_callable(app, ledger):
         for name in handlers:
             handler = getattr(view, name, None)
             assert callable(handler), f"{type(view).__name__}.{name} is missing"
+
+
+# -- paid with, and when a tracked entry last billed --------------------
+
+
+def _tracked(ledger, merchant="Costco membership", cadence="yearly"):
+    """Add a tracked entry with no billing date, as a spreadsheet import has."""
+    from carraway.core import db
+
+    conn = db.connect(ledger.path)
+    db.add_manual_subscription(
+        conn,
+        merchant=merchant,
+        amount=Money.parse("-65.00"),
+        cadence=cadence,
+        kind="subscription",
+    )
+    conn.close()
+    ledger.load()
+    return next(s for s in ledger.series if s.merchant == merchant)
+
+
+def test_a_tracked_entry_with_no_date_shows_no_next_charge(ledger):
+    series = _tracked(ledger)
+    assert series.next_expected is None
+    assert ledger.billed_on(series) is None
+
+
+def test_setting_the_billing_date_produces_a_next_charge(app, ledger, monkeypatch):
+    from datetime import date, timedelta
+
+    from carraway.ui.views import billing_date, subscriptions
+
+    series = _tracked(ledger)
+    when = date.today() - timedelta(days=30)
+    monkeypatch.setattr(billing_date, "prompt", lambda *a, **k: when)
+
+    view = subscriptions.SubscriptionsView(ledger)
+    view._set_billed_on(series)
+
+    ledger.load()
+    after = next(s for s in ledger.series if s.merchant == "Costco membership")
+    assert ledger.billed_on(after) == when
+    assert after.next_expected is not None
+    assert after.next_expected > date.today()
+
+
+def test_cancelling_the_billing_date_dialog_changes_nothing(app, ledger, monkeypatch):
+    from carraway.ui.views import billing_date, subscriptions
+
+    series = _tracked(ledger)
+    monkeypatch.setattr(billing_date, "prompt", lambda *a, **k: billing_date.CANCELLED)
+    subscriptions.SubscriptionsView(ledger)._set_billed_on(series)
+
+    ledger.load()
+    assert (
+        ledger.billed_on(next(s for s in ledger.series if s.merchant == "Costco membership"))
+        is None
+    )
+
+
+def test_saying_you_do_not_know_clears_the_billing_date(app, ledger, monkeypatch):
+    """None is a real answer, and must not be mistaken for Cancel."""
+    from datetime import date, timedelta
+
+    from carraway.ui.views import billing_date, subscriptions
+
+    series = _tracked(ledger)
+    view = subscriptions.SubscriptionsView(ledger)
+
+    monkeypatch.setattr(billing_date, "prompt", lambda *a, **k: date.today() - timedelta(days=5))
+    view._set_billed_on(series)
+    ledger.load()
+    series = next(s for s in ledger.series if s.merchant == "Costco membership")
+    assert ledger.billed_on(series) is not None
+
+    monkeypatch.setattr(billing_date, "prompt", lambda *a, **k: None)
+    view._set_billed_on(series)
+    ledger.load()
+    series = next(s for s in ledger.series if s.merchant == "Costco membership")
+    assert ledger.billed_on(series) is None
+    assert series.next_expected is None
+
+
+def test_paid_with_can_be_set_on_a_detected_series_from_the_menu(app, ledger, monkeypatch):
+    from carraway.ui.views import paid_with, subscriptions
+
+    detected = next(s for s in ledger.series if s.transaction_ids)
+    monkeypatch.setattr(paid_with, "prompt", lambda *a, **k: {"paid_via": "dad pays it"})
+
+    view = subscriptions.SubscriptionsView(ledger)
+    view._set_paid_with(detected)
+
+    ledger.load()
+    again = next(s for s in ledger.series if s.merchant == detected.merchant)
+    assert ledger.paid_with(again) == "dad pays it"
+    assert ledger.paid_with_is_corrected(again) is True
+
+
+def test_the_correction_can_be_undone_from_the_menu(app, ledger, monkeypatch):
+    from carraway.ui.views import paid_with, subscriptions
+
+    detected = next(s for s in ledger.series if s.transaction_ids)
+    statement_says = ledger.paid_with(detected)
+    monkeypatch.setattr(paid_with, "prompt", lambda *a, **k: {"paid_via": "dad pays it"})
+
+    view = subscriptions.SubscriptionsView(ledger)
+    view._set_paid_with(detected)
+    ledger.load()
+    detected = next(s for s in ledger.series if s.merchant == detected.merchant)
+
+    view._clear_paid_with(detected)
+    ledger.load()
+    detected = next(s for s in ledger.series if s.merchant == detected.merchant)
+    assert ledger.paid_with(detected) == statement_says
+    assert ledger.paid_with_is_corrected(detected) is False

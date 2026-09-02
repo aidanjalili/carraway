@@ -38,7 +38,7 @@ from ..widgets import (
     enable_row_hover,
     refresh_everything,
 )
-from . import add_subscription, edit_series, paid_with
+from . import add_subscription, billing_date, edit_series, paid_with
 from .classify_dialog import ClassifyDialog
 
 _HEADERS = [
@@ -133,18 +133,11 @@ class SubscriptionsView(QWidget):
         # so they get their own tabs rather than one list the user must scan.
         tab_row = QHBoxLayout()
         self.tabs = FilterStrip()
-        for label in (
-            "Subscriptions",
-            "Bills",
-            "Income",
-            "Habits",
-            "Cancelled",
-            "Stopped",
-            "All",
-            "Hidden",
-        ):
+        self.tabs.setReorderable(True)
+        for label in self._tab_order():
             self.tabs.addTab(label)
         self.tabs.currentChanged.connect(lambda _: self.refresh())
+        self.tabs.orderChanged.connect(self._save_tab_order)
         tab_row.addWidget(self.tabs)
         tab_row.addStretch(1)
 
@@ -244,6 +237,38 @@ class SubscriptionsView(QWidget):
             "  ·  the totals above still describe the whole tab"
         )
         self.search_note.setVisible(True)
+
+    # The two catch-alls sit at the end: they are where you go when the
+    # specific tabs did not have it, which is the opposite of a default.
+    DEFAULT_TABS = (
+        "Subscriptions",
+        "Bills",
+        "Income",
+        "Habits",
+        "Cancelled",
+        "Stopped",
+        "Hidden",
+        "All",
+    )
+
+    def _tab_order(self) -> list[str]:
+        """The user's order, reconciled with the tabs that actually exist.
+
+        Saved orders outlive the code that wrote them. Anything the saved
+        list no longer knows about is appended rather than dropped, and
+        anything it names that no longer exists is ignored -- so adding or
+        removing a tab in a later version cannot strand the user with a
+        strip that is missing one.
+        """
+        saved = self.ledger.setting("subscriptions_tab_order") or []
+        if not isinstance(saved, list):
+            return list(self.DEFAULT_TABS)
+        known = [str(label) for label in saved if str(label) in self.DEFAULT_TABS]
+        missing = [label for label in self.DEFAULT_TABS if label not in known]
+        return known + missing
+
+    def _save_tab_order(self, labels: list) -> None:
+        self.ledger.save_setting("subscriptions_tab_order", [str(x) for x in labels])
 
     def _visible(self) -> list:
         """The series belonging to the selected tab."""
@@ -431,14 +456,28 @@ class SubscriptionsView(QWidget):
         dismiss.triggered.connect(lambda: self._dismiss(series))
         menu.addAction(dismiss)
 
+        # Anything can say what pays for it. For a detected series the account
+        # the charge landed in is a fact, but who settles it is a separate
+        # question the statement cannot answer, so the answer is stored as a
+        # correction over the top rather than replacing what was observed.
+        route = QAction("Paid with…", self)
+        route.setToolTip("Which card, account or person this actually bills to.")
+        route.triggered.connect(lambda: self._set_paid_with(series))
+        menu.addAction(route)
+
+        if self.ledger.paid_with_is_corrected(series):
+            revert = QAction("Use what the statement says", self)
+            revert.setToolTip("Drop your correction and go back to the account it landed in.")
+            revert.triggered.connect(lambda: self._clear_paid_with(series))
+            menu.addAction(revert)
+
         if self.ledger.is_manual(series):
-            # Only a tracked entry can say what pays for it. For a detected
-            # one the account is not a guess to correct — the charge landed
-            # there, and that is what the statement says.
-            route = QAction("Paid with…", self)
-            route.setToolTip("Which card or account this bills to.")
-            route.triggered.connect(lambda: self._set_paid_with(series))
-            menu.addAction(route)
+            # A tracked entry has no charges to count forward from, so the
+            # next one can only be projected from a date the user gives.
+            when = QAction("Last billed on…", self)
+            when.setToolTip("Sets the date the next charge is counted forward from.")
+            when.triggered.connect(lambda: self._set_billed_on(series))
+            menu.addAction(when)
 
             # Only a tracked entry can be removed. A detected one is a fact
             # about the ledger, and deleting it would just mean re-detecting it.
@@ -459,20 +498,44 @@ class SubscriptionsView(QWidget):
         menu.exec(self.table.viewport().mapToGlobal(position))
 
     def _set_paid_with(self, series) -> None:
-        """Change which account a tracked subscription bills to."""
+        """Change which card, account or person a subscription bills to."""
         entry = self.ledger.manual_entry(series)
-        if entry is None:
-            return
+        if entry is not None:
+            text = str(entry.get("paid_via") or "")
+            account = str(entry.get("paid_via_account") or "")
+        else:
+            # A detected series starts from whatever correction is already in
+            # place, or from the account the charge landed in.
+            fields = self.ledger.overrides.get(series.merchant.upper(), {})
+            text = str(fields.get("paid_via") or "")
+            account = str(fields.get("paid_via_account") or series.account_id or "")
+
         choice = paid_with.prompt(
             series.merchant,
             self.ledger.payable_accounts,
-            str(entry.get("paid_via") or ""),
-            str(entry.get("paid_via_account") or ""),
+            text,
+            account,
             self,
         )
         if choice is None:
             return
         self.ledger.set_paid_with(series, choice)
+        refresh_everything(self)
+
+    def _set_billed_on(self, series) -> None:
+        """Give a tracked entry the date its next charge counts forward from."""
+        current = self.ledger.billed_on(series)
+        chosen = billing_date.prompt(series.merchant, str(series.cadence), current, self)
+        # None is an answer ("I do not know, blank it"), so cancelling needs
+        # its own value rather than sharing one with a real choice.
+        if chosen is billing_date.CANCELLED:
+            return
+        self.ledger.set_billed_on(series, chosen)
+        refresh_everything(self)
+
+    def _clear_paid_with(self, series) -> None:
+        """Drop the user's correction and show the statement's answer again."""
+        self.ledger.clear_paid_with(series)
         refresh_everything(self)
 
     def _add_manual(self) -> None:

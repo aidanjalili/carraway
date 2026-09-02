@@ -181,11 +181,53 @@ def test_choosing_an_account_clears_a_stale_note(tmp_path):
     assert entry["paid_via"] == ""
 
 
-def test_a_detected_series_cannot_have_its_account_reassigned(tmp_path):
-    # It is a fact from the statement, not a guess to correct.
+def test_a_detected_series_can_be_told_who_really_pays_for_it(tmp_path):
+    """The account is a fact; who settles it is a separate question.
+
+    A charge can land on a card that somebody else pays off, or that gets
+    reimbursed, and the statement cannot know. So the user's answer wins --
+    but as an override, with the observed account still underneath.
+    """
     ledger = _ledger(tmp_path, _statement("-8.43"))
     netflix = next(s for s in ledger.series if "NETFLIX" in s.merchant.upper())
-    assert ledger.set_paid_with(netflix, {"paid_via_account": "a1"}) is False
+    observed = ledger.paid_with(netflix)
+
+    assert ledger.set_paid_with(netflix, {"paid_via": "dad pays this one"}) is True
+    netflix = next(s for s in ledger.series if "NETFLIX" in s.merchant.upper())
+    assert ledger.paid_with(netflix) == "dad pays this one"
+    assert ledger.paid_with_is_corrected(netflix) is True
+    # The statement's own answer is untouched underneath.
+    assert netflix.account_id and ledger.account_name(netflix.account_id) == observed
+
+
+def test_clearing_the_correction_goes_back_to_the_statement(tmp_path):
+    ledger = _ledger(tmp_path, _statement("-8.43"))
+    netflix = next(s for s in ledger.series if "NETFLIX" in s.merchant.upper())
+    observed = ledger.paid_with(netflix)
+
+    ledger.set_paid_with(netflix, {"paid_via": "dad pays this one"})
+    netflix = next(s for s in ledger.series if "NETFLIX" in s.merchant.upper())
+    assert ledger.clear_paid_with(netflix) is True
+
+    netflix = next(s for s in ledger.series if "NETFLIX" in s.merchant.upper())
+    assert ledger.paid_with(netflix) == observed
+    assert ledger.paid_with_is_corrected(netflix) is False
+
+
+def test_clearing_when_nothing_was_corrected_reports_no_change(tmp_path):
+    ledger = _ledger(tmp_path, _statement("-8.43"))
+    netflix = next(s for s in ledger.series if "NETFLIX" in s.merchant.upper())
+    assert ledger.clear_paid_with(netflix) is False
+
+
+def test_a_correction_naming_an_account_shows_that_accounts_name(tmp_path):
+    ledger = _ledger(tmp_path, _statement("-8.43"))
+    netflix = next(s for s in ledger.series if "NETFLIX" in s.merchant.upper())
+    other = ledger.accounts[0].id
+
+    ledger.set_paid_with(netflix, {"paid_via_account": other})
+    netflix = next(s for s in ledger.series if "NETFLIX" in s.merchant.upper())
+    assert ledger.paid_with(netflix) == ledger.account_name(other)
 
 
 def test_payable_accounts_puts_cards_first_and_drops_closed_ones(tmp_path):

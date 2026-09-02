@@ -212,6 +212,20 @@ MIGRATIONS: list[str] = [
         PRIMARY KEY (budget_id, category)
     );
     """,
+    # v14 - how a *detected* series is paid for.
+    #
+    # A tracked entry has always been able to say what pays for it. A detected
+    # one could not, on the reasoning that the account a charge landed in is a
+    # fact from the statement rather than a guess to correct. That reasoning
+    # was too narrow: the account is a fact, but "who actually pays for this"
+    # is a different question -- a charge can land on a card that someone else
+    # settles, or be reimbursed. Recorded as an override so the observed
+    # account is still there underneath, and clearing it restores the truth
+    # from the statement.
+    """
+    ALTER TABLE series_overrides ADD COLUMN paid_via TEXT;
+    ALTER TABLE series_overrides ADD COLUMN paid_via_account TEXT;
+    """,
 ]
 
 
@@ -572,6 +586,23 @@ def set_manual_paid_via(
     return cur.rowcount
 
 
+def set_manual_started_on(
+    conn: sqlite3.Connection, subscription_id: str, started_on: date | None
+) -> int:
+    """Record when a tracked subscription last billed. Returns rows changed.
+
+    This is the anchor the next charge is projected from. Without it there is
+    nothing to count a cadence forward from, which is why an entry imported
+    from a spreadsheet shows no next charge at all.
+    """
+    cur = conn.execute(
+        "UPDATE manual_subscriptions SET started_on = ? WHERE id = ?",
+        (started_on.isoformat() if started_on else None, subscription_id),
+    )
+    conn.commit()
+    return cur.rowcount
+
+
 def delete_manual_subscription(conn: sqlite3.Connection, subscription_id: str) -> int:
     """Remove a tracked entry outright.
 
@@ -709,6 +740,9 @@ DEFAULT_SETTINGS: dict[str, object] = {
     "budget_months": 6,
     "budget_period": "monthly",
     "theme": "system",
+    # The order of the Subscriptions filter chips, as the user dragged them.
+    # Empty means the view's own default.
+    "subscriptions_tab_order": [],
 }
 
 
@@ -758,16 +792,18 @@ def set_series_override(conn: sqlite3.Connection, merchant: str, **fields: objec
         """
         INSERT INTO series_overrides
             (merchant, display_name, amount_minor, currency, cadence,
-             next_expected, note, updated_on)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             next_expected, note, paid_via, paid_via_account, updated_on)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(merchant) DO UPDATE SET
-            display_name  = excluded.display_name,
-            amount_minor  = excluded.amount_minor,
-            currency      = excluded.currency,
-            cadence       = excluded.cadence,
-            next_expected = excluded.next_expected,
-            note          = excluded.note,
-            updated_on    = excluded.updated_on
+            display_name     = excluded.display_name,
+            amount_minor     = excluded.amount_minor,
+            currency         = excluded.currency,
+            cadence          = excluded.cadence,
+            next_expected    = excluded.next_expected,
+            note             = excluded.note,
+            paid_via         = excluded.paid_via,
+            paid_via_account = excluded.paid_via_account,
+            updated_on       = excluded.updated_on
         """,
         (
             merchant.upper(),
@@ -777,6 +813,8 @@ def set_series_override(conn: sqlite3.Connection, merchant: str, **fields: objec
             merged.get("cadence"),
             merged.get("next_expected"),
             merged.get("note"),
+            merged.get("paid_via"),
+            merged.get("paid_via_account"),
             date.today().isoformat(),
         ),
     )
@@ -794,6 +832,8 @@ def get_series_overrides(conn: sqlite3.Connection) -> dict[str, dict[str, object
             "cadence": row["cadence"],
             "next_expected": row["next_expected"],
             "note": row["note"],
+            "paid_via": row["paid_via"],
+            "paid_via_account": row["paid_via_account"],
         }
     return out
 

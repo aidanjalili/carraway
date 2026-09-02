@@ -9,6 +9,7 @@ from __future__ import annotations
 from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QFrame,
     QHBoxLayout,
@@ -323,6 +324,8 @@ class FilterStrip(QWidget):
     """
 
     currentChanged = Signal(int)
+    # The labels, in their new order, after the user drags one somewhere else.
+    orderChanged = Signal(list)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -333,6 +336,14 @@ class FilterStrip(QWidget):
         self._buttons: list[QPushButton] = []
         self._data: list[object] = []
         self._group.idClicked.connect(self.currentChanged.emit)
+
+        # Drag-to-reorder state. `_press` is where the mouse went down, kept
+        # so a drag only starts once it has moved far enough to be meant --
+        # otherwise every click on a chip would jitter the strip.
+        self._press: QPoint | None = None
+        self._dragging = -1
+        self._moved = False
+        self.reorderable = False
 
     def addTab(self, label: str) -> int:  # noqa: N802
         button = QPushButton(label)
@@ -345,7 +356,76 @@ class FilterStrip(QWidget):
         self._buttons.append(button)
         self._data.append(None)
         self._layout.addWidget(button)
+        button.installEventFilter(self)
         return index
+
+    # -- dragging one chip somewhere else --------------------------------
+
+    def setReorderable(self, enabled: bool) -> None:  # noqa: N802
+        """Allow the user to drag chips into a different order."""
+        self.reorderable = enabled
+        for button in self._buttons:
+            button.setToolTip("Drag to reorder" if enabled else button.toolTip())
+
+    def labels(self) -> list[str]:
+        return [button.text() for button in self._buttons]
+
+    def moveTab(self, source: int, target: int) -> None:  # noqa: N802
+        """Move one chip to another position, keeping data and selection."""
+        if source == target:
+            return
+        if not (0 <= source < len(self._buttons) and 0 <= target < len(self._buttons)):
+            return
+        self._buttons.insert(target, self._buttons.pop(source))
+        self._data.insert(target, self._data.pop(source))
+
+        # FlowLayout has no insert, so the row is emptied and refilled. The
+        # buttons keep their parent throughout, so nothing is destroyed.
+        while self._layout.count():
+            self._layout.takeAt(0)
+        for button in self._buttons:
+            self._layout.addWidget(button)
+
+        # Ids must equal positions, or tabData and currentIndex disagree.
+        for position, button in enumerate(self._buttons):
+            self._group.setId(button, position)
+        self._layout.invalidate()
+        self.updateGeometry()
+
+    def _chip_under(self, global_pos) -> int:
+        for index, button in enumerate(self._buttons):
+            local = button.mapFromGlobal(global_pos)
+            if button.rect().contains(local):
+                return index
+        return -1
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if not self.reorderable or watched not in self._buttons:
+            return super().eventFilter(watched, event)
+
+        if event.type() == QEvent.Type.MouseButtonPress:
+            self._press = event.globalPosition().toPoint()
+            self._dragging = self._buttons.index(watched)
+            self._moved = False
+        elif event.type() == QEvent.Type.MouseMove and self._press is not None:
+            here = event.globalPosition().toPoint()
+            if (here - self._press).manhattanLength() >= QApplication.startDragDistance():
+                self._moved = True
+                target = self._chip_under(here)
+                if target >= 0 and target != self._dragging:
+                    self.moveTab(self._dragging, target)
+                    self._dragging = target
+        elif event.type() == QEvent.Type.MouseButtonRelease:
+            dragged = self._moved
+            self._press = None
+            self._dragging = -1
+            self._moved = False
+            if dragged:
+                # Swallow the release so the drag does not also count as a
+                # click, which would switch tabs to wherever it was dropped.
+                self.orderChanged.emit(self.labels())
+                return True
+        return super().eventFilter(watched, event)
 
     def removeTab(self, index: int) -> None:  # noqa: N802
         if not 0 <= index < len(self._buttons):

@@ -31,7 +31,9 @@ def ledger(tmp_path) -> Ledger:
     conn = db.connect(path)
     db.upsert_account(conn, Account(id="cash", name="Cash", type=AccountType.CHECKING))
     conn.close()
-    return Ledger(path)
+    led = Ledger(path)
+    led.load()
+    return led
 
 
 class FakeClient:
@@ -272,3 +274,64 @@ def test_the_snapshot_carries_no_merchants_or_accounts(app, paired):
     flat = repr(snapshot).lower()
     for forbidden in ("cash", "account", "balance", "transaction"):
         assert forbidden not in flat.replace("'category'", ""), forbidden
+
+
+# -- renaming an account ------------------------------------------------
+
+
+def test_renaming_an_account_saves_the_new_name(app, ledger, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+
+    from carraway.ui.views.settings import SettingsView
+
+    monkeypatch.setattr(QInputDialog, "getText", lambda *a, **k: ("Pocket money", True))
+    view = SettingsView(ledger)
+    view._rename_account("cash")
+
+    ledger.load()
+    assert [a.name for a in ledger.accounts] == ["Pocket money"]
+
+
+def test_cancelling_the_rename_changes_nothing(app, ledger, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+
+    from carraway.ui.views.settings import SettingsView
+
+    monkeypatch.setattr(QInputDialog, "getText", lambda *a, **k: ("Something else", False))
+    SettingsView(ledger)._rename_account("cash")
+    ledger.load()
+    assert [a.name for a in ledger.accounts] == ["Cash"]
+
+
+def test_an_empty_rename_is_ignored(app, ledger, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog
+
+    from carraway.ui.views.settings import SettingsView
+
+    monkeypatch.setattr(QInputDialog, "getText", lambda *a, **k: ("   ", True))
+    SettingsView(ledger)._rename_account("cash")
+    ledger.load()
+    assert [a.name for a in ledger.accounts] == ["Cash"]
+
+
+def test_a_duplicate_name_is_refused(app, ledger, monkeypatch):
+    """Two accounts with one name makes every list ambiguous."""
+    from PySide6.QtWidgets import QInputDialog
+
+    from carraway.core import db
+    from carraway.core.models import Account, AccountType
+    from carraway.ui.views.settings import SettingsView
+
+    conn = db.connect(ledger.path)
+    db.upsert_account(conn, Account(id="card", name="Card", type=AccountType.CREDIT_CARD))
+    conn.close()
+    ledger.load()
+
+    monkeypatch.setattr(QInputDialog, "getText", lambda *a, **k: ("card", True))
+    warned: list[str] = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warned.append(a[2]))
+
+    SettingsView(ledger)._rename_account("cash")
+    ledger.load()
+    assert warned and "already called" in warned[0]
+    assert sorted(a.name for a in ledger.accounts) == ["Card", "Cash"]

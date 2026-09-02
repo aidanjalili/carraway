@@ -508,32 +508,86 @@ class Ledger:
     def paid_with(self, series: RecurringSeries) -> str:
         """Which card, account or route this charge comes out of.
 
-        An account link wins over the free text: it is the more specific
-        answer, and naming the account the way every other screen names it is
-        worth more than repeating whatever the user typed. Empty when nothing
-        is known, which is honest — a tracked entry need not say.
+        Order matters. What the user said wins, because "who actually pays for
+        this" is a question the statement cannot answer -- a charge can land on
+        a card someone else settles. Failing that, the account it landed in,
+        named the way every other screen names it. Failing that, the free text
+        on a tracked entry. Empty when nothing is known, which is honest.
         """
+        override = self.paid_with_override(series)
+        if override:
+            return override
         if series.account_id:
             return self.account_name(series.account_id)
         entry = self.manual_entry(series)
         return str(entry.get("paid_via") or "") if entry else ""
 
-    def set_paid_with(self, series: RecurringSeries, choice: dict) -> bool:
-        """Record how a tracked entry is paid for. False if it was detected.
+    def paid_with_override(self, series: RecurringSeries) -> str:
+        """What the user said pays for this, or empty if they never said."""
+        fields = self.overrides.get(series.merchant.upper(), {})
+        account_id = fields.get("paid_via_account")
+        if account_id:
+            return self.account_name(str(account_id))
+        return str(fields.get("paid_via") or "")
 
-        Detected series are deliberately not editable here: the account a
-        charge landed in is a fact from the statement, not a guess to correct.
+    def paid_with_is_corrected(self, series: RecurringSeries) -> bool:
+        """Whether the shown value is the user's, rather than the statement's."""
+        return bool(self.paid_with_override(series))
+
+    def set_paid_with(self, series: RecurringSeries, choice: dict) -> bool:
+        """Record how this is paid for. Works for tracked and detected alike.
+
+        A tracked entry keeps its answer on the entry itself. A detected one
+        gets an override, so the account the charge actually landed in stays
+        underneath and `clear_paid_with` can restore it.
+        """
+        entry = self.manual_entry(series)
+        conn = db.connect(self.path)
+        if entry is not None:
+            db.set_manual_paid_via(
+                conn,
+                str(entry["id"]),
+                paid_via=choice.get("paid_via", ""),
+                paid_via_account=choice.get("paid_via_account") or None,
+            )
+        else:
+            db.set_series_override(
+                conn,
+                series.merchant,
+                paid_via=choice.get("paid_via") or None,
+                paid_via_account=choice.get("paid_via_account") or None,
+            )
+        conn.close()
+        self.load()
+        return True
+
+    def set_billed_on(self, series: RecurringSeries, when) -> bool:
+        """Set when a tracked entry last billed, so a next charge can be shown.
+
+        Only tracked entries: a detected series already has real charges to
+        count forward from, and overriding those with a typed date would make
+        the projection worse, not better.
         """
         entry = self.manual_entry(series)
         if entry is None:
             return False
         conn = db.connect(self.path)
-        db.set_manual_paid_via(
-            conn,
-            str(entry["id"]),
-            paid_via=choice.get("paid_via", ""),
-            paid_via_account=choice.get("paid_via_account") or None,
-        )
+        db.set_manual_started_on(conn, str(entry["id"]), when)
+        conn.close()
+        self.load()
+        return True
+
+    def billed_on(self, series: RecurringSeries):
+        """The anchor date on a tracked entry, or None if never set."""
+        entry = self.manual_entry(series)
+        return entry.get("started_on") if entry else None
+
+    def clear_paid_with(self, series: RecurringSeries) -> bool:
+        """Drop a correction and go back to what the statement says."""
+        if not self.paid_with_is_corrected(series):
+            return False
+        conn = db.connect(self.path)
+        db.set_series_override(conn, series.merchant, paid_via=None, paid_via_account=None)
         conn.close()
         self.load()
         return True
