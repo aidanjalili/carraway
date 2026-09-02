@@ -144,8 +144,7 @@ def redeem(pairing_url: str, name: str = "Carraway on this computer") -> tuple[s
     url = pairing_url.strip()
     if "/pair/" not in url:
         raise PocketError(
-            "That does not look like a pairing link. It should end in /pair/ "
-            "followed by a code."
+            "That does not look like a pairing link. It should end in /pair/ followed by a code."
         )
     base = url.split("/pair/", 1)[0]
     if not base.startswith("https://"):

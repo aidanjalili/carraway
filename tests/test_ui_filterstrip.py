@@ -114,3 +114,80 @@ def test_a_saved_order_naming_a_tab_that_no_longer_exists_is_ignored(app, ledger
 def test_rubbish_in_the_setting_falls_back_to_the_default(app, ledger):
     ledger.save_setting("subscriptions_tab_order", "not a list")
     assert SubscriptionsView(ledger).tabs.labels() == list(SubscriptionsView.DEFAULT_TABS)
+
+
+def test_an_actual_drag_reorders_and_reports_it(app):
+    """moveTab passing does not prove the event filter ever fires."""
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    strip = FilterStrip()
+    strip.setReorderable(True)
+    for label in ("One", "Two", "Three", "Four"):
+        strip.addTab(label)
+    strip.resize(600, 40)
+    strip.show()
+    app.processEvents()
+
+    seen: list[list[str]] = []
+    strip.orderChanged.connect(lambda labels: seen.append(list(labels)))
+
+    def send(widget, kind, global_pos):
+        app.sendEvent(
+            widget,
+            QMouseEvent(
+                kind,
+                widget.mapFromGlobal(global_pos).toPointF(),
+                QPointF(global_pos),
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            ),
+        )
+
+    first, third = strip._buttons[0], strip._buttons[2]
+    start = first.mapToGlobal(first.rect().center())
+    end = third.mapToGlobal(third.rect().center())
+    send(first, QEvent.Type.MouseButtonPress, start)
+    send(first, QEvent.Type.MouseMove, end)
+    send(first, QEvent.Type.MouseButtonRelease, end)
+    app.processEvents()
+
+    assert strip.labels() == ["Two", "Three", "One", "Four"]
+    assert seen == [["Two", "Three", "One", "Four"]]
+
+
+def test_a_plain_click_does_not_reorder_anything(app):
+    """The drag threshold is what keeps every click from jittering the strip."""
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    strip = FilterStrip()
+    strip.setReorderable(True)
+    for label in ("One", "Two", "Three"):
+        strip.addTab(label)
+    strip.resize(600, 40)
+    strip.show()
+    app.processEvents()
+
+    seen: list[list[str]] = []
+    strip.orderChanged.connect(lambda labels: seen.append(list(labels)))
+
+    button = strip._buttons[1]
+    where = button.mapToGlobal(button.rect().center())
+    for kind in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease):
+        app.sendEvent(
+            button,
+            QMouseEvent(
+                kind,
+                button.mapFromGlobal(where).toPointF(),
+                QPointF(where),
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            ),
+        )
+    app.processEvents()
+
+    assert strip.labels() == ["One", "Two", "Three"]
+    assert seen == []
