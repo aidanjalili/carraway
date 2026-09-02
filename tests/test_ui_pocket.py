@@ -737,3 +737,97 @@ def test_the_sidebar_never_promises_more_privacy_than_it_delivers(app, ledger, m
     monkeypatch.setattr(Ledger, "vault_key", lambda self: "ABCDEFGHJKMNPQRSTVWXYZ012")
     window._describe_privacy()
     assert "encrypted" in window.privacy.text()
+
+
+# -- keeping the phone's copy close to current --------------------------
+
+
+def test_a_timer_publish_skips_when_nothing_has_moved(app, paired):
+    """Sealing is 600,000 PBKDF2 rounds and a round trip. Doing that every
+    fifteen minutes to send an identical payload is work for its own sake."""
+    from PySide6.QtWidgets import QWidget
+
+    from carraway.ui.views import pocket as view
+
+    ledger, client = paired
+    owner = QWidget()
+
+    assert view.publish_in_background(owner, ledger, only_if_changed=True) is True
+    _settle(app, owner._pocket_publisher)
+    assert len(client.published) == 1
+
+    # Nothing changed, so nothing is sent.
+    assert view.publish_in_background(owner, ledger, only_if_changed=True) is False
+    assert len(client.published) == 1
+
+
+def test_a_timer_publish_goes_when_something_has_moved(app, paired, monkeypatch):
+    from PySide6.QtWidgets import QWidget
+
+    from carraway.ui.views import pocket as view
+
+    ledger, client = paired
+    owner = QWidget()
+    view.publish_in_background(owner, ledger, only_if_changed=True)
+    _settle(app, owner._pocket_publisher)
+
+    monkeypatch.setattr(Ledger, "pocket_digest", lambda self: "something-else")
+    assert view.publish_in_background(owner, ledger, only_if_changed=True) is True
+    _settle(app, owner._pocket_publisher)
+    assert len(client.published) == 2
+
+
+def test_an_unforced_publish_always_goes(app, paired):
+    """A budget being saved is not a maybe."""
+    from PySide6.QtWidgets import QWidget
+
+    from carraway.ui.views import pocket as view
+
+    ledger, client = paired
+    owner = QWidget()
+    for _ in range(2):
+        view.publish_in_background(owner, ledger)
+        _settle(app, owner._pocket_publisher)
+    assert len(client.published) == 2
+
+
+def test_the_digest_changes_when_the_history_does(app, tmp_path):
+    """Or the timer would never notice a new transaction."""
+    from datetime import date
+
+    from carraway.core import db
+    from carraway.core.models import Account, AccountType, Transaction
+    from carraway.core.money import Money
+
+    path = tmp_path / "digest.db"
+    conn = db.connect(path)
+    db.upsert_account(conn, Account(id="a1", name="Card", type=AccountType.CREDIT_CARD))
+    conn.close()
+    ledger = Ledger(path)
+    ledger.load()
+
+    before = ledger.pocket_digest()
+    conn = db.connect(path)
+    db.insert_transactions(
+        conn,
+        [
+            Transaction(
+                id="new",
+                account_id="a1",
+                date=date.today(),
+                amount=Money.parse("-9.99"),
+                description="A NEW THING",
+                merchant="A NEW THING",
+            )
+        ],
+    )
+    conn.close()
+    ledger.load()
+    # Without a vault key the history is not sent, so the digest covers the
+    # summary only -- which is exactly why this asserts on the key path too.
+    assert ledger.pocket_digest() == before
+
+    from carraway.sync import vault
+
+    ledger.vault_key = lambda: vault.new_key()
+    assert ledger.pocket_digest() != before

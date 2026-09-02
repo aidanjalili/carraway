@@ -422,6 +422,23 @@ class Ledger:
 
         return {"budgets": lines, "summaries": summaries}
 
+    def pocket_digest(self) -> str:
+        """A fingerprint of what would be published, without encrypting it.
+
+        Sealing costs 600,000 PBKDF2 rounds, so republishing on a timer would
+        burn half a second and a network round trip every time whether or not
+        anything had changed. Hashing the plaintext is cheap and answers the
+        only question worth asking first: is this different from last time?
+        """
+        import hashlib
+        import json
+
+        payload = {"snapshot": self.pocket_snapshot()}
+        if self.vault_key():
+            payload["history"] = self.pocket_history()
+        raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(raw).hexdigest()
+
     def publish_to_pocket(self) -> str | None:
         """Send the summary, and the sealed history if there is a key.
 

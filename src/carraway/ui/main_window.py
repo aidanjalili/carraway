@@ -93,6 +93,26 @@ class MainWindow(QMainWindow):
         self._day_watch.timeout.connect(self._check_the_date)
         self._day_watch.start()
 
+        # Keep the phone's copy close to current while the app is open.
+        #
+        # It can never be better than that: the laptop holds the ledger and
+        # the key, so nothing on the server can refresh itself, and a phone
+        # looking at a laptop that has been shut for a week is looking at a
+        # week-old copy however this is arranged. What this does is make the
+        # gap "since you last had Carraway open" rather than "since the last
+        # bank sync or budget edit", which were the only two things that
+        # published before. It skips when nothing has changed.
+        self._pocket_timer = QTimer(self)
+        self._pocket_timer.setInterval(15 * 60 * 1000)
+        self._pocket_timer.timeout.connect(self._publish_if_changed)
+        self._pocket_timer.start()
+        QTimer.singleShot(4000, self._publish_if_changed)
+
+    def _publish_if_changed(self) -> None:
+        from .views.pocket import publish_in_background
+
+        publish_in_background(self, self.ledger, only_if_changed=True)
+
     def _check_the_date(self) -> None:
         """Reload if the calendar has moved on since the last check."""
         today = date.today()

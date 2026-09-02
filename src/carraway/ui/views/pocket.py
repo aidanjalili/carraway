@@ -535,6 +535,10 @@ class PocketCard(Card):
             from ..widgets import refresh_everything
 
             refresh_everything(self)
+            # What was just collected belongs in the history the phone reads,
+            # and a correction from a wallet count changes the figures it is
+            # showing. Sending it back straight away closes that loop.
+            publish_in_background(self, self.ledger)
             self._refresh_status(prefix=" ".join(parts))
 
         self.runner.start(
@@ -607,7 +611,7 @@ class PocketCard(Card):
         self.rebuild()
 
 
-def publish_in_background(owner: QWidget, ledger: Ledger) -> bool:
+def publish_in_background(owner: QWidget, ledger: Ledger, *, only_if_changed: bool = False) -> bool:
     """Push the budget summary to the phone, quietly. Returns False if not set up.
 
     Deliberately silent about failures. This runs after a bank sync, and the
@@ -618,6 +622,15 @@ def publish_in_background(owner: QWidget, ledger: Ledger) -> bool:
     """
     if not ledger.pocket_configured:
         return False
+
+    # On a timer, skip when nothing has moved. Sealing is 600,000 PBKDF2
+    # rounds and a round trip; doing that every half hour to send a byte-for-
+    # byte identical payload is work for its own sake.
+    if only_if_changed:
+        digest = ledger.pocket_digest()
+        if digest == getattr(owner, "_pocket_digest", None):
+            return False
+        owner._pocket_digest = digest
     # Cached on the owner so repeated syncs do not pile up thread wrappers,
     # and so the runner outlives this function.
     runner = getattr(owner, "_pocket_publisher", None)
