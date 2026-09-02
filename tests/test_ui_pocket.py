@@ -15,7 +15,12 @@ import pytest
 
 pytest.importorskip("PySide6", reason="GUI tests need the [gui] extra")
 
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QDialog,
+    QMessageBox,
+    QWidget,
+)
 
 from carraway.core import db  # noqa: E402
 from carraway.core.models import Account, AccountType  # noqa: E402
@@ -642,3 +647,73 @@ def test_shutdown_is_armed_the_first_time_something_is_sent(app, paired):
     ledger, _ = paired
     view.publish_in_background(QWidget(), ledger)
     assert getattr(QApplication.instance(), "_pocket_shutdown_armed", False) is True
+
+
+# -- the vault key, and history being opt-in ----------------------------
+
+
+def test_no_history_is_sent_until_the_user_asks(app, paired, monkeypatch):
+    """The switch. Until there is a key, only category names and figures go."""
+    from carraway.ui.views import pocket as view
+
+    ledger, client = paired
+    monkeypatch.setattr(Ledger, "vault_key", lambda self: None)
+
+    owner = QWidget()
+    view.publish_in_background(owner, ledger)
+    _settle(app, owner._pocket_publisher)
+    assert client.published
+    assert "history" not in client.published[-1]
+
+
+def test_declining_the_prompt_mints_no_key(app, paired, monkeypatch):
+    from carraway.ui.views import pocket as view
+
+    ledger, _ = paired
+    monkeypatch.setattr(Ledger, "vault_key", lambda self: None)
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Cancel)
+    minted = []
+    monkeypatch.setattr(Ledger, "new_vault_key", lambda self: minted.append(1))
+
+    view.PocketCard(ledger)._vault_key()
+    assert minted == []
+
+
+def test_agreeing_mints_a_key_and_shows_it_once(app, paired, monkeypatch):
+    from carraway.ui.views import pocket as view
+
+    ledger, _ = paired
+    monkeypatch.setattr(Ledger, "vault_key", lambda self: None)
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(Ledger, "new_vault_key", lambda self: "ABCDEFGHJKMNPQRSTVWXYZ012")
+
+    shown = []
+
+    class Stub(QDialog):
+        def __init__(self, key, where, parent=None):
+            super().__init__(parent)
+            shown.append(key)
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(view, "VaultKeyDialog", Stub)
+    view.PocketCard(ledger)._vault_key()
+    # Shown grouped, so it can be read off the screen a chunk at a time.
+    assert shown == ["ABCDE-FGHJK-MNPQR-STVWX-YZ012"]
+
+
+def test_the_key_is_never_in_what_is_published(app, paired, monkeypatch):
+    """The one thing that would undo the whole design."""
+    import json
+
+    from carraway.ui.views import pocket as view
+
+    ledger, client = paired
+    key = "ABCDEFGHJKMNPQRSTVWXYZ012"
+    monkeypatch.setattr(Ledger, "vault_key", lambda self: key)
+
+    owner = QWidget()
+    view.publish_in_background(owner, ledger)
+    _settle(app, owner._pocket_publisher)
+    assert key not in json.dumps(client.published[-1])

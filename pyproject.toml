@@ -26,6 +26,10 @@ gui = ["PySide6>=6.6"]
 # Bank sync needs no HTTP library — urllib does the job — but a secret belongs
 # in the OS keyring rather than a file. Optional, with a documented fallback.
 sync = ["keyring>=24.0"]
+# Carraway Pocket puts a copy of your history on a server you run. It is
+# encrypted here first, with a key that server never sees, and AES-GCM is not
+# something to hand-roll -- so the one real cryptographic dependency.
+pocket = ["keyring>=24.0", "cryptography>=42.0"]
 dev = ["pytest>=8.0", "ruff>=0.6"]
 
 [project.scripts]

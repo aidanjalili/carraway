@@ -284,6 +284,48 @@ class AddPhoneDialog(QDialog):
         layout.addWidget(buttons)
 
 
+class VaultKeyDialog(QDialog):
+    """Shows the vault key. The one time it is ever displayed."""
+
+    def __init__(self, key: str, where: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Your vault key")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(12)
+
+        heading = QLabel("Type this into Pocket on your phone")
+        heading.setObjectName("SectionHeading")
+        layout.addWidget(heading)
+
+        field = QLineEdit(key)
+        field.setReadOnly(True)
+        font = QFont("monospace")
+        font.setPointSize(font.pointSize() + 5)
+        field.setFont(font)
+        field.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(field)
+
+        explain = QLabel(
+            "Your history is encrypted with this before it leaves this computer, "
+            "so the server stores something it cannot read — and neither can "
+            "anyone who takes the server.<br><br>"
+            f"It is kept in {where}. You only need to type it into each phone "
+            "once. If you lose it, make a new one and enter that instead; the "
+            "old history simply becomes unreadable."
+        )
+        explain.setWordWrap(True)
+        explain.setTextFormat(Qt.TextFormat.RichText)
+        explain.setObjectName("Muted")
+        layout.addWidget(explain)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
+
+
 class PocketCard(Card):
     """The whole Pocket section of Settings, in one self-contained card."""
 
@@ -359,6 +401,10 @@ class PocketCard(Card):
 
         self._button("Collect now", self._collect, primary=True)
         self._button("Add a phone…", self._add_phone)
+        self._button(
+            "Show vault key…" if self.ledger.vault_key() else "Encrypt my history…",
+            self._vault_key,
+        )
         self._button("Disconnect", self._disconnect)
         self.buttons.addStretch(1)
         self._refresh_status()
@@ -514,6 +560,38 @@ class PocketCard(Card):
             lambda _: self._refresh_status(),
             lambda message: QMessageBox.warning(self, "Could not revoke", message),
         )
+
+    def _vault_key(self) -> None:
+        """Show the vault key, minting one the first time.
+
+        Sending history at all is opt-in, and this is the switch: until there
+        is a key, nothing but category names and figures ever leaves.
+        """
+        from ...sync import credentials
+
+        key = self.ledger.vault_key()
+        if key is None:
+            agreed = QMessageBox.question(
+                self,
+                "Send your history to your phone?",
+                "Carraway will encrypt the last 90 days of transactions and put "
+                "them where your phone can read them.\n\n"
+                "The key never leaves this computer, so the server stores "
+                "something it cannot read. You type the key into your phone "
+                "once.\n\nWithout this, only category names and figures are "
+                "sent.",
+                QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Yes,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if agreed != QMessageBox.StandardButton.Yes:
+                return
+            key = self.ledger.new_vault_key()
+
+        from ...sync.vault import format_key
+
+        VaultKeyDialog(format_key(key), credentials.describe_store(), self).exec()
+        publish_in_background(self, self.ledger)
+        self.rebuild()
 
     def _disconnect(self) -> None:
         confirm = QMessageBox.question(

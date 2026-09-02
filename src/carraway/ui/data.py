@@ -294,6 +294,73 @@ class Ledger:
             )
         return made
 
+    # -- the encrypted history ---------------------------------------------
+
+    def vault_key(self) -> str | None:
+        """The key that seals the history, or None if there is not one yet."""
+        from ..sync import credentials
+
+        return credentials.load("pocket_vault_key")
+
+    def new_vault_key(self) -> str:
+        """Mint a key and keep it. Shown once, typed into the phone once.
+
+        Replacing an existing key makes every published history unreadable,
+        which is the point of a rotation -- the caller is expected to have
+        asked first.
+        """
+        from ..sync import credentials
+        from ..sync.vault import new_key
+
+        key = new_key()
+        credentials.store("pocket_vault_key", key)
+        return key
+
+    def forget_vault_key(self) -> None:
+        from ..sync import credentials
+
+        credentials.delete("pocket_vault_key")
+
+    def pocket_history(self, days: int = 90) -> dict:
+        """The recent history, for reading on the phone.
+
+        Everything in here is sealed before it leaves, so it can afford to be
+        the real thing: dates, descriptions, amounts, categories and which
+        account. That is what makes "what did I spend on Tuesday" answerable
+        away from the laptop.
+
+        Bounded to a window rather than the whole ledger. A phone showing
+        three years of statements is not more useful than one showing three
+        months, and every row is a row that has to be encrypted, sent, and
+        stored on a box that does not need it.
+        """
+        from datetime import timedelta
+
+        cutoff = date.today() - timedelta(days=days)
+        names = {a.id: a.name for a in self.accounts}
+        rows = [
+            {
+                "date": tx.date.isoformat(),
+                "description": tx.description,
+                "amount": f"{tx.amount.decimal:.2f}",
+                "category": self.category_of(tx),
+                "account": names.get(tx.account_id, ""),
+            }
+            for tx in self.transactions
+            if tx.date >= cutoff and not tx.is_transfer
+        ]
+        rows.sort(key=lambda row: row["date"], reverse=True)
+        return {"days": days, "transactions": rows}
+
+    def sealed_history(self, days: int = 90) -> dict | None:
+        """The history, encrypted. None when no key has been set up."""
+        from ..sync.vault import seal
+
+        key = self.vault_key()
+        if not key:
+            return None
+        return seal(self.pocket_history(days), key).as_json()
+
     def pocket_snapshot(self) -> dict:
         """The small summary the phone shows.
 
@@ -356,11 +423,20 @@ class Ledger:
         return {"budgets": lines, "summaries": summaries}
 
     def publish_to_pocket(self) -> str | None:
-        """Send the summary. Returns when the server stored it, or None."""
+        """Send the summary, and the sealed history if there is a key.
+
+        The summary travels in the clear because it is category names and
+        figures. The history does not, and is encrypted here before the
+        request is built -- the server is handed a blob it cannot read.
+        """
         client = self.pocket_client()
         if client is None:
             return None
-        return client.publish(self.pocket_snapshot())
+        payload = dict(self.pocket_snapshot())
+        sealed = self.sealed_history()
+        if sealed is not None:
+            payload["history"] = sealed
+        return client.publish(payload)
 
     # -- budgets the user sets and comes back to ---------------------------
 
