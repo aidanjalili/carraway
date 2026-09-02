@@ -146,6 +146,102 @@ class Ledger:
             key=lambda a: (order.get(a.type, 9), a.name.lower()),
         )
 
+    # -- the phone inbox ---------------------------------------------------
+
+    def pocket_client(self):
+        """A client for the configured inbox, or None if none is set up."""
+        from ..sync import credentials
+        from ..sync.pocket import PocketClient
+
+        url = self.setting("pocket_url")
+        if not url:
+            return None
+        token = credentials.load("pocket_token")
+        if not token:
+            return None
+        return PocketClient(str(url), token)
+
+    def collect_from_pocket(self) -> dict:
+        """Bring in everything typed on the phone. Returns what happened.
+
+        Written to the local database *before* the server is told, so a
+        connection dropping between the two leaves entries to be collected
+        again rather than gone. Carraway refuses to import the same
+        transaction twice, so arriving twice is survivable; never arriving
+        is not.
+        """
+        from ..sync.pocket import to_transactions
+
+        client = self.pocket_client()
+        if client is None:
+            return {"configured": False, "added": 0, "unmatched": []}
+
+        entries = client.pending()
+        if not entries:
+            return {"configured": True, "added": 0, "skipped": 0, "unmatched": []}
+
+        ready, unmatched = to_transactions(entries, {a.name: a.id for a in self.accounts})
+        added = skipped = 0
+        if ready:
+            conn = db.connect(self.path)
+            added, skipped = db.insert_transactions(conn, ready)
+            conn.close()
+
+        # Only claim what was actually stored. An entry naming an account
+        # this ledger does not have stays on the server, so it is not lost
+        # while the user works out what to call it.
+        stored = {e.id for e in entries} - {e.id for e in unmatched}
+        client.claim(sorted(stored))
+
+        self.load()
+        return {
+            "configured": True,
+            "added": added,
+            "skipped": skipped,
+            "unmatched": [e.description for e in unmatched],
+        }
+
+    def pocket_snapshot(self) -> dict:
+        """The small summary the phone shows: what is left, per budget line.
+
+        Deliberately the least that answers "can I afford this?" — category
+        names and three figures each. No merchants, no transactions, no
+        account names, nothing that says where the money is.
+        """
+        out: list[dict] = []
+        for budget in self.budgets:
+            state = self.budget_status(budget)
+            if state.finished or not state.started:
+                continue
+            for line in state.lines:
+                if line.unbudgeted:
+                    continue
+                per_day = (
+                    Money(line.remaining.minor // state.days_left, line.remaining.currency)
+                    if state.days_left > 0
+                    else None
+                )
+                out.append(
+                    {
+                        "category": line.category,
+                        "allowance": f"{line.allowance.decimal:.2f}",
+                        "spent": f"{line.spent.decimal:.2f}",
+                        "remaining": f"{line.remaining.decimal:.2f}",
+                        "note": (
+                            f"{budget.name} · {state.days_left} days left"
+                            + (f" · {per_day.format()}/day" if per_day else "")
+                        ),
+                    }
+                )
+        return {"budgets": out}
+
+    def publish_to_pocket(self) -> str | None:
+        """Send the summary. Returns when the server stored it, or None."""
+        client = self.pocket_client()
+        if client is None:
+            return None
+        return client.publish(self.pocket_snapshot())
+
     # -- budgets the user sets and comes back to ---------------------------
 
     def save_budget(self, budget) -> None:

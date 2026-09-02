@@ -1,6 +1,6 @@
 """The Ledger the screens read from. No Qt needed — this is plain logic."""
 
-from datetime import date
+from datetime import date, timedelta
 
 from carraway.core import db
 from carraway.core.models import Account, AccountType, Transaction
@@ -434,3 +434,124 @@ def test_budget_status_uses_the_ledgers_own_categories(tmp_path):
     dining = next(line for line in state.lines if line.category == "Dining")
     assert dining.spent == Money.parse("200")
     assert dining.on_track is True
+
+
+# -- collecting from the phone --------------------------------------------
+
+
+def _pocket_ledger(tmp_path) -> Ledger:
+    path = tmp_path / "pocket.db"
+    conn = db.connect(path)
+    db.upsert_account(conn, Account(id="cash", name="Cash", type=AccountType.CASH))
+    conn.close()
+    ledger = Ledger(path=path)
+    ledger.load()
+    return ledger
+
+
+class _StubInbox:
+    """Stands in for the server, and records what it was told."""
+
+    def __init__(self, entries):
+        self._entries = entries
+        self.claimed: list[str] = []
+        self.published = None
+
+    def pending(self):
+        return self._entries
+
+    def claim(self, ids):
+        self.claimed = list(ids)
+        return len(ids)
+
+    def publish(self, snapshot):
+        self.published = snapshot
+        return "2026-08-31T00:00:00+00:00"
+
+
+def _inbox_entry(**over):
+    from carraway.sync.pocket import InboxEntry
+
+    fields = {
+        "id": "e1",
+        "occurred_on": date(2026, 8, 31),
+        "amount": Money.parse("-24.00"),
+        "description": "Farmers market",
+        "category": "Groceries",
+        "account": "Cash",
+    }
+    fields.update(over)
+    return InboxEntry(**fields)
+
+
+def test_nothing_happens_when_no_inbox_is_configured(tmp_path):
+    ledger = _pocket_ledger(tmp_path)
+    assert ledger.collect_from_pocket() == {"configured": False, "added": 0, "unmatched": []}
+
+
+def test_collecting_stores_the_entry_and_claims_it(tmp_path, monkeypatch):
+    ledger = _pocket_ledger(tmp_path)
+    stub = _StubInbox([_inbox_entry()])
+    monkeypatch.setattr(ledger, "pocket_client", lambda: stub)
+
+    result = ledger.collect_from_pocket()
+    assert result["added"] == 1
+    assert stub.claimed == ["e1"]
+    assert any(t.description == "Farmers market" for t in ledger.transactions)
+
+
+def test_an_entry_for_an_unknown_account_is_neither_stored_nor_claimed(tmp_path, monkeypatch):
+    # It stays on the server so it is not lost while the user works out what
+    # the account should be called.
+    ledger = _pocket_ledger(tmp_path)
+    stub = _StubInbox([_inbox_entry(id="e2", account="Wallet")])
+    monkeypatch.setattr(ledger, "pocket_client", lambda: stub)
+
+    result = ledger.collect_from_pocket()
+    assert result["added"] == 0
+    assert result["unmatched"] == ["Farmers market"]
+    assert stub.claimed == []
+
+
+def test_a_mixed_batch_claims_only_what_was_stored(tmp_path, monkeypatch):
+    ledger = _pocket_ledger(tmp_path)
+    stub = _StubInbox([_inbox_entry(id="ok"), _inbox_entry(id="bad", account="Wallet")])
+    monkeypatch.setattr(ledger, "pocket_client", lambda: stub)
+
+    ledger.collect_from_pocket()
+    assert stub.claimed == ["ok"]
+
+
+def test_collecting_the_same_entry_twice_stores_it_once(tmp_path, monkeypatch):
+    # Entries are stored before they are claimed, so a dropped connection
+    # means one arrives again. Carraway's dedupe is what makes that safe.
+    ledger = _pocket_ledger(tmp_path)
+    stub = _StubInbox([_inbox_entry()])
+    monkeypatch.setattr(ledger, "pocket_client", lambda: stub)
+
+    ledger.collect_from_pocket()
+    second = ledger.collect_from_pocket()
+    assert second["added"] == 0
+    assert second["skipped"] == 1
+    assert sum(1 for t in ledger.transactions if t.description == "Farmers market") == 1
+
+
+def test_the_snapshot_carries_budget_lines_and_nothing_else(tmp_path, monkeypatch):
+    from carraway.analysis.budgets import Budget, Envelope
+
+    ledger = _pocket_ledger(tmp_path)
+    ledger.save_budget(
+        Budget(
+            id="b1",
+            name="This month",
+            starts_on=date.today(),
+            ends_on=date.today() + timedelta(days=20),
+            envelopes=(Envelope("Travel", Money.parse("600")),),
+        )
+    )
+    snapshot = ledger.pocket_snapshot()
+    (line,) = snapshot["budgets"]
+    assert line["category"] == "Travel"
+    assert line["remaining"] == "600.00"
+    # Nothing that says where the money is, or what was bought.
+    assert set(line) == {"category", "allowance", "spent", "remaining", "note"}
