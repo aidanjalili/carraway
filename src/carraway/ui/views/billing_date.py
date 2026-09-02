@@ -33,6 +33,7 @@ class BillingDateDialog(QDialog):
         cadence: str,
         current: date | None,
         parent: QWidget | None = None,
+        suggested: date | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(f"When did {merchant} last bill?")
@@ -56,12 +57,25 @@ class BillingDateDialog(QDialog):
         self.field = QDateEdit()
         self.field.setCalendarPopup(True)
         self.field.setDisplayFormat("yyyy-MM-dd")
-        self.field.setDate(QDate(current) if current else QDate.currentDate())
+        # Prefer what is already set, then a charge in the statements that
+        # looks like this entry, and only then today -- which is a placeholder
+        # rather than an answer.
+        opening = current or suggested
+        self.field.setDate(QDate(opening) if opening else QDate.currentDate())
         # A billing date is in the past by definition -- it already happened.
         self.field.setMaximumDate(QDate.currentDate())
         self.field.dateChanged.connect(lambda _: self._preview())
         form.addRow("Last billed", self.field)
         layout.addLayout(form)
+
+        if suggested is not None and current is None:
+            found = QLabel(
+                f"Found a charge on {suggested.isoformat()} that looks like this "
+                "one, and filled it in. Change it if that is not the right one."
+            )
+            found.setWordWrap(True)
+            found.setObjectName("Accent")
+            layout.addWidget(found)
 
         self.preview = QLabel("")
         self.preview.setObjectName("Muted")
@@ -103,9 +117,10 @@ def prompt(
     cadence: str,
     current: date | None,
     parent: QWidget | None = None,
+    suggested: date | None = None,
 ) -> date | None | object:
     """Ask for a billing date. Returns the date, None to clear, or CANCELLED."""
-    dialog = BillingDateDialog(merchant, cadence, current, parent)
+    dialog = BillingDateDialog(merchant, cadence, current, parent, suggested)
     if dialog.exec() != QDialog.DialogCode.Accepted:
         return CANCELLED
     return dialog.chosen

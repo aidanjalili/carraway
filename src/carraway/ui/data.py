@@ -23,6 +23,19 @@ from ..core.models import Account, AccountType, RecurringSeries, Transaction
 from ..core.money import Money, total
 
 
+def _squash(text: str) -> str:
+    """Letters and digits only, lowercased, with any parenthetical dropped.
+
+    "Patreon (recklessben)" and "Patreon* Membership Internet CA" have to meet
+    somewhere, and the bracketed note is the user's own aside rather than part
+    of the merchant's name.
+    """
+    import re
+
+    without_asides = re.sub(r"\([^)]*\)", " ", text)
+    return "".join(ch for ch in without_asides.lower() if ch.isalnum())
+
+
 @dataclass
 class Ledger:
     """Everything the UI needs, loaded once and recomputed on demand."""
@@ -597,6 +610,33 @@ class Ledger:
         conn.close()
         self.load()
         return True
+
+    def suggest_billed_on(self, series: RecurringSeries):
+        """The most recent charge that looks like this entry, or None.
+
+        For an entry typed in by hand, the date it last billed is usually
+        sitting in the statements already -- it simply was not matched to the
+        entry, which is why detection did not cover it in the first place.
+
+        The matching is deliberately strict. A loose match on any long word
+        offered "Ava Hollis - Apostle island plus food" as the last charge for
+        "SoundCloud Plus", and prefilling a date that confidently wrong is
+        worse than offering nothing: the user would accept it, and every
+        future charge would be projected from a number out of thin air. So
+        the entry's name must appear whole in the description.
+        """
+        needle = _squash(series.merchant)
+        if len(needle) < 4:
+            return None
+        best = None
+        for tx in self.transactions:
+            if tx.is_transfer or not tx.is_outflow:
+                continue
+            if needle not in _squash(tx.description):
+                continue
+            if best is None or tx.date > best:
+                best = tx.date
+        return best
 
     def billed_on(self, series: RecurringSeries):
         """The anchor date on a tracked entry, or None if never set."""

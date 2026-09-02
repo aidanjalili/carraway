@@ -525,7 +525,13 @@ class SubscriptionsView(QWidget):
     def _set_billed_on(self, series) -> None:
         """Give a tracked entry the date its next charge counts forward from."""
         current = self.ledger.billed_on(series)
-        chosen = billing_date.prompt(series.merchant, str(series.cadence), current, self)
+        chosen = billing_date.prompt(
+            series.merchant,
+            str(series.cadence),
+            current,
+            self,
+            suggested=self.ledger.suggest_billed_on(series) if current is None else None,
+        )
         # None is an answer ("I do not know, blank it"), so cancelling needs
         # its own value rather than sharing one with a real choice.
         if chosen is billing_date.CANCELLED:

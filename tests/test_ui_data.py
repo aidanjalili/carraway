@@ -666,3 +666,107 @@ def test_choosing_an_account_wins_over_the_typed_text(tmp_path):
     ledger = _twinned_ledger(tmp_path)
     ledger.set_paid_with(_netflix(ledger), {"paid_via_account": "a1"})
     assert ledger.paid_with(_netflix(ledger)) == "Card"
+
+
+# -- suggesting the date a tracked entry last billed ---------------------
+
+
+def _with_charges(tmp_path, merchant: str, rows: list[tuple[str, str]]) -> Ledger:
+    """A tracked entry with no date, plus some statement history."""
+    from datetime import date as _d
+
+    path = tmp_path / "suggest.db"
+    conn = db.connect(path)
+    db.upsert_account(conn, Account(id="a1", name="Card", type=AccountType.CREDIT_CARD))
+    db.insert_transactions(
+        conn,
+        [
+            Transaction(
+                id=f"s{index}",
+                account_id="a1",
+                date=_d.fromisoformat(when),
+                amount=Money.parse("-8.00"),
+                description=description,
+                merchant=description,
+            )
+            for index, (when, description) in enumerate(rows)
+        ],
+    )
+    db.add_manual_subscription(
+        conn, merchant=merchant, amount=Money.parse("-8.00"), cadence="monthly"
+    )
+    conn.close()
+    ledger = Ledger(path=path)
+    ledger.load()
+    return ledger
+
+
+def test_the_most_recent_matching_charge_is_suggested(tmp_path):
+    from datetime import date as _d
+
+    # Descriptions that differ, so detection does not group them into a
+    # series of its own and suppress the tracked entry as a duplicate.
+    ledger = _with_charges(
+        tmp_path,
+        "The Atlantic",
+        [
+            ("2025-02-15", "THE ATLANTIC WWW.THEATLANTDC"),
+            ("2026-02-15", "THE ATLANTIC MAGAZINE WASHINGTON"),
+        ],
+    )
+    series = next(s for s in ledger.series if s.merchant == "The Atlantic")
+    assert ledger.suggest_billed_on(series) == _d(2026, 2, 15)
+
+
+def test_a_bracketed_aside_is_not_part_of_the_merchant_name(tmp_path):
+    from datetime import date as _d
+
+    ledger = _with_charges(
+        tmp_path,
+        "Patreon (recklessben)",
+        [("2026-08-28", "Patreon* Membership Internet CA")],
+    )
+    series = next(s for s in ledger.series if s.merchant.startswith("Patreon"))
+    assert ledger.suggest_billed_on(series) == _d(2026, 8, 28)
+
+
+def test_a_loose_word_match_is_refused(tmp_path):
+    """The real one: "Ava Hollis - Apostle island plus food" was being offered
+    as the last charge for "SoundCloud Plus". A confidently wrong date is
+    worse than none -- it would be accepted, and then projected from forever.
+    """
+    ledger = _with_charges(
+        tmp_path, "SoundCloud Plus", [("2026-04-14", "Ava Hollis - Apostle island plus food")]
+    )
+    series = next(s for s in ledger.series if s.merchant == "SoundCloud Plus")
+    assert ledger.suggest_billed_on(series) is None
+
+
+def test_nothing_matching_suggests_nothing(tmp_path):
+    ledger = _with_charges(tmp_path, "Grok", [("2026-04-14", "TESCO SUPERSTORE")])
+    series = next(s for s in ledger.series if s.merchant == "Grok")
+    assert ledger.suggest_billed_on(series) is None
+
+
+def test_money_coming_in_is_never_a_subscription_charge(tmp_path):
+    from carraway.core.models import Transaction as _T
+
+    ledger = _with_charges(tmp_path, "Headspace", [])
+    conn = db.connect(ledger.path)
+    db.insert_transactions(
+        conn,
+        [
+            _T(
+                id="refund",
+                account_id="a1",
+                date=date(2026, 5, 1),
+                amount=Money.parse("70.00"),
+                description="HEADSPACE REFUND",
+                merchant="HEADSPACE",
+            )
+        ],
+    )
+    conn.close()
+    ledger.load()
+    series = next(s for s in ledger.series if s.merchant == "Headspace")
+    assert ledger.suggest_billed_on(series) is None
