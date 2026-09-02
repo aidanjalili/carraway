@@ -319,3 +319,93 @@ def test_rotating_the_key_makes_the_old_history_unreadable(tmp_path):
     sealed = vault.seal(ledger.pocket_history(), "ABCDEFGHJKMNPQRSTVWXYZ0123", iterations=1000)
     with pytest.raises(vault.VaultError):
         vault.open_sealed(sealed, "ZYXWVTSRQPNMKJHGFEDCBA9876")
+
+
+# -- what the server can and cannot do with a public key ----------------
+
+
+def test_the_server_can_seal_but_never_open():
+    """The whole reason for public-key here. Symmetric encryption cannot do
+    this: whatever seals it also opens it, so a server able to write is a
+    server able to read everything it ever wrote."""
+    key = vault.new_key()
+    public = vault.public_jwk(key)
+
+    blob = vault.seal_to_public(_payload(), public)
+    # Everything the server holds, and nothing else.
+    assert vault.open_to_public(blob, key) == _payload()
+    with pytest.raises(vault.VaultError):
+        vault.open_to_public(blob, vault.new_key())
+
+
+def test_the_public_key_gives_nothing_away():
+    key = vault.new_key()
+    published = json.dumps(vault.public_jwk(key))
+    assert key not in published
+    assert "d" not in vault.public_jwk(key), "a private scalar was published"
+
+
+def test_the_same_vault_key_always_gives_the_same_public_key():
+    """Or the phone could never derive the private half from what it has."""
+    key = vault.new_key()
+    assert vault.public_jwk(key) == vault.public_jwk(key)
+    assert vault.public_jwk(key) == vault.public_jwk(vault.format_key(key).lower())
+
+
+def test_different_vaults_get_different_keys():
+    assert len({json.dumps(vault.public_jwk(vault.new_key())) for _ in range(30)}) == 30
+
+
+def test_two_seals_of_the_same_thing_share_no_material():
+    """A fresh sender key every time."""
+    public = vault.public_jwk(vault.new_key())
+    first = vault.seal_to_public(_payload(), public)
+    second = vault.seal_to_public(_payload(), public)
+    assert first["epk"] != second["epk"]
+    assert first["nonce"] != second["nonce"]
+    assert first["ciphertext"] != second["ciphertext"]
+
+
+def test_the_sealed_blob_does_not_contain_the_plaintext():
+    key = vault.new_key()
+    blob = vault.seal_to_public(_payload(), vault.public_jwk(key))
+    text = json.dumps(blob)
+    for secret in ("COFFEE", "RENT", "934.37"):
+        assert secret not in text
+    assert secret not in base64.b64decode(blob["ciphertext"]).decode("latin-1")
+
+
+def test_tampering_with_the_sender_key_is_caught():
+    """A server swapping the ephemeral key produces a different shared secret
+    and therefore a decryption failure, not a plausible lie."""
+    key = vault.new_key()
+    blob = vault.seal_to_public(_payload(), vault.public_jwk(key))
+    other = vault.seal_to_public(_payload(), vault.public_jwk(vault.new_key()))
+    blob["epk"] = other["epk"]
+    with pytest.raises(vault.VaultError):
+        vault.open_to_public(blob, key)
+
+
+def test_tampering_with_the_ciphertext_is_caught():
+    key = vault.new_key()
+    blob = vault.seal_to_public(_payload(), vault.public_jwk(key))
+    raw = bytearray(base64.b64decode(blob["ciphertext"]))
+    raw[0] ^= 0x01
+    blob["ciphertext"] = base64.b64encode(bytes(raw)).decode()
+    with pytest.raises(vault.VaultError):
+        vault.open_to_public(blob, key)
+
+
+def test_a_malformed_blob_raises_rather_than_crashing():
+    key = vault.new_key()
+    for blob in ({}, {"epk": {}}, {"epk": {"x": "!!", "y": "!!"}, "nonce": "", "ciphertext": ""}):
+        with pytest.raises(vault.VaultError):
+            vault.open_to_public(blob, key)
+
+
+def test_the_derived_scalar_is_always_a_usable_key():
+    """Zero and out-of-range are the two ways this can fail."""
+    order = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+    for _ in range(50):
+        scalar = vault._scalar(vault.new_key())
+        assert 0 < scalar < order

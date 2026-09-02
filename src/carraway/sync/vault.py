@@ -184,3 +184,149 @@ def open_sealed(sealed: Sealed, vault_key: str) -> dict:
             "That vault key does not open this history — or the stored copy has been altered."
         ) from exc
     return json.loads(raw.decode("utf-8"))
+
+
+# -- letting the server write something it cannot read ---------------------
+#
+# Once the server fetches from SimpleFIN itself, it produces data the phone
+# needs to read and the server should not. Symmetric encryption cannot do
+# that: whatever key seals it also opens it, so a server that can encrypt can
+# decrypt, and a compromise reads everything it ever wrote.
+#
+# Public-key does. The server is given a public key and can only seal to it.
+# The private half is derived from the vault key, which the laptop and phone
+# already have and the server never sees -- so there is no new secret for
+# anyone to keep, and no moment where a private key crosses the network.
+#
+# ECDH over P-256, HKDF-SHA256, AES-256-GCM. P-256 rather than X25519 because
+# the far end is Web Crypto and X25519 is not available everywhere Safari is.
+
+EC_INFO = b"carraway-pocket-ec-v1"
+SEAL_INFO = b"carraway-pocket-seal-v1"
+
+
+def _ec():
+    try:
+        from cryptography.hazmat.primitives.asymmetric import ec
+    except ImportError as exc:  # pragma: no cover - depends on the install
+        raise VaultError(
+            "This needs the 'cryptography' package. Install Carraway with the [pocket] extra."
+        ) from exc
+    return ec
+
+
+def _scalar(vault_key: str) -> int:
+    """The private scalar for this vault key. Deterministic, never stored.
+
+    Derived rather than generated so the phone can arrive at the same key
+    from the vault key it already holds, without a private key ever being
+    sent anywhere.
+    """
+    import hashlib
+    import hmac as hmac_mod
+
+    cleaned = normalise_key(vault_key)
+    if not cleaned:
+        raise VaultError("That does not look like a vault key.")
+    # HKDF-Expand with an empty salt; one block is all that is needed.
+    prk = hmac_mod.new(b"\x00" * 32, cleaned.encode("ascii"), hashlib.sha256).digest()
+    raw = hmac_mod.new(prk, EC_INFO + b"\x01", hashlib.sha256).digest()
+
+    order = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+    # Reduced into range and never zero, which are the two ways a scalar can
+    # fail to be a valid key.
+    return (int.from_bytes(raw, "big") % (order - 1)) + 1
+
+
+def private_key(vault_key: str):
+    """The EC private key for this vault. Lives only in memory, here or on the phone."""
+    ec = _ec()
+    return ec.derive_private_key(_scalar(vault_key), ec.SECP256R1())
+
+
+def public_jwk(vault_key: str) -> dict:
+    """The public half, in the form Web Crypto imports. Safe to publish."""
+    numbers = private_key(vault_key).public_key().public_numbers()
+    return {
+        "kty": "EC",
+        "crv": "P-256",
+        "x": _b64url(numbers.x.to_bytes(32, "big")),
+        "y": _b64url(numbers.y.to_bytes(32, "big")),
+    }
+
+
+def _b64url(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def _unb64url(text: str) -> bytes:
+    padding = "=" * (-len(text) % 4)
+    return base64.urlsafe_b64decode(text + padding)
+
+
+def _shared(private, peer_public) -> bytes:
+    """The AES key both ends arrive at, without either sending it."""
+    import hashlib
+    import hmac as hmac_mod
+
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    secret = private.exchange(ec.ECDH(), peer_public)
+    prk = hmac_mod.new(b"\x00" * 32, secret, hashlib.sha256).digest()
+    return hmac_mod.new(prk, SEAL_INFO + b"\x01", hashlib.sha256).digest()
+
+
+def seal_to_public(payload: dict, recipient: dict) -> dict:
+    """Encrypt so only the holder of the matching vault key can read it.
+
+    Used by the server, which has the public key and nothing else. A fresh
+    sender key every time, so two seals share no derived material.
+    """
+    ec = _ec()
+    peer = ec.EllipticCurvePublicNumbers(
+        int.from_bytes(_unb64url(str(recipient["x"])), "big"),
+        int.from_bytes(_unb64url(str(recipient["y"])), "big"),
+        ec.SECP256R1(),
+    ).public_key()
+
+    ephemeral = ec.generate_private_key(ec.SECP256R1())
+    key = _shared(ephemeral, peer)
+    nonce = os.urandom(NONCE_BYTES)
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    ciphertext = _aesgcm(key).encrypt(nonce, raw, None)
+
+    numbers = ephemeral.public_key().public_numbers()
+    return {
+        "algorithm": "ECDH-P256+AES-256-GCM",
+        "epk": {
+            "kty": "EC",
+            "crv": "P-256",
+            "x": _b64url(numbers.x.to_bytes(32, "big")),
+            "y": _b64url(numbers.y.to_bytes(32, "big")),
+        },
+        "nonce": _b64(nonce),
+        "ciphertext": _b64(ciphertext),
+    }
+
+
+def open_to_public(blob: dict, vault_key: str) -> dict:
+    """Decrypt something the server sealed to this vault's public key."""
+    ec = _ec()
+    try:
+        epk = blob["epk"]
+        peer = ec.EllipticCurvePublicNumbers(
+            int.from_bytes(_unb64url(str(epk["x"])), "big"),
+            int.from_bytes(_unb64url(str(epk["y"])), "big"),
+            ec.SECP256R1(),
+        ).public_key()
+    except Exception as exc:
+        raise VaultError("The stored data is not readable.") from exc
+
+    key = _shared(private_key(vault_key), peer)
+    try:
+        raw = _aesgcm(key).decrypt(_unb64(blob["nonce"]), _unb64(blob["ciphertext"]), None)
+    except Exception as exc:
+        raise VaultError(
+            "That vault key does not open this — or the stored copy has been altered."
+        ) from exc
+    return json.loads(raw.decode("utf-8"))
