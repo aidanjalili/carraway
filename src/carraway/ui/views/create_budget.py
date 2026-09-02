@@ -50,7 +50,7 @@ from ...analysis import budgets as budgets_mod
 from ...core.money import Money
 from .. import theme
 from ..data import Ledger
-from ..widgets import Card, FlowLayout, InfoDot, enable_row_hover, refresh_everything
+from ..widgets import Card, FlowLayout, InfoDot, enable_row_hover, refresh_everything, shorten
 
 _HEADERS = ["Category", "You usually spend", "Allowance", "Change"]
 
@@ -552,7 +552,7 @@ class CreateBudgetView(QWidget):
         for account in self.ledger.accounts:
             if account.closed:
                 continue
-            box = QCheckBox(account.name[:24])
+            box = QCheckBox(shorten(account.name, 24))
             box.setToolTip(f"{account.name} — {account.institution or account.type}")
             box.setChecked(False)
             box.toggled.connect(lambda _on: self._account_toggled())

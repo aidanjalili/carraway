@@ -717,3 +717,23 @@ def test_the_key_is_never_in_what_is_published(app, paired, monkeypatch):
     view.publish_in_background(owner, ledger)
     _settle(app, owner._pocket_publisher)
     assert key not in json.dumps(client.published[-1])
+
+
+def test_the_sidebar_never_promises_more_privacy_than_it_delivers(app, ledger, monkeypatch):
+    """The worst kind of stale string: a privacy promise in a corner nobody
+    rereads, left over from before the app started sending anything."""
+    from carraway.ui.main_window import MainWindow
+
+    window = MainWindow(ledger.path)
+    assert window.privacy.text() == "Nothing leaves this device."
+
+    monkeypatch.setattr(Ledger, "pocket_configured", property(lambda self: True))
+    monkeypatch.setattr(Ledger, "vault_key", lambda self: None)
+    window._describe_privacy()
+    said = window.privacy.text()
+    assert "Nothing leaves" not in said
+    assert "stays here" in said
+
+    monkeypatch.setattr(Ledger, "vault_key", lambda self: "ABCDEFGHJKMNPQRSTVWXYZ012")
+    window._describe_privacy()
+    assert "encrypted" in window.privacy.text()

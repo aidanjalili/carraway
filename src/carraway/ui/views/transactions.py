@@ -37,7 +37,7 @@ from ...core.models import Transaction
 from ...core.money import Money
 from .. import theme
 from ..data import Ledger
-from ..widgets import BalanceBanner, FilterStrip, enable_row_hover, refresh_everything
+from ..widgets import BalanceBanner, FilterStrip, enable_row_hover, refresh_everything, shorten
 from . import cash
 
 # Ranges someone actually asks for, with None meaning "everything".
@@ -341,6 +341,11 @@ class TransactionsView(QWidget):
 
         self._build_tabs()
         self._reset_dates()
+        # The banner was built empty and only filled in when a tab was
+        # clicked, so opening Transactions showed a blank card where the
+        # balance goes -- and the two cash buttons visible over it, which
+        # belong to a cash account rather than to "all accounts".
+        self._update_balance(self.tabs.tabData(self.tabs.currentIndex()))
         self._update_count()
 
     def _reset_dates(self) -> None:
@@ -473,7 +478,8 @@ class TransactionsView(QWidget):
         # Busiest first: an account with three transactions is rarely the one
         # someone opened this screen to look at.
         for account in sorted(self.ledger.accounts, key=lambda a: -counts.get(a.id, 0)):
-            index = self.tabs.addTab(f"{account.name[:26]}  ({counts.get(account.id, 0):,})")
+            label = f"{shorten(account.name, 26)}  ({counts.get(account.id, 0):,})"
+            index = self.tabs.addTab(label)
             self.tabs.setTabData(index, account.id)
             self.tabs.setTabToolTip(
                 index, f"{account.name} — {account.institution or account.type}"

@@ -33,6 +33,7 @@ from .views.spending import SpendingView
 from .views.subscriptions import SubscriptionsView
 from .views.transactions import TransactionsView
 from .views.upcoming import UpcomingView
+from .widgets import shorten
 
 # Net worth first: it is the one number that answers "how am I doing", and it
 # is what someone opening the app wants before any breakdown of it.
@@ -187,12 +188,27 @@ class MainWindow(QMainWindow):
         accounts = QLabel(f"{len(self.ledger.accounts)} accounts")
         accounts.setObjectName("Muted")
         accounts.setStyleSheet("padding: 0 8px; font-size: 12px;")
-        privacy = QLabel("Nothing leaves this device.")
-        privacy.setObjectName("Muted")
-        privacy.setStyleSheet("padding: 4px 8px 0 8px; font-size: 11px;")
+        # The claim has to stay true. With Pocket connected, budget figures do
+        # leave and the history leaves encrypted, so saying "nothing" would be
+        # a privacy promise the app is not keeping -- the worst kind of stale
+        # string to have in a corner nobody rereads.
+        self.privacy = QLabel("")
+        self.privacy.setObjectName("Muted")
+        self.privacy.setWordWrap(True)
+        self.privacy.setStyleSheet("padding: 4px 8px 0 8px; font-size: 11px;")
+        self._describe_privacy()
         layout.addWidget(accounts)
-        layout.addWidget(privacy)
+        layout.addWidget(self.privacy)
         return sidebar
+
+    def _describe_privacy(self) -> None:
+        """Say what actually leaves, which depends on what is switched on."""
+        if not self.ledger.pocket_configured:
+            self.privacy.setText("Nothing leaves this device.")
+        elif self.ledger.vault_key():
+            self.privacy.setText("Your history goes to Pocket, encrypted.")
+        else:
+            self.privacy.setText("Budget figures go to Pocket. Your history stays here.")
 
     # -- syncing ---------------------------------------------------------
 
@@ -397,6 +413,7 @@ class MainWindow(QMainWindow):
     def refresh_all(self) -> None:
         """Reload every screen after the ledger changes underneath them."""
         self._rebuild_budget_nav()
+        self._describe_privacy()
         for index in range(self.stack.count()):
             view = self.stack.widget(index)
             if hasattr(view, "refresh"):
@@ -431,7 +448,7 @@ class MainWindow(QMainWindow):
         for budget in budgets:
             index = self.stack.addWidget(BudgetDetailView(self.ledger, budget.id))
             self._budget_screens[budget.id] = index
-            button = QPushButton(budget.name[:22])
+            button = QPushButton(shorten(budget.name, 22))
             button.setObjectName("NavButton")
             button.setCheckable(True)
             button.setCursor(Qt.CursorShape.PointingHandCursor)

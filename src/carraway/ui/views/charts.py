@@ -21,6 +21,7 @@ from PySide6.QtWidgets import QSizePolicy, QToolTip, QWidget
 
 from ...core.money import Money
 from .. import theme
+from ..widgets import shorten
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,7 +238,7 @@ class PieChart(_ChartBase):
             painter.drawText(
                 QRectF(left + 18, row_top, legend_width - 90, row_height),
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                item.label[:20],
+                shorten(item.label, 20),
             )
             painter.drawText(
                 QRectF(left + legend_width - 84, row_top, 72, row_height),
@@ -309,7 +310,7 @@ class BarChart(_ChartBase):
             painter.drawText(
                 QRectF(margin, top, label_width - 8, row_height),
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                item.label[:20],
+                shorten(item.label, 20),
             )
             painter.setPen(QColor(palette.muted))
             painter.drawText(

@@ -29,7 +29,7 @@ from ...analysis import networth
 from ...core.money import Money
 from .. import theme
 from ..data import Ledger
-from ..widgets import Card, SortableItem, StatCard, StatRow
+from ..widgets import Card, SortableItem, StatCard, StatRow, shorten
 
 
 class NetWorthChart(QWidget):
@@ -301,7 +301,7 @@ class NetWorthView(QWidget):
         for account in self.ledger.accounts:
             if account.id not in self.ledger.balances:
                 continue
-            box = QCheckBox(account.name[:22])
+            box = QCheckBox(shorten(account.name, 22))
             box.setChecked(account.id not in excluded)
             box.setCursor(Qt.CursorShape.PointingHandCursor)
             box.setToolTip(self._account_tooltip(account))

@@ -274,3 +274,23 @@ def test_the_window_reloads_when_the_date_changes(app, ledger, monkeypatch):
     # And it does not keep firing once it has caught up.
     window._check_the_date()
     assert reloads == [1]
+
+
+def test_transactions_shows_its_balance_the_moment_it_opens(app, ledger):
+    """It was filled in only when a tab was clicked, so the screen opened
+    with a blank card where the balance goes -- and with the two cash
+    buttons showing over it, which belong to a cash account."""
+    from carraway.core import db
+    from carraway.core.money import Money
+    from carraway.ui.views.transactions import TransactionsView
+
+    conn = db.connect(ledger.path)
+    db.record_balance(conn, "a1", Money.parse("-250.00"), date.today())
+    conn.close()
+    ledger.load()
+
+    view = TransactionsView(ledger)
+    assert view.balance.amount.text().strip(), "the balance banner opened empty"
+    assert view.balance.caption.text().strip()
+    assert view.add_txn_button.isVisible() is False
+    assert view.set_balance_button.isVisible() is False

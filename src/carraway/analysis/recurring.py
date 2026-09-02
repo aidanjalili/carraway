@@ -91,6 +91,22 @@ _CORP_SUFFIX = {"INC", "INC.", "LLC", "LLC.", "LTD", "LTD.", "CORP", "CORP.", "C
 _TLD = re.compile(r"\.(COM|NET|ORG|IO|CO|US|APP|GOV)$")
 
 
+def ordinal(day: int) -> str:
+    """A day of the month as people write it: 1st, 2nd, 3rd, 21st, 22nd.
+
+    Every one of these used to be "th", so Upcoming explained itself with
+    "most on the 3th of the month" and "the 22th". The teens are the reason
+    this is not simply a lookup on the last digit -- 11th, 12th and 13th all
+    take "th" despite ending 1, 2 and 3.
+
+    >>> [ordinal(n) for n in (1, 2, 3, 4, 11, 12, 13, 21, 22, 23, 30, 31)]
+    ['1st', '2nd', '3rd', '4th', '11th', '12th', '13th', '21st', '22nd', '23rd', '30th', '31st']
+    """
+    if 11 <= day % 100 <= 13:
+        return f"{day}th"
+    return f"{day}{ {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th') }"
+
+
 def normalise_merchant(description: str) -> str:
     """Reduce a raw bank description to a stable merchant key.
 

@@ -101,6 +101,23 @@ def labelled(text: str, explanation: str, *, heading: bool = False) -> QWidget:
     return holder
 
 
+def shorten(text: str, limit: int) -> str:
+    """Trim to `limit`, with an ellipsis so the reader knows it was trimmed.
+
+    Slicing alone produced "Alpaca Brokerage (0388" and "EPIC SYSTEMS
+    CORPORATI" -- names that look like data errors rather than labels that
+    ran out of room. A word boundary is preferred when there is one close to
+    the end, because cutting mid-word is what made them read as broken.
+    """
+    if len(text) <= limit:
+        return text
+    cut = text[: limit - 1].rstrip()
+    space = cut.rfind(" ")
+    if space >= limit - 8:
+        cut = cut[:space].rstrip()
+    return f"{cut}…"
+
+
 class Card(QFrame):
     """A bordered panel. Everything on a screen sits in one of these."""
 

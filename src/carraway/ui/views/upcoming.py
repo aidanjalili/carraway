@@ -47,7 +47,9 @@ def _why(series, ledger: Ledger) -> str:
     cadence = series.cadence
     seen = series.occurrences
     if cadence == "monthly" and series.next_expected:
-        return f"{seen} charges, most on the {series.next_expected.day}th of the month"
+        from ...analysis.recurring import ordinal
+
+        return f"{seen} charges, most on the {ordinal(series.next_expected.day)} of the month"
     if cadence in ("weekly", "biweekly"):
         return f"{seen} charges, roughly every {7 if cadence == 'weekly' else 14} days"
     return f"{seen} charges spaced {cadence}, last on {series.last_seen}"

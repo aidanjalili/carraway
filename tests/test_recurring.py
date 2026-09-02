@@ -320,3 +320,19 @@ def test_projection_terminates_on_an_unknown_cadence():
 
     # An unrecognised cadence must not spin: the loop is bounded.
     assert project_from(date(2020, 1, 1), "fortnightly-ish", date(2026, 1, 1))
+
+
+def test_days_of_the_month_read_the_way_people_write_them():
+    """Upcoming explained itself with "most on the 3th of the month"."""
+    from carraway.analysis.recurring import ordinal
+
+    assert ordinal(1) == "1st"
+    assert ordinal(2) == "2nd"
+    assert ordinal(3) == "3rd"
+    assert ordinal(22) == "22nd"
+    assert ordinal(31) == "31st"
+    # The teens are why this is not a lookup on the last digit.
+    assert [ordinal(n) for n in (11, 12, 13)] == ["11th", "12th", "13th"]
+    # And nothing in a month is ever left saying "th" after a 1, 2 or 3.
+    for day in range(1, 32):
+        assert not ordinal(day).endswith(("1th", "2th", "3th")) or day in (11, 12, 13)
