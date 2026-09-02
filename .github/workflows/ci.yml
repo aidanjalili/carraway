@@ -58,7 +58,20 @@ jobs:
           /tmp/fresh/bin/python -c "import carraway; print(carraway.__name__, 'imports')"
           /tmp/fresh/bin/python - <<'PY'
           from importlib.resources import files
-          icon = files("carraway.ui.assets") / "carraway.svg"
+
+          # Addressed as a directory inside carraway.ui, not as the package
+          # carraway.ui.assets. That package's __init__ imports PySide6 to
+          # build a QIcon, and a Qt-free install is the whole point of this
+          # job -- so asking the other way fails on the import rather than
+          # telling you anything about whether the file shipped.
+          icon = files("carraway.ui") / "assets" / "carraway.svg"
           assert icon.is_file(), "the window icon did not ship in the wheel"
           print("icon shipped:", icon)
+
+          # And the engine must stay importable with no Qt at all, which is
+          # the promise that makes the CLI installable on a headless box.
+          import carraway.core.db
+          import carraway.analysis.overview
+          import carraway.sync.pocket
+          print("core imports with no Qt installed")
           PY
