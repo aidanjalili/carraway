@@ -8,6 +8,8 @@ here with its dialogs and its network stubbed.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 pytest.importorskip("PySide6", reason="GUI tests need the [gui] extra")
@@ -76,12 +78,18 @@ def paired(ledger, monkeypatch):
     return ledger, client
 
 
-def _settle(app, runner, limit: int = 200) -> None:
-    """Let the worker thread finish and its queued signals be delivered."""
-    for _ in range(limit):
+def _settle(app, runner, seconds: float = 5.0) -> None:
+    """Let the worker thread finish and its queued signals be delivered.
+
+    Bounded by a deadline rather than a count of event-loop turns. A fixed
+    count is really a bet on how fast the machine is, and on a loaded one the
+    thread can still be running when the turns run out -- which shows up as a
+    test that fails once in a great while and passes on every rerun.
+    """
+    deadline = time.monotonic() + seconds
+    while runner.busy and time.monotonic() < deadline:
         app.processEvents()
-        if not runner.busy:
-            break
+    assert not runner.busy, "the worker thread did not finish in time"
     app.processEvents()
 
 

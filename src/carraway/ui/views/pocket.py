@@ -176,22 +176,31 @@ class AddPhoneDialog(QDialog):
         layout.setContentsMargins(24, 20, 24, 20)
         layout.setSpacing(12)
 
-        heading = QLabel("Point your phone's camera at this")
+        heading = QLabel("Pair your phone")
         heading.setObjectName("SectionHeading")
         layout.addWidget(heading)
+
+        # The heading used to say "point your camera at this", directly
+        # contradicting the instructions below it -- which say not to, on the
+        # one platform this is actually used from. The code is the path that
+        # works on an iPhone; the QR is the convenience for everything else.
+        lead = QLabel(
+            "On iPhone, add Pocket to your Home Screen <b>first</b>, then open it "
+            "from the icon and type the code below. Scanning pairs Safari, and "
+            "iOS keeps a Home Screen app's login separate from Safari — so the "
+            "icon would still say “Not paired”."
+        )
+        lead.setWordWrap(True)
+        lead.setTextFormat(Qt.TextFormat.RichText)
+        lead.setObjectName("Muted")
+        layout.addWidget(lead)
 
         code = QRCode(url)
         code.setFixedSize(260, 260)
         layout.addWidget(code, alignment=Qt.AlignmentFlag.AlignHCenter)
 
-        steps = QLabel(
-            "On iPhone, use <b>Share → Add to Home Screen</b> <i>first</i>, then "
-            "open Pocket from the icon and type the code below. iOS keeps a "
-            "home-screen app's login separate from Safari, so pairing in Safari "
-            "and adding the icon afterwards leaves the app unpaired."
-        )
+        steps = QLabel("Anywhere else, scanning the code above is enough.")
         steps.setWordWrap(True)
-        steps.setTextFormat(Qt.TextFormat.RichText)
         steps.setObjectName("Muted")
         layout.addWidget(steps)
 
