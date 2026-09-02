@@ -843,10 +843,19 @@ class Line:
         return self.change.minor / abs(self.usual.minor) * 100
 
 
+# Categories that cannot be changed inside the window, whatever the detected
+# commitments come to. Subscriptions is the case that matters: cancelling
+# Netflix today does not refund this month's charge, so the whole category is
+# already spent as far as this budget is concerned -- and detection only ever
+# finds the ones it recognises, so the rest would otherwise read as a choice.
+ALWAYS_COMMITTED = ("Subscriptions",)
+
+
 def plan(
     budgeted: Money,
     weights: Mapping[str, Money],
     committed: Mapping[str, Money],
+    always: Sequence[str] = ALWAYS_COMMITTED,
 ) -> list[Line]:
     """What each category may cost, given what is committed and what is left.
 
@@ -863,11 +872,22 @@ def plan(
     Locked lines come last, since the answer to "what do I change" is never
     among them.
     """
-    spare = Money(budgeted.minor - sum(a.minor for a in committed.values()), budgeted.currency)
+    # A category that cannot be changed is committed at what it actually
+    # costs, not merely at the part of it detection recognised.
+    fixed = dict(committed)
+    for name in always:
+        usual = weights.get(name)
+        if usual is None:
+            continue
+        already = fixed.get(name)
+        if already is None or already.minor < usual.minor:
+            fixed[name] = usual
+
+    spare = Money(budgeted.minor - sum(a.minor for a in fixed.values()), budgeted.currency)
 
     discretionary: dict[str, Money] = {}
     for name, usual in weights.items():
-        already = committed.get(name)
+        already = fixed.get(name)
         remainder = usual.minor - already.minor if already is not None else usual.minor
         if remainder > 0:
             discretionary[name] = Money(remainder, usual.currency)
@@ -885,9 +905,9 @@ def plan(
         Line(
             category=name,
             usual=usual,
-            committed=committed.get(name, Money(0, usual.currency)),
+            committed=fixed.get(name, Money(0, usual.currency)),
             allowance=Money(
-                committed.get(name, Money(0, usual.currency)).minor
+                fixed.get(name, Money(0, usual.currency)).minor
                 + shares.get(name, Money(0, usual.currency)).minor,
                 usual.currency,
             ),

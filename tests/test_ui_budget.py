@@ -385,4 +385,56 @@ def test_a_savings_target_that_cannot_be_met_says_so(view):
 def test_the_total_box_suggests_what_is_usually_spent(view):
     """Rather than a made-up figure with no relation to the user's life."""
     view.by_history.setChecked(True)
-    assert "usually spend" in view.total_input.placeholderText()
+    # The figure alone in the box -- spelling out where it came from made a
+    # placeholder too long to read -- and the reason in the dot beside it.
+    placeholder = view.total_input.placeholderText()
+    assert placeholder.replace(".", "").isdigit(), placeholder
+    assert float(placeholder) > 0
+    assert "usually cost you" in view.total_info.explanation
+
+
+def test_editing_an_allowance_updates_its_change_and_the_total(view):
+    """Three numbers that no longer agree is worse than not showing them."""
+    _backwards(view)
+    before = view.total_cells[2].text()
+
+    row = next(
+        r
+        for r in range(view.table.rowCount())
+        if view.table.item(r, 0) is not None
+        and view.table.item(r, 0).data(Qt.ItemDataRole.UserRole)
+        and view.table.item(r, 3).text() != "locked"
+    )
+    usual = view.table.item(row, 1).text()
+    view.table.item(row, 2).setText("1.00")
+
+    assert view.table.item(row, 3).text() != "locked"
+    assert view.total_cells[2].text() != before
+    # And the change for that row is now measured against its usual spend.
+    assert view.table.item(row, 1).text() == usual
+
+
+def test_an_allowance_shows_a_currency_sign(view):
+    _backwards(view)
+    row = next(
+        r
+        for r in range(view.table.rowCount())
+        if view.table.item(r, 0) is not None
+        and view.table.item(r, 0).data(Qt.ItemDataRole.UserRole)
+    )
+    assert view.table.item(row, 2).text().startswith("$")
+
+
+def test_a_typed_allowance_with_a_dollar_sign_is_read_back(view):
+    """It is shown with one, so it has to be accepted with one."""
+    _backwards(view)
+    row = next(
+        r
+        for r in range(view.table.rowCount())
+        if view.table.item(r, 0) is not None
+        and view.table.item(r, 0).data(Qt.ItemDataRole.UserRole)
+    )
+    name = view.table.item(row, 0).text()
+    view.table.item(row, 2).setText("$250.00")
+    saved = {e.category: e.allowance for e in view.envelopes()}
+    assert saved[name] == Money.parse("250.00")

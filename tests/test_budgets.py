@@ -783,3 +783,37 @@ def test_more_saving_means_a_smaller_allowance_every_time():
         if previous is not None:
             assert total.allowance.minor < previous
         previous = total.allowance.minor
+
+
+def test_subscriptions_cannot_be_changed_within_the_window():
+    """Cancelling Netflix today does not refund this month's charge.
+
+    And detection only finds the subscriptions it recognises, so the rest of
+    the category would otherwise read as a discretionary choice: here $144
+    is spent on subscriptions and only $101 of it was detected as recurring.
+    """
+    weights = {"Subscriptions": _money("144.35"), "Dining": _money("900.00")}
+    committed = {"Subscriptions": _money("101.14")}
+    lines = {line.category: line for line in budgets.plan(_money("1044.35"), weights, committed)}
+
+    assert lines["Subscriptions"].locked is True
+    assert lines["Subscriptions"].allowance == _money("144.35")
+    assert lines["Subscriptions"].change == _money("0.00")
+    # And the money it takes comes out of what is left to share.
+    assert lines["Dining"].allowance == _money("900.00")
+
+
+def test_the_locked_list_can_be_overridden():
+    """It is a default, not a law: a different ledger may disagree."""
+    weights = {"Subscriptions": _money("144.35"), "Dining": _money("900.00")}
+    lines = {
+        line.category: line for line in budgets.plan(_money("1044.35"), weights, {}, always=())
+    }
+    assert lines["Subscriptions"].locked is False
+
+
+def test_a_locked_category_with_no_spending_is_not_invented():
+    """Nothing to lock if the user never spends on it."""
+    weights = {"Dining": _money("900.00")}
+    lines = budgets.plan(_money("900.00"), weights, {})
+    assert [line.category for line in lines] == ["Dining"]

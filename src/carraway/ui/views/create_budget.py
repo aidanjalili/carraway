@@ -54,6 +54,16 @@ from ..widgets import Card, FlowLayout, InfoDot, enable_row_hover, refresh_every
 
 _HEADERS = ["Category", "You usually spend", "Allowance", "Change"]
 
+# Wide enough for a five-figure sum and the placeholder beside it. The boxes
+# were sized to 100px, which could not show "4164.35" and its hint at once --
+# the field meant to suggest a number could not display the number.
+_FIGURE_WIDTH = 150
+
+# Tall enough that the editor Qt opens inside a cell is not clipped. At the
+# default height the text of an allowance being typed was cut off top and
+# bottom, which is the one cell on the screen a person actually types into.
+_ROW_HEIGHT = 34
+
 # The two halves of the table. Everything above the divider is a choice;
 # everything below it is a bill that has already been decided.
 _FLEXIBLE_HEADING = "You can change these"
@@ -198,6 +208,7 @@ class CreateBudgetView(QWidget):
         self.ledger = ledger
         self._account_boxes: dict[str, QCheckBox] = {}
         self._filling = False
+        self._has_totals = False
         self._warning = ""
         # A note about something the user just did, shown when nothing is
         # actually wrong. Rendered by _update_total like everything else.
@@ -337,9 +348,10 @@ class CreateBudgetView(QWidget):
         # Filled in from real spending by `_fill`; this is only what shows
         # before there is any history to draw on.
         self.total_input.setPlaceholderText("1200.00")
-        self.total_input.setMaximumWidth(110)
+        self.total_input.setMinimumWidth(_FIGURE_WIDTH)
         total_row.addWidget(self.total_input)
-        total_row.addWidget(InfoDot(_HELP["total"]))
+        self.total_info = InfoDot(_HELP["total"])
+        total_row.addWidget(self.total_info)
         total_row.addStretch(1)
         outer.addLayout(total_row)
 
@@ -361,7 +373,7 @@ class CreateBudgetView(QWidget):
         self.backwards_label.setObjectName("Muted")
         inputs_row.addWidget(self.backwards_label)
         self.income_input = QLineEdit()
-        self.income_input.setMaximumWidth(100)
+        self.income_input.setMinimumWidth(_FIGURE_WIDTH)
         inputs_row.addWidget(self.income_input)
         self.income_info = InfoDot(_HELP["income"])
         inputs_row.addWidget(self.income_info)
@@ -370,7 +382,7 @@ class CreateBudgetView(QWidget):
         save_label.setObjectName("Muted")
         inputs_row.addWidget(save_label)
         self.saving_input = QLineEdit()
-        self.saving_input.setMaximumWidth(100)
+        self.saving_input.setMinimumWidth(_FIGURE_WIDTH)
         self.saving_input.setPlaceholderText("0.00")
         inputs_row.addWidget(self.saving_input)
         inputs_row.addWidget(InfoDot(_HELP["saving"]))
@@ -379,7 +391,7 @@ class CreateBudgetView(QWidget):
         fixed_label.setObjectName("Muted")
         inputs_row.addWidget(fixed_label)
         self.fixed_input = QLineEdit()
-        self.fixed_input.setMaximumWidth(100)
+        self.fixed_input.setMinimumWidth(_FIGURE_WIDTH)
         inputs_row.addWidget(self.fixed_input)
         self.fixed_info = InfoDot(_HELP["fixed"])
         inputs_row.addWidget(self.fixed_info)
@@ -433,6 +445,7 @@ class CreateBudgetView(QWidget):
         self.table = QTableWidget(0, len(_HEADERS))
         self.table.setHorizontalHeaderLabels(_HEADERS)
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(_ROW_HEIGHT)
         self.table.setAlternatingRowColors(True)
         self._hover = enable_row_hover(self.table)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -696,8 +709,14 @@ class CreateBudgetView(QWidget):
         # nudge, rather than from a figure with no relationship to their life.
         usual_total = Money(sum(a.minor for a in suggested.values()))
         if usual_total.minor > 0:
-            self.total_input.setPlaceholderText(
-                f"{usual_total.decimal:.2f}  (you usually spend this)"
+            # Just the figure. Spelling out where it came from inside the box
+            # made a placeholder too long to read in the box it was in, which
+            # is a worse way to fail than saying nothing.
+            self.total_input.setPlaceholderText(f"{usual_total.decimal:.2f}")
+            self.total_info.set_explanation(
+                f"{_HELP['total']}\n\nThe box starts from {usual_total.format()}, "
+                "which is what these categories usually cost you over a window "
+                "this long. Type over it with whatever you would rather spend."
             )
 
         if self.by_history.isChecked():
@@ -799,6 +818,7 @@ class CreateBudgetView(QWidget):
 
     def _show_flat(self, lines, suggested: dict) -> None:
         """One row per envelope, with no commitment to separate out."""
+        self._has_totals = False
         self.totals_row.setVisible(False)
         self.table.setRowCount(len(lines))
         for row, line in enumerate(lines):
@@ -862,6 +882,7 @@ class CreateBudgetView(QWidget):
         )
         self.total_cells[3].style().unpolish(self.total_cells[3])
         self.total_cells[3].style().polish(self.total_cells[3])
+        self._has_totals = True
         self.totals_row.setVisible(True)
         self._align_totals()
 
@@ -925,7 +946,7 @@ class CreateBudgetView(QWidget):
             "is no usual figure to compare against."
         )
 
-        allowance_item = QTableWidgetItem(f"{allowance.decimal:.2f}")
+        allowance_item = QTableWidgetItem(allowance.format())
         allowance_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         if not editable:
             allowance_item.setFlags(allowance_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -965,10 +986,69 @@ class CreateBudgetView(QWidget):
         self.table.setItem(row, 3, change_item)
 
     def _allowance_edited(self, item: QTableWidgetItem) -> None:
-        """A hand-typed allowance is the user's decision and outranks the method."""
+        """A hand-typed allowance is the user's decision and outranks the method.
+
+        The rest of the row has to follow it. Editing one allowance without
+        recomputing its change and the totals left three numbers on screen
+        that no longer agreed with each other, and the whole point of the
+        change column is that it answers immediately.
+        """
         if self._filling or item.column() != 2:
             return
+        self._recalculate()
         self._update_total()
+
+    def _recalculate(self) -> None:
+        """Refresh the change column and the totals from what is in the table.
+
+        Reads the table rather than the plan, because by this point the user
+        may have overridden any number of allowances by hand and their
+        figures are the ones that count.
+        """
+        self._filling = True
+        try:
+            usual_total = allowance_total = 0
+            currency = "USD"
+            for row in range(self.table.rowCount()):
+                name = self.table.item(row, 0)
+                if name is None or not name.data(Qt.ItemDataRole.UserRole):
+                    continue
+                usual = _parse(self.table.item(row, 1).text()) if self.table.item(row, 1) else None
+                cell = self.table.item(row, 2)
+                allowance = _parse(cell.text()) if cell else None
+                if allowance is None:
+                    continue
+                currency = allowance.currency
+                allowance_total += allowance.minor
+                if usual is None:
+                    continue
+                usual_total += usual.minor
+
+                change_item = self.table.item(row, 3)
+                if change_item is None or change_item.text() == "locked":
+                    continue
+                gap = Money(allowance.minor - usual.minor, allowance.currency)
+                change_item.setText(gap.format() if gap.minor else "no change")
+                change_item.setForeground(
+                    QColor(theme.ACTIVE.danger if gap.minor < 0 else theme.ACTIVE.accent)
+                    if gap.minor
+                    else QColor(theme.ACTIVE.muted)
+                )
+            # A tracked flag, not the widget's visibility. A view that has not
+            # been shown yet reports every child as invisible, so asking Qt
+            # meant the totals silently stopped updating -- the same trap the
+            # cash dialog hit with a checkbox earlier.
+            if self._has_totals:
+                self._show_totals(
+                    budgets_mod.Line(
+                        "Total",
+                        Money(usual_total, currency),
+                        Money(0, currency),
+                        Money(allowance_total, currency),
+                    )
+                )
+        finally:
+            self._filling = False
 
     def envelopes(self) -> list:
         """The category lines, skipping the headings and the total row."""

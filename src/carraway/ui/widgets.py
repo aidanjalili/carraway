@@ -40,6 +40,16 @@ class InfoDot(QPushButton):
     lines long and stays put while it is read.
     """
 
+    def set_explanation(self, text: str) -> None:
+        """Change what this dot says, popup and tooltip together.
+
+        Not `setText`, which would replace the "i" with the paragraph, and
+        not the attribute on its own, which leaves the tooltip saying
+        something the popup no longer does.
+        """
+        self.explanation = text
+        self.setToolTip(text)
+
     def __init__(self, text: str, parent: QWidget | None = None) -> None:
         super().__init__("i", parent)
         self.setObjectName("InfoDot")
