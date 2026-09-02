@@ -64,6 +64,10 @@ _FIGURE_WIDTH = 150
 # bottom, which is the one cell on the screen a person actually types into.
 _ROW_HEIGHT = 34
 
+# A floor for the numeric columns, wide enough for the cell editor rather than
+# just for the text it displays.
+_FIGURE_COLUMN = 110
+
 # The two halves of the table. Everything above the divider is a choice;
 # everything below it is a bill that has already been decided.
 _FLEXIBLE_HEADING = "You can change these"
@@ -446,6 +450,11 @@ class CreateBudgetView(QWidget):
         self.table.setHorizontalHeaderLabels(_HEADERS)
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(_ROW_HEIGHT)
+        # ResizeToContents measures the text, not the editor Qt opens on top
+        # of it -- which carries its own border and padding, so a column
+        # sized to "$162.31" clipped the box you type into and showed the
+        # figure as a row of dots. A floor under every numeric column.
+        self.table.horizontalHeader().setMinimumSectionSize(_FIGURE_COLUMN)
         self.table.setAlternatingRowColors(True)
         self._hover = enable_row_hover(self.table)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)

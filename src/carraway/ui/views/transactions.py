@@ -268,12 +268,18 @@ class TransactionsView(QWidget):
         self.since.dateChanged.connect(lambda _: self._dates_edited())
         range_row.addWidget(self.since)
 
-        range_row.addWidget(QLabel("to"))
+        self.dates_to_label = QLabel("to")
+        range_row.addWidget(self.dates_to_label)
         self.until = QDateEdit()
         self.until.setCalendarPopup(True)
         self.until.setDisplayFormat("yyyy-MM-dd")
         self.until.dateChanged.connect(lambda _: self._dates_edited())
         range_row.addWidget(self.until)
+
+        # The view opens on "All time", and `_preset_chosen` only runs when
+        # the box changes -- so without this the pickers started enabled under
+        # a preset that leaves them nothing to say.
+        self._set_dates_enabled(self.range_preset.currentText() != "All time")
 
         range_row.addStretch(1)
         export = QPushButton("Export this view…")
@@ -350,6 +356,13 @@ class TransactionsView(QWidget):
             picker.blockSignals(False)
 
     def _preset_chosen(self, name: str) -> None:
+        # "All time" is every date there is, so the two pickers have nothing
+        # to say. Left enabled they invited an edit that immediately
+        # contradicted the preset above them -- and the screenshot that
+        # prompted this had "All time" selected beside a two-year window,
+        # which is two answers to one question.
+        self._set_dates_enabled(name != "All time")
+
         days = _PRESETS[name]
         dates = [t.date for t in self.ledger.transactions]
         last = max(dates) if dates else date.today()
@@ -361,6 +374,15 @@ class TransactionsView(QWidget):
             picker.setDate(QDate(value.year, value.month, value.day))
             picker.blockSignals(False)
         self._apply_range(since, last)
+
+    def _set_dates_enabled(self, enabled: bool) -> None:
+        """Grey the pickers out when the preset already decides the range."""
+        for picker in (self.since, self.until):
+            picker.setEnabled(enabled)
+            picker.setToolTip(
+                "" if enabled else "Every date is included. Pick another range to set these."
+            )
+        self.dates_to_label.setEnabled(enabled)
 
     def _dates_edited(self) -> None:
         """A hand-picked date means the preset no longer describes the range."""

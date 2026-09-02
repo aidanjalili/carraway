@@ -903,11 +903,19 @@ class Line:
 
 
 # Categories that cannot be changed inside the window, whatever the detected
-# commitments come to. Subscriptions is the case that matters: cancelling
-# Netflix today does not refund this month's charge, so the whole category is
-# already spent as far as this budget is concerned -- and detection only ever
-# finds the ones it recognises, so the rest would otherwise read as a choice.
-ALWAYS_COMMITTED = ("Subscriptions",)
+# commitments come to.
+#
+# Subscriptions: cancelling Netflix today does not refund this month's charge,
+# so the whole category is already spent as far as this budget is concerned --
+# and detection only ever finds the ones it recognises, so the rest would
+# otherwise read as a choice.
+#
+# Utilities: technically you could use less heat. Practically the bill arrives
+# for what the house already did, and a budget that asks someone to find forty
+# dollars in their gas bill this month is asking for something that will not
+# happen -- which makes every other figure on the screen wrong too, since the
+# money has to come from somewhere real.
+ALWAYS_COMMITTED = ("Subscriptions", "Utilities")
 
 
 def plan(
