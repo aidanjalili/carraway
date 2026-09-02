@@ -200,6 +200,19 @@ class Summary:
         days = max(self.period.days, 1)
         return Money(abs(self.spent.minor) // days, self.spent.currency)
 
+    @property
+    def previous_daily_burn(self) -> Money | None:
+        """The same figure for the period before, so the two can be compared.
+
+        Per *day*, not per period, because the two need not be the same length
+        -- a month in progress against the same stretch of last month usually
+        is, but a custom range against the window before it need not be.
+        """
+        if self.previous is None or self.previous_spent is None:
+            return None
+        days = max(self.previous.days, 1)
+        return Money(abs(self.previous_spent.minor) // days, self.previous_spent.currency)
+
 
 def _totals(
     transactions: list[Transaction],

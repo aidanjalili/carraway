@@ -279,12 +279,9 @@ class DashboardView(QWidget):
             )
         )
         self.net_card.set_comparison(*_delta(summary.net, summary.previous_net, better="up"))
-        previous_burn = (
-            Money(abs(summary.previous_spent.minor) // max(summary.previous.days, 1))
-            if summary.previous_spent is not None
-            else None
+        self.burn_card.set_comparison(
+            *_delta(summary.daily_burn, summary.previous_daily_burn, better="down")
         )
-        self.burn_card.set_comparison(*_delta(summary.daily_burn, previous_burn, better="down"))
 
     def _render_changes(self, summary: overview.Summary) -> None:
         _clear(self.changes_layout)

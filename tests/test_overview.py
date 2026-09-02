@@ -218,3 +218,43 @@ def test_an_empty_period_says_zero_rather_than_failing():
     assert got.net == Money(0)
     assert got.movements == ()
     assert got.daily_burn == Money(0)
+
+
+def test_the_daily_burn_is_comparable_across_unequal_periods():
+    """Per day, not per period: a custom range and the window before it
+    need not be the same length, and totals would not be comparable."""
+    txs = [_tx("2026-09-01", "-100.00", "a"), _tx("2026-08-20", "-100.00", "b")]
+    got = summarise(
+        txs,
+        {},
+        Period(date(2026, 9, 1), date(2026, 9, 10)),  # 10 days
+        Period(date(2026, 8, 12), date(2026, 8, 31)),  # 20 days
+    )
+    assert got.daily_burn == Money.parse("10.00")
+    assert got.previous_daily_burn == Money.parse("5.00")
+
+
+def test_the_previous_burn_keeps_the_ledgers_currency():
+    txs = [
+        Transaction(
+            id="e",
+            account_id="a1",
+            date=date(2026, 8, 5),
+            amount=Money.parse("-50.00", "EUR"),
+            description="x",
+            merchant="X",
+        )
+    ]
+    got = summarise(
+        txs,
+        {},
+        Period(date(2026, 9, 1), date(2026, 9, 30)),
+        Period(date(2026, 8, 1), date(2026, 8, 31)),
+    )
+    assert got.previous_daily_burn is not None
+    assert got.previous_daily_burn.currency == "EUR"
+
+
+def test_with_no_previous_period_there_is_no_previous_burn():
+    got = summarise([], {}, Period(date(2026, 9, 1), date(2026, 9, 30)))
+    assert got.previous_daily_burn is None
