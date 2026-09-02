@@ -12,7 +12,13 @@ import json
 
 import pytest
 
-from carraway.sync import vault
+# The vault needs a real cipher. Without it these cannot say anything true,
+# so they skip rather than passing vacuously -- CI installs the extra, so a
+# skip here means somebody's local install is missing it, not that the
+# encryption is untested.
+pytest.importorskip("cryptography", reason="the vault needs the [pocket] extra")
+
+from carraway.sync import vault  # noqa: E402
 
 
 def _payload():
