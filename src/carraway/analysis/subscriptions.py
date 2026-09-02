@@ -577,7 +577,9 @@ def manual_kinds(tracked: list[dict[str, object]]) -> dict[str, str]:
 
 
 def apply_overrides(
-    series: list[RecurringSeries], overrides: dict[str, dict[str, object]]
+    series: list[RecurringSeries],
+    overrides: dict[str, dict[str, object]],
+    today: date | None = None,
 ) -> list[RecurringSeries]:
     """Return `series` with the user's corrections applied.
 
@@ -585,6 +587,17 @@ def apply_overrides(
     history is sometimes a poor guide — a price rose last week, or the billing
     day moved. A correction to one field leaves the others inferred, so the
     rest keeps improving as more charges arrive.
+
+    A corrected date is an **anchor, not a pin**. Someone who says "this bills
+    on the 9th" means every 9th, not the ninth of one particular month and
+    never again — so a stored date in the past is counted forward by the
+    cadence rather than displayed as it stands. Pinning it was a real bug:
+    two yearly subscriptions had quietly stuck on dates that had been and
+    gone, and would have stayed there for good.
+
+    The stored correction is left alone. It stays the anchor, and the date
+    shown is recomputed from it every time, so this keeps working as the
+    calendar moves without anything having to write to the database.
 
     Confidence is forced to 1.0 on any corrected series: the number describes
     how sure the *detector* is, and once a person has said what the figure is,
@@ -597,6 +610,9 @@ def apply_overrides(
     from datetime import date as _date
 
     from ..core.money import Money
+    from .recurring import project_from
+
+    today = today or date.today()
 
     out: list[RecurringSeries] = []
     for item in series:
@@ -620,7 +636,10 @@ def apply_overrides(
         if correction.get("next_expected"):
             # A malformed stored date should not cost the other corrections.
             with contextlib.suppress(ValueError):
-                changes["next_expected"] = _date.fromisoformat(str(correction["next_expected"]))
+                anchor = _date.fromisoformat(str(correction["next_expected"]))
+                # The corrected cadence if there is one, or the series' own.
+                cadence = str(changes.get("cadence") or item.cadence or "")
+                changes["next_expected"] = project_from(anchor, cadence, today)
 
         if changes:
             changes["confidence"] = 1.0

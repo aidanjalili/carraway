@@ -508,19 +508,36 @@ class Ledger:
     def paid_with(self, series: RecurringSeries) -> str:
         """Which card, account or route this charge comes out of.
 
-        Order matters. What the user said wins, because "who actually pays for
-        this" is a question the statement cannot answer -- a charge can land on
-        a card someone else settles. Failing that, the account it landed in,
-        named the way every other screen names it. Failing that, the free text
-        on a tracked entry. Empty when nothing is known, which is honest.
+        Order matters, and it is most-specific-thing-the-user-said first:
+
+        1. a correction made on this series,
+        2. what they typed when they tracked it by hand,
+        3. the account the charge actually landed in.
+
+        The statement comes last because it cannot answer the question being
+        asked. "Who pays for this" is not "where did it land" -- a charge can
+        land on a card that somebody else settles.
+
+        Putting the account above the tracked entry was a real bug. A detected
+        series can share a merchant with a tracked one that detection then
+        suppresses as a duplicate, and the tracked entry is where its "paid
+        with" is stored -- so editing it saved correctly, the account won the
+        lookup, and the edit appeared to do nothing at all.
         """
         override = self.paid_with_override(series)
         if override:
             return override
+        entry = self.manual_entry(series)
+        if entry:
+            account_id = entry.get("paid_via_account")
+            if account_id:
+                return self.account_name(str(account_id))
+            typed = str(entry.get("paid_via") or "")
+            if typed:
+                return typed
         if series.account_id:
             return self.account_name(series.account_id)
-        entry = self.manual_entry(series)
-        return str(entry.get("paid_via") or "") if entry else ""
+        return ""
 
     def paid_with_override(self, series: RecurringSeries) -> str:
         """What the user said pays for this, or empty if they never said."""
@@ -540,8 +557,12 @@ class Ledger:
         A tracked entry keeps its answer on the entry itself. A detected one
         gets an override, so the account the charge actually landed in stays
         underneath and `clear_paid_with` can restore it.
+
+        Which of the two is decided by the series in front of the user, not by
+        whether a tracked entry of the same name happens to exist. Deciding it
+        the other way sent the edit to a row that was not the one on screen.
         """
-        entry = self.manual_entry(series)
+        entry = self.manual_entry(series) if self.is_manual(series) else None
         conn = db.connect(self.path)
         if entry is not None:
             db.set_manual_paid_via(

@@ -356,3 +356,110 @@ def test_a_route_with_no_account_leaves_the_field_empty():
     ]
     series = subs.as_series(tracked)
     assert series[0].account_id == ""
+
+
+# -- a corrected date is an anchor, not a pin ---------------------------
+
+
+def _series(merchant="AllTrails", cadence="yearly", next_expected=None):
+    from datetime import date as _d
+
+    from carraway.core.models import RecurringSeries
+
+    return RecurringSeries(
+        merchant=merchant,
+        account_id="",
+        cadence=cadence,
+        typical_amount=Money.parse("-36.00"),
+        occurrences=0,
+        first_seen=_d(2025, 1, 1),
+        last_seen=_d(2025, 1, 1),
+        next_expected=next_expected,
+        confidence=1.0,
+        amount_varies=False,
+        transaction_ids=[],
+    )
+
+
+def test_a_corrected_date_in_the_past_rolls_forward():
+    """The bug this exists for: two yearly subscriptions stuck on dates that
+    had been and gone, and would have stayed stuck for good."""
+    from datetime import date
+
+    from carraway.analysis.subscriptions import apply_overrides
+
+    out = apply_overrides(
+        [_series()],
+        {"ALLTRAILS": {"next_expected": "2026-08-09"}},
+        today=date(2026, 9, 1),
+    )
+    assert out[0].next_expected == date(2027, 8, 9)
+
+
+def test_it_keeps_rolling_as_the_calendar_moves():
+    """The same stored anchor gives a different answer on a later day."""
+    from datetime import date
+
+    from carraway.analysis.subscriptions import apply_overrides
+
+    override = {"NETFLIX": {"next_expected": "2026-01-15"}}
+    for when, wanted in (
+        (date(2026, 1, 14), date(2026, 1, 15)),  # not yet
+        (date(2026, 1, 15), date(2026, 1, 15)),  # today
+        (date(2026, 1, 16), date(2026, 2, 15)),  # the day after
+        (date(2026, 7, 3), date(2026, 7, 15)),
+        (date(2028, 2, 20), date(2028, 3, 15)),  # years later
+    ):
+        out = apply_overrides([_series("Netflix", "monthly")], override, today=when)
+        assert out[0].next_expected == wanted, f"on {when}"
+
+
+def test_a_future_correction_is_left_exactly_as_set():
+    from datetime import date
+
+    from carraway.analysis.subscriptions import apply_overrides
+
+    out = apply_overrides(
+        [_series()],
+        {"ALLTRAILS": {"next_expected": "2027-04-22"}},
+        today=date(2026, 9, 1),
+    )
+    assert out[0].next_expected == date(2027, 4, 22)
+
+
+def test_a_corrected_cadence_is_what_the_date_rolls_by():
+    from datetime import date
+
+    from carraway.analysis.subscriptions import apply_overrides
+
+    out = apply_overrides(
+        [_series("Gym", "yearly")],
+        {"GYM": {"next_expected": "2026-01-10", "cadence": "monthly"}},
+        today=date(2026, 9, 1),
+    )
+    assert out[0].cadence == "monthly"
+    assert out[0].next_expected == date(2026, 9, 10)
+
+
+def test_a_malformed_stored_date_still_leaves_the_other_corrections():
+    from datetime import date
+
+    from carraway.analysis.subscriptions import apply_overrides
+
+    out = apply_overrides(
+        [_series()],
+        {"ALLTRAILS": {"next_expected": "not-a-date", "display_name": "AllTrails+"}},
+        today=date(2026, 9, 1),
+    )
+    assert out[0].merchant == "AllTrails+"
+
+
+def test_the_stored_anchor_is_never_rewritten():
+    """Recomputing on read is what keeps this working with no writes."""
+    from datetime import date
+
+    from carraway.analysis.subscriptions import apply_overrides
+
+    overrides = {"ALLTRAILS": {"next_expected": "2026-08-09"}}
+    apply_overrides([_series()], overrides, today=date(2030, 1, 1))
+    assert overrides["ALLTRAILS"]["next_expected"] == "2026-08-09"

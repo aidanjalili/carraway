@@ -597,3 +597,72 @@ def test_the_snapshot_carries_budget_lines_and_nothing_else(tmp_path, monkeypatc
     assert line["remaining"] == "600.00"
     # Nothing that says where the money is, or what was bought.
     assert set(line) == {"category", "allowance", "spent", "remaining", "note"}
+
+
+# -- a detected series that shares a merchant with a tracked one ---------
+
+
+def _twinned_ledger(tmp_path) -> Ledger:
+    """A detected series with a tracked entry of the same name behind it.
+
+    Detection suppresses the tracked one as a duplicate, so only the detected
+    series is on screen -- but the tracked row is where its "paid with" lives.
+    """
+    ledger = _ledger(tmp_path, _statement("-8.43"))
+    conn = db.connect(ledger.path)
+    merchant = next(s for s in ledger.series if "NETFLIX" in s.merchant.upper()).merchant
+    db.add_manual_subscription(
+        conn,
+        merchant=merchant,
+        amount=Money.parse("-8.43"),
+        cadence="monthly",
+        kind="subscription",
+        paid_via="dad's card",
+    )
+    conn.close()
+    ledger.load()
+    return ledger
+
+
+def _netflix(ledger):
+    return next(s for s in ledger.series if "NETFLIX" in s.merchant.upper())
+
+
+def test_what_the_user_typed_beats_the_account_it_landed_in(tmp_path):
+    """The bug: the edit saved to the tracked row, the account won the
+    lookup, and so editing "paid with" appeared to do nothing at all."""
+    ledger = _twinned_ledger(tmp_path)
+    series = _netflix(ledger)
+    assert ledger.is_manual(series) is False  # the detected one is on screen
+    assert ledger.paid_with(series) == "dad's card"
+
+
+def test_editing_paid_with_on_such_a_series_actually_shows(tmp_path):
+    ledger = _twinned_ledger(tmp_path)
+    assert ledger.set_paid_with(_netflix(ledger), {"paid_via": "mum pays it"}) is True
+    assert ledger.paid_with(_netflix(ledger)) == "mum pays it"
+    assert ledger.paid_with_is_corrected(_netflix(ledger)) is True
+
+
+def test_the_edit_goes_to_the_series_on_screen_not_the_hidden_twin(tmp_path):
+    """Writing to the tracked row would be writing to something else."""
+    ledger = _twinned_ledger(tmp_path)
+    ledger.set_paid_with(_netflix(ledger), {"paid_via": "mum pays it"})
+
+    conn = db.connect(ledger.path)
+    row = conn.execute("SELECT paid_via FROM manual_subscriptions").fetchone()
+    conn.close()
+    assert row["paid_via"] == "dad's card"  # untouched
+
+
+def test_undoing_falls_back_to_what_was_typed_before(tmp_path):
+    ledger = _twinned_ledger(tmp_path)
+    ledger.set_paid_with(_netflix(ledger), {"paid_via": "mum pays it"})
+    assert ledger.clear_paid_with(_netflix(ledger)) is True
+    assert ledger.paid_with(_netflix(ledger)) == "dad's card"
+
+
+def test_choosing_an_account_wins_over_the_typed_text(tmp_path):
+    ledger = _twinned_ledger(tmp_path)
+    ledger.set_paid_with(_netflix(ledger), {"paid_via_account": "a1"})
+    assert ledger.paid_with(_netflix(ledger)) == "Card"

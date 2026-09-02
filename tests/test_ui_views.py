@@ -236,3 +236,41 @@ def test_the_correction_can_be_undone_from_the_menu(app, ledger, monkeypatch):
     detected = next(s for s in ledger.series if s.merchant == detected.merchant)
     assert ledger.paid_with(detected) == statement_says
     assert ledger.paid_with_is_corrected(detected) is False
+
+
+# -- the calendar moving under a window that is left open ---------------
+
+
+def test_the_window_reloads_when_the_date_changes(app, ledger, monkeypatch):
+    """Next charge dates count forward from today, and today is read at load.
+
+    An app left open across midnight would otherwise go on showing
+    yesterday's answer, and for anything billing today, a date that passed.
+    """
+    from datetime import date, timedelta
+
+    from carraway.ui import main_window
+
+    window = main_window.MainWindow(ledger.path)
+    reloads: list[int] = []
+    monkeypatch.setattr(window, "refresh_all", lambda: reloads.append(1))
+
+    # Same day: nothing to do.
+    window._check_the_date()
+    assert reloads == []
+
+    # The clock rolls over.
+    tomorrow = date.today() + timedelta(days=1)
+
+    class Rolled(date):
+        @classmethod
+        def today(cls):
+            return tomorrow
+
+    monkeypatch.setattr(main_window, "date", Rolled)
+    window._check_the_date()
+    assert reloads == [1]
+
+    # And it does not keep firing once it has caught up.
+    window._check_the_date()
+    assert reloads == [1]

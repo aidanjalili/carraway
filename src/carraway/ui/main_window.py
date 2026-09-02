@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
@@ -80,6 +80,26 @@ class MainWindow(QMainWindow):
         # Kick off shortly after the window is up rather than during
         # construction, so the app is on screen and usable while it runs.
         QTimer.singleShot(600, self._sync_if_due)
+
+        # Next charge dates are counted forward from today, and today is read
+        # when the ledger loads. An app left open across midnight would go on
+        # showing yesterday's answer -- and for anything billing today, a date
+        # that has already passed. Cheap to check, and it only does anything
+        # on the one tick a day when the date has actually changed.
+        self._today = date.today()
+        self._day_watch = QTimer(self)
+        self._day_watch.setInterval(10 * 60 * 1000)  # ten minutes
+        self._day_watch.timeout.connect(self._check_the_date)
+        self._day_watch.start()
+
+    def _check_the_date(self) -> None:
+        """Reload if the calendar has moved on since the last check."""
+        today = date.today()
+        if today == self._today:
+            return
+        self._today = today
+        self.ledger.load()
+        self.refresh_all()
 
     def _build_sidebar(self) -> QWidget:
         sidebar = QFrame()

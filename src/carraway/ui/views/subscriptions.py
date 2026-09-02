@@ -499,7 +499,7 @@ class SubscriptionsView(QWidget):
 
     def _set_paid_with(self, series) -> None:
         """Change which card, account or person a subscription bills to."""
-        entry = self.ledger.manual_entry(series)
+        entry = self.ledger.manual_entry(series) if self.ledger.is_manual(series) else None
         if entry is not None:
             text = str(entry.get("paid_via") or "")
             account = str(entry.get("paid_via_account") or "")
