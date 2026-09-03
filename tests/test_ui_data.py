@@ -842,3 +842,70 @@ def test_the_ledger_hands_back_the_history_basis(tmp_path):
 def test_the_basis_follows_the_account_scope(tmp_path):
     # An account with nothing on it has no history to describe.
     assert _income_ledger(tmp_path).history_basis(["nonexistent"]).months_with_data == 0
+
+
+# -- what counts as committed -------------------------------------------
+
+
+def test_a_subscription_that_stopped_charging_is_not_a_commitment(tmp_path):
+    """A quarterly subscription last charged over a year ago, and overdue ever
+    since, was still counted as fixed costs — money the budget then refused to
+    let the user spend on anything else. Detection already flags these stale;
+    the commitment tally had not asked.
+    """
+    from datetime import timedelta
+
+    path = tmp_path / "stale.db"
+    conn = db.connect(path)
+    db.upsert_account(conn, Account(id="a1", name="Card", type=AccountType.CREDIT_CARD))
+
+    today = date.today()
+    rows = []
+    # Alive: three monthly charges, the most recent this month.
+    for index in range(3):
+        rows.append(
+            Transaction(
+                id=f"live{index}",
+                account_id="a1",
+                date=today - timedelta(days=30 * index),
+                amount=Money.parse("-20.00"),
+                description="LIVE THING",
+                merchant="LIVE THING",
+                category="Subscriptions",
+            )
+        )
+    # Dead: three monthly charges that stopped over a year ago.
+    for index in range(3):
+        rows.append(
+            Transaction(
+                id=f"dead{index}",
+                account_id="a1",
+                date=today - timedelta(days=400 + 30 * index),
+                amount=Money.parse("-50.00"),
+                description="DEAD THING",
+                merchant="DEAD THING",
+                category="Subscriptions",
+            )
+        )
+    db.insert_transactions(conn, rows)
+    # Both are subscriptions as far as the user is concerned. Without saying
+    # so they come back "unknown", which is not a committed kind, and the test
+    # would pass for the wrong reason.
+    db.set_verdict(conn, "LIVE THING", "subscription")
+    db.set_verdict(conn, "DEAD THING", "subscription")
+    conn.close()
+
+    ledger = Ledger(path=path)
+    ledger.load()
+
+    stale = {s.merchant for s in ledger.stale_series}
+    assert any("DEAD" in name.upper() for name in stale), "the dead one was not flagged stale"
+
+    committed = ledger.committed_by_category()
+    # Asserted on the total rather than a named bucket: which category a
+    # commitment lands in is decided by the categorisation rules, and this is
+    # a test about what counts as committed at all.
+    total = sum(abs(amount.minor) for amount in committed.values())
+    assert total == Money.parse("20.00").minor, (
+        f"expected only the live subscription, got {committed}"
+    )

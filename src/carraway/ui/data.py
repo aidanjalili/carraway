@@ -396,6 +396,16 @@ class Ledger:
                     "left_this_week": _wire(state.left_this_week),
                     "per_day": _wire(state.daily_remaining),
                     "on_track": state.on_track,
+                    # Where an even pace says you should be by now, and how
+                    # far from it you actually are. "On track" is a yes or no;
+                    # this is the number that says whether to worry, and by
+                    # how much. Negative means spent more than the pace.
+                    "pace": _wire(state.pace),
+                    "ahead_by": _wire(
+                        Money(state.pace.minor - state.spent.minor, state.spent.currency)
+                    ),
+                    "elapsed_days": state.elapsed_days,
+                    "total_days": state.total_days,
                 }
             )
 
@@ -589,9 +599,17 @@ class Ledger:
 
         per_year = {"weekly": 52, "biweekly": 26, "monthly": 12, "quarterly": 4, "yearly": 1}
         by_id = {tx.id: tx for tx in self.transactions}
+        # A series whose expected charge never arrived is not a commitment.
+        # One quarterly subscription last charged in May 2025 and overdue ever
+        # since was still being counted as $16 a month of fixed costs, which
+        # is money the budget then refused to let the user spend on anything
+        # else. Detection already knows these are stale; this had not asked.
+        stale = {id(series) for series in self.stale_series}
         out: dict[str, int] = {}
         for series in self.series:
             if self.kind_of(series) not in budget_mod.COMMITTED_KINDS:
+                continue
+            if id(series) in stale:
                 continue
             amount = self.current_amount(series)
             if amount.minor >= 0:

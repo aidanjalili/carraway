@@ -275,7 +275,16 @@ def test_the_history_is_bounded_to_a_window(tmp_path):
     assert [r["description"] for r in rows] == ["BLUE BOTTLE COFFEE"]
 
 
-def test_no_key_means_no_history_leaves_at_all(tmp_path):
+def test_no_key_means_no_history_leaves_at_all(tmp_path, monkeypatch):
+    """The keyring is stubbed out, not merely assumed empty.
+
+    Without this the test read the real system keyring and passed only on a
+    machine whose owner had never set a vault key -- so it broke the moment
+    the feature was used for real, which is precisely backwards.
+    """
+    from carraway.ui.data import Ledger
+
+    monkeypatch.setattr(Ledger, "vault_key", lambda self: None)
     ledger = _ledger_with_history(tmp_path)
     assert ledger.vault_key() is None
     assert ledger.sealed_history() is None

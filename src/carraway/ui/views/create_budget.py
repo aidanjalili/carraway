@@ -937,13 +937,26 @@ class CreateBudgetView(QWidget):
         editable: bool = True,
         bold: bool = False,
     ) -> None:
-        name = QTableWidgetItem(category)
+        # A category above the line can still hold a commitment -- a detected
+        # subscription filed under Uncategorized is still a subscription -- and
+        # saying so only in a tooltip made the screen read as "everything up
+        # here is a free choice", which it is not. Stated on the row instead.
+        label = category
+        if committed is not None and committed.minor > 0 and not locked:
+            label = f"{category}   ({committed.format()} of this is committed)"
+
+        name = QTableWidgetItem(label)
         name.setFlags(name.flags() & ~Qt.ItemFlag.ItemIsEditable)
         # Flags this as a real category rather than a heading or the total.
         # Without it `envelopes()` read the Total row as another category and
         # counted the whole budget twice -- the header said $7,650.85 for a
         # $3,358.24 budget, and "Total" would have been saved as a line.
         name.setData(Qt.ItemDataRole.UserRole, bool(editable))
+        # The category itself, kept apart from what is displayed. The cell now
+        # carries an annotation about committed money, and saving a budget for
+        # a category called "Dining   ($20.03 of this is committed)" would be
+        # a quiet disaster.
+        name.setData(Qt.ItemDataRole.UserRole + 1, category)
 
         typical = QTableWidgetItem(usual.format() if usual else "—")
         typical.setFlags(typical.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -1070,7 +1083,10 @@ class CreateBudgetView(QWidget):
             amount = _parse(cell.text()) if cell else None
             if amount is None or amount.minor <= 0:
                 continue
-            out.append(budgets_mod.Envelope(name.text(), abs(amount)))
+            # The stored category, not the displayed text, which may carry a
+            # note about how much of the line is already committed.
+            category = name.data(Qt.ItemDataRole.UserRole + 1) or name.text()
+            out.append(budgets_mod.Envelope(str(category), abs(amount)))
         return out
 
     def _provisional(self):
@@ -1112,6 +1128,24 @@ class CreateBudgetView(QWidget):
         found = budgets_mod.impacts(draft, self.ledger.budgets)
         return found[0].describe() if found else ""
 
+    def _target(self):
+        """What this budget is meant to add up to, or None if nothing says.
+
+        "What I usually spend" has no target -- it is a description of the
+        past, and there is nothing to be over or under. The other two modes
+        each name a figure, and that figure is what makes "still to allocate"
+        a question with an answer.
+        """
+        if self.by_total.isChecked():
+            return _parse(self.total_input.text())
+        if self.by_backwards.isChecked():
+            income = _parse(self.income_input.text())
+            if income is None:
+                return None
+            saving = _parse(self.saving_input.text()) or Money.zero()
+            return income - saving
+        return None
+
     def _update_total(self) -> None:
         lines = self.envelopes()
         total = Money.zero()
@@ -1120,11 +1154,33 @@ class CreateBudgetView(QWidget):
         start, end = self.date_range()
         days = max((end - start).days + 1, 1)
         per_day = Money(total.minor // days, total.currency)
+        # What is left to hand out, once the figures are being typed by hand.
+        #
+        # Editing one allowance without this is arithmetic in your head: the
+        # total moves, but the question actually being asked is "have I given
+        # away more than I have", and that needs the target beside it.
+        target = self._target()
+        if lines and target is not None and target.minor > 0:
+            spare = Money(target.minor - total.minor, total.currency)
+            if spare.minor == 0:
+                room = "  ·  exactly allocated"
+            elif spare.minor > 0:
+                room = f"  ·  {spare.format()} still to allocate"
+            else:
+                room = f"  ·  {abs(spare).format()} over your budget"
+        else:
+            room = ""
+
         self.total_label.setText(
-            f"{total.format()} over {days} days  ·  {per_day.format()}/day"
+            f"{total.format()} over {days} days  ·  {per_day.format()}/day{room}"
             if lines
             else "Nothing budgeted yet"
         )
+        self.total_label.setObjectName(
+            "Danger" if room.endswith("over your budget") else "SectionHeading"
+        )
+        self.total_label.style().unpolish(self.total_label)
+        self.total_label.style().polish(self.total_label)
         self.create.setEnabled(bool(lines))
 
         # A problem with this budget outranks a clash with another one: the

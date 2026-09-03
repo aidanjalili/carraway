@@ -28,6 +28,20 @@ from carraway.ui.data import Ledger  # noqa: E402
 from carraway.ui.views import pocket as view  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _no_real_keyring(monkeypatch):
+    """Keep these tests away from the developer's actual secrets.
+
+    `Ledger.vault_key` reads the system keyring, which is the same keyring
+    the person running the tests keeps their real vault key in. Several of
+    these passed only on a machine where the feature had never been used and
+    broke the moment it was -- which is exactly backwards for a test.
+
+    Tests that want a key set one explicitly; this only decides the default.
+    """
+    monkeypatch.setattr(Ledger, "vault_key", lambda self: None)
+
+
 @pytest.fixture(scope="module")
 def app():
     return QApplication.instance() or QApplication([])
@@ -791,8 +805,13 @@ def test_an_unforced_publish_always_goes(app, paired):
     assert len(client.published) == 2
 
 
-def test_the_digest_changes_when_the_history_does(app, tmp_path):
-    """Or the timer would never notice a new transaction."""
+def test_the_digest_changes_when_the_history_does(app, tmp_path, monkeypatch):
+    """Or the timer would never notice a new transaction.
+
+    The keyring is stubbed rather than assumed empty: reading the real one
+    made this pass only on a machine where the feature had never been used.
+    """
+    monkeypatch.setattr(Ledger, "vault_key", lambda self: None)
     from datetime import date
 
     from carraway.core import db
