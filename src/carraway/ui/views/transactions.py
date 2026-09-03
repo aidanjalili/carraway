@@ -352,12 +352,26 @@ class TransactionsView(QWidget):
         """Set the pickers to the ledger's own span, without filtering yet."""
         dates = [t.date for t in self.ledger.transactions]
         first, last = (min(dates), max(dates)) if dates else (date.today(), date.today())
+        # The pickers open on the ledger's own span, but they are not confined
+        # to it. Clamping the range to the first and last transaction meant the
+        # calendar could only step month by month inside that window, with no
+        # year to jump to -- and looking for a date just outside your imported
+        # history is a normal thing to do. A decade either side is generous
+        # enough to be invisible and bounded enough that the year spinner is
+        # still a spinner rather than an abyss.
+        floor = QDate(first.year - 10, 1, 1)
+        ceiling = QDate(last.year + 10, 12, 31)
         for picker, value in ((self.since, first), (self.until, last)):
             picker.blockSignals(True)
-            picker.setDateRange(
-                QDate(first.year, first.month, first.day), QDate(last.year, last.month, last.day)
-            )
+            picker.setDateRange(floor, ceiling)
             picker.setDate(QDate(value.year, value.month, value.day))
+            calendar = picker.calendarWidget()
+            if calendar is not None:
+                # The grid makes days easier to hit, and the navigation bar is
+                # where the month menu and the year spinner live -- the two
+                # controls that turn "next month" into "pick any date".
+                calendar.setGridVisible(True)
+                calendar.setNavigationBarVisible(True)
             picker.blockSignals(False)
 
     def _preset_chosen(self, name: str) -> None:

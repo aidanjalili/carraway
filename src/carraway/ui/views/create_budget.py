@@ -773,10 +773,12 @@ class CreateBudgetView(QWidget):
                     return
 
                 budgeted = income - saving
-                committed = {
-                    name: budgets_mod.scale_to_window(amount, days)
-                    for name, amount in self.ledger.committed_by_category().items()
-                }
+                # The real charges falling inside this window, not a monthly
+                # rate stretched to fit it. A yearly membership renewing in
+                # eleven months is nothing this month, and scaling a twelfth of
+                # it into every window reserves money that never leaves.
+                window_start, window_end = self.date_range()
+                committed = self.ledger.committed_by_category(window_start, window_end)
                 fixed = Money(sum(a.minor for a in committed.values()))
                 # Kept in step with the estimate, because it is derived from
                 # the same commitments and a stale figure beside a live one
@@ -1162,7 +1164,8 @@ class CreateBudgetView(QWidget):
         category = str(name.data(Qt.ItemDataRole.UserRole + 1) or name.text())
 
         menu = QMenu(self)
-        found = self.ledger.commitments_in(category)
+        menu_start, menu_end = self.date_range()
+        found = self.ledger.commitments_in(category, menu_start, menu_end)
         if found:
             show = QAction(f"What is committed in {category}?", self)
             show.triggered.connect(lambda: self._show_commitments(category, found))

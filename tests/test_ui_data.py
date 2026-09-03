@@ -946,3 +946,45 @@ def test_stale_series_leave_both_committed_figures_alike(tmp_path):
 
     by_category = sum(m.minor for m in ledger.committed_by_category().values())
     assert ledger.committed_per_month().minor == by_category
+
+
+def test_a_yearly_charge_outside_the_window_is_not_prorated_into_it(tmp_path):
+    """A window asks what it must actually hold, not what things cost on average.
+
+    A Costco membership renewing next September is nothing at all this
+    September. Reserving a twelfth of every annual bill in every month makes
+    each month look poorer than it is, and hides the real charge in a smear
+    instead of letting it arrive where it can be seen coming.
+    """
+    from datetime import date
+
+    from carraway.core import db as core_db
+    from carraway.ui.data import Ledger
+
+    path = tmp_path / "t.db"
+    conn = core_db.connect(path)
+    core_db.add_manual_subscription(
+        conn,
+        "Costco membership",
+        Money.parse("-65"),
+        "yearly",
+        started_on=date(2026, 9, 1),
+        category="Shopping",
+    )
+    conn.close()
+
+    ledger = Ledger(path=path)
+    ledger.load()
+
+    # The averaged view still prorates -- that is the right answer to a
+    # different question, and other screens ask it.
+    assert ledger.committed_by_category().get("Shopping") is not None
+
+    # A window a year before the renewal holds none of it.
+    away = ledger.committed_by_category(date(2026, 10, 1), date(2026, 10, 31))
+    assert "Shopping" not in away
+
+    # The window it actually falls in holds all of it, not a twelfth.
+    hit = ledger.committed_by_category(date(2027, 8, 15), date(2027, 9, 15))
+    if "Shopping" in hit:
+        assert hit["Shopping"] == Money.parse("65")

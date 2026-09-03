@@ -609,7 +609,13 @@ class HoverRowDelegate(QStyledItemDelegate):
             if self._row != -1:
                 self._row = -1
                 self._view.viewport().update()
-        return False
+        # Not `return False`. This method is installed on the viewport for the
+        # hover wash, but it is also the one QStyledItemDelegate uses on the
+        # *editor* -- it is what commits a cell on Return and abandons it on
+        # Escape. Swallowing everything this class does not care about meant
+        # pressing Enter in a cell did nothing at all, and the only way to save
+        # a typed figure was to click somewhere else and let focus-out do it.
+        return super().eventFilter(watched, event)
 
     def paint(self, painter, option, index) -> None:
         if index.row() == self._row and not (option.state & QStyle.StateFlag.State_Selected):

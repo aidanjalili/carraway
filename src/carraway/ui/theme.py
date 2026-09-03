@@ -212,6 +212,26 @@ def stylesheet(p: Palette) -> str:
     }}
     QLineEdit:focus {{ border: 1px solid {p.accent}; }}
 
+    /* Disabled controls. Without these a widget that has been switched off
+       looks exactly like one that works: the transaction date pickers are
+       genuinely disabled while "All time" is selected, and there was no way to
+       tell by looking -- so they read as broken rather than as not applicable.
+       Greyed text on a flatter background, and no focus ring. */
+    QLineEdit:disabled, QDateEdit:disabled, QComboBox:disabled,
+    QSpinBox:disabled, QDoubleSpinBox:disabled, QAbstractSpinBox:disabled {{
+        color: {p.muted};
+        background: {p.surface};
+        border: 1px solid {p.surface_alt};
+    }}
+    QLabel:disabled, QCheckBox:disabled, QRadioButton:disabled {{
+        color: {p.muted};
+    }}
+    QPushButton:disabled {{
+        color: {p.muted};
+        background: {p.surface};
+        border: 1px solid {p.surface_alt};
+    }}
+
     QTableView, QTableWidget {{
         background: {p.surface};
         alternate-background-color: {p.surface_alt};

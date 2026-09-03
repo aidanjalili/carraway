@@ -147,15 +147,24 @@ class MainWindow(QMainWindow):
                 # falling through just sizes the window from scratch.
                 pass
 
+        # Nothing saved: open maximised. Sizing to a fraction of the screen was
+        # better than a fixed rectangle and still wrong -- the first thing done
+        # to the window was always to maximise it, and on Wayland maximising a
+        # window that has already been laid out at another size can leave the
+        # right-hand edge drawn past the screen until it is toggled again.
+        # Starting maximised avoids that resize entirely.
         screen = self.screen() or QApplication.primaryScreen()
-        if screen is None:
+        if screen is not None:
+            available = screen.availableGeometry()
+            # A sensible restored-down size for when the user un-maximises,
+            # set before the state so it is what they drop back to.
+            self.resize(int(available.width() * 0.85), int(available.height() * 0.85))
+            frame = self.frameGeometry()
+            frame.moveCenter(available.center())
+            self.move(frame.topLeft())
+        else:
             self.resize(1180, 760)
-            return
-        available = screen.availableGeometry()
-        self.resize(int(available.width() * 0.88), int(available.height() * 0.88))
-        frame = self.frameGeometry()
-        frame.moveCenter(available.center())
-        self.move(frame.topLeft())
+        self.setWindowState(self.windowState() | Qt.WindowState.WindowMaximized)
 
     def _is_on_a_screen(self) -> bool:
         """Whether the restored window would actually be visible.

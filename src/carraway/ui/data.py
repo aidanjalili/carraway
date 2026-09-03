@@ -661,8 +661,6 @@ class Ledger:
         Stale series are left out for the same reason they are left out of the
         committed totals -- a charge that stopped arriving is not expected.
         """
-        step_days = {"weekly": 7, "biweekly": 14}
-        step_months = {"monthly": 1, "quarterly": 3, "yearly": 12}
         stale = {id(series) for series in self.stale_series}
 
         out = []
@@ -674,29 +672,40 @@ class Ledger:
             amount = self.current_amount(series)
             if amount.minor >= 0:
                 continue
-            when = getattr(series, "next_expected", None)
-            if when is None:
-                continue
             category = self.series_category(series)
-            cadence = getattr(series, "cadence", "")
-
-            # A prediction can sit in the past; roll it forward rather than
-            # dropping it, exactly as the Upcoming screen does.
-            for _ in range(200):  # a hard stop: never spin on a bad cadence
-                if when > end:
-                    break
-                if when >= start:
-                    out.append(
-                        budgets_mod.Commitment(due=when, category=category, amount=amount)
-                    )
-                if cadence in step_days:
-                    when = when + timedelta(days=step_days[cadence])
-                elif cadence in step_months:
-                    when = _add_months(when, step_months[cadence])
-                else:
-                    break  # an unknown cadence charges once, as far as we know
+            for when in self.occurrences(series, start, end):
+                out.append(budgets_mod.Commitment(due=when, category=category, amount=amount))
         out.sort(key=lambda c: (c.due, c.category))
         return out
+
+    def occurrences(self, series, start: date, end: date) -> list[date]:
+        """Every date this series is expected to charge between two dates.
+
+        One definition, because two callers needing "when does this bill" is
+        exactly how the committed figures drifted apart before.
+        """
+        step_days = {"weekly": 7, "biweekly": 14}
+        step_months = {"monthly": 1, "quarterly": 3, "yearly": 12}
+        when = getattr(series, "next_expected", None)
+        if when is None:
+            return []
+        cadence = getattr(series, "cadence", "")
+
+        found: list[date] = []
+        # A prediction can sit in the past; roll it forward rather than
+        # dropping it, exactly as the Upcoming screen does.
+        for _ in range(400):  # a hard stop: never spin on a bad cadence
+            if when > end:
+                break
+            if when >= start:
+                found.append(when)
+            if cadence in step_days:
+                when = when + timedelta(days=step_days[cadence])
+            elif cadence in step_months:
+                when = _add_months(when, step_months[cadence])
+            else:
+                break  # an unknown cadence charges once, as far as we know
+        return found
 
     def tracked_category(self, series) -> str:
         """What a manually tracked entry says it buys, or "" if it says nothing.
@@ -711,7 +720,30 @@ class Ledger:
                 return str(entry.get("category") or "").strip()
         return ""
 
-    def committed_by_category(self) -> dict[str, Money]:
+    def committed_by_category(
+        self, start: date | None = None, end: date | None = None
+    ) -> dict[str, Money]:
+        """What commitments cost, split by the category they land in.
+
+        Given a window, a charge counts only if one actually falls inside it.
+        The monthly-rate view answers "what do my commitments cost on average";
+        it is the wrong answer to "what must this September hold", where a
+        Costco membership that renews next September is nothing at all rather
+        than a twelfth of itself. Reserving a slice of every annual bill in
+        every month makes each month look poorer than it is, and the big hits
+        are watched on the Upcoming screen where they can be seen coming.
+        """
+        if start is not None and end is not None:
+            per_category: dict[str, int] = {}
+            for commitment in self.commitment_schedule(start, end):
+                owed = abs(commitment.amount.minor)
+                per_category[commitment.category] = (
+                    per_category.get(commitment.category, 0) + owed
+                )
+            return {name: Money(minor) for name, minor in per_category.items() if minor > 0}
+        return self._committed_monthly_rate()
+
+    def _committed_monthly_rate(self) -> dict[str, Money]:
         """What commitments cost per month, split by the category they land in.
 
         Needed so that "work backwards" does not budget for rent twice: the
@@ -752,7 +784,9 @@ class Ledger:
             out[category] = out.get(category, 0) + monthly
         return {name: Money(minor) for name, minor in out.items() if minor > 0}
 
-    def commitments_in(self, category: str) -> list[dict]:
+    def commitments_in(
+        self, category: str, start: date | None = None, end: date | None = None
+    ) -> list[dict]:
         """The individual things making up a category's committed figure.
 
         A total is not an explanation. "$49.28 of Uncategorized is committed"
@@ -775,6 +809,17 @@ class Ledger:
             landed = self.series_category(series)
             if landed != category:
                 continue
+            # With a window, only what actually bills inside it, and for the
+            # amount it will actually bill. A yearly membership renewing next
+            # September does not belong in this September's list, and a twelfth
+            # of it is a figure that appears on no statement.
+            if start is not None and end is not None:
+                when = self.occurrences(series, start, end)
+                if not when:
+                    continue
+                in_window = Money(abs(amount.minor) * len(when))
+            else:
+                in_window = Money(abs(amount.minor) * per_year.get(series.cadence, 0) // 12)
             found.append(
                 {
                     "series": series,
@@ -782,7 +827,7 @@ class Ledger:
                     "amount": abs(amount),
                     "cadence": series.cadence,
                     "kind": self.kind_of(series),
-                    "monthly": Money(abs(amount.minor) * per_year.get(series.cadence, 0) // 12),
+                    "monthly": in_window,
                     "next": series.next_expected,
                 }
             )
