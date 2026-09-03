@@ -6,8 +6,9 @@ import uuid
 from datetime import date, datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QByteArray, Qt, QTimer
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QFrame,
     QHBoxLayout,
@@ -53,10 +54,10 @@ class MainWindow(QMainWindow):
     def __init__(self, database: Path | None = None) -> None:
         super().__init__()
         self.setWindowTitle("Carraway")
-        self.resize(1180, 760)
 
         self.ledger = Ledger(path=database or db.default_db_path())
         self.ledger.load()
+        self._restore_window()
 
         root = QWidget()
         root_layout = QHBoxLayout(root)
@@ -121,6 +122,61 @@ class MainWindow(QMainWindow):
         self._today = today
         self.ledger.load()
         self.refresh_all()
+
+
+    # -- window geometry ---------------------------------------------------
+
+    def _restore_window(self) -> None:
+        """Put the window back the size and place it was left.
+
+        This used to be a flat `resize(1180, 760)`. On a 2048x1280 logical
+        desktop that is 58% of the screen, so opening the app began with
+        dragging it bigger every single time, and it forgot again on the next
+        launch. A fixed pixel size is wrong on every display except the one it
+        was picked on.
+        """
+        saved = self.ledger.setting("window_geometry")
+        if saved:
+            try:
+                if self.restoreGeometry(QByteArray.fromBase64(saved.encode("ascii"))):
+                    if self._is_on_a_screen():
+                        return
+            except Exception:
+                # A corrupt or stale value must never stop the app opening;
+                # falling through just sizes the window from scratch.
+                pass
+
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            self.resize(1180, 760)
+            return
+        available = screen.availableGeometry()
+        self.resize(int(available.width() * 0.88), int(available.height() * 0.88))
+        frame = self.frameGeometry()
+        frame.moveCenter(available.center())
+        self.move(frame.topLeft())
+
+    def _is_on_a_screen(self) -> bool:
+        """Whether the restored window would actually be visible.
+
+        Geometry saved while an external monitor was attached restores quite
+        happily to coordinates nobody can see once it is unplugged, and the app
+        then looks like it failed to start.
+        """
+        frame = self.frameGeometry()
+        return any(s.availableGeometry().intersects(frame) for s in QApplication.screens())
+
+    def closeEvent(self, event) -> None:
+        """Remember the window before it goes."""
+        try:
+            self.ledger.save_setting(
+                "window_geometry",
+                bytes(self.saveGeometry().toBase64()).decode("ascii"),
+            )
+        except Exception:
+            # Failing to record a window size is not a reason to refuse to quit.
+            pass
+        super().closeEvent(event)
 
     def _build_sidebar(self) -> QWidget:
         sidebar = QFrame()
