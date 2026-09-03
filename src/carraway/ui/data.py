@@ -419,6 +419,10 @@ class Ledger:
                     "even_ahead_by": _wire(
                         Money(state.even_pace.minor - state.spent.minor, state.spent.currency)
                     ),
+                    # Money the user took out of budgeting by hand. Sent so the
+                    # phone can say so too: a total that quietly omits a spend
+                    # is how this screen would stop matching the bank.
+                    "excluded": _wire(state.excluded),
                     "bills_due": _wire(state.scheduled_so_far),
                     "bills_total": _wire(state.scheduled_total),
                     "bills_to_come": _wire(

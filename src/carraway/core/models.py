@@ -74,6 +74,13 @@ class Transaction:
     # Shown in the UI, because a guess the user cannot tell apart from a
     # certainty is worse than no guess at all.
     auto_categorized: bool = False
+    # Kept out of budget arithmetic by the user's own decision: a reimbursed
+    # work expense, a purchase a friend is paying back, money that passed
+    # through the account without ever being yours to spend. Deliberately not a
+    # category and not a transfer -- the row stays in the ledger, in Spending
+    # and in every total that claims to match the bank statement. Only the
+    # budget skips it, and the budget says out loud that it did.
+    budget_excluded: bool = False
     tags: list[str] = field(default_factory=list)
 
     @property

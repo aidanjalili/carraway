@@ -584,6 +584,9 @@ class BudgetStatus:
     # question actually being asked while standing in a shop.
     spent_today: Money = field(default_factory=Money.zero)
     spent_this_week: Money = field(default_factory=Money.zero)
+    # Money that left the account inside this window and was excluded by hand.
+    # Reported so no screen has to pretend it did not happen.
+    excluded: Money = field(default_factory=Money.zero)
 
     @property
     def started(self) -> bool:
@@ -784,6 +787,7 @@ def status(
 
     spent: dict[str, int] = {}
     today_minor = week_minor = 0
+    excluded_minor = 0
     for tx in transactions:
         if not budget.covers(tx.date) or tx.date > today:
             continue
@@ -791,6 +795,15 @@ def status(
             continue
         category = _category_of(tx, categories)
         if category in NON_SPENDING or tx.is_transfer:
+            continue
+        # Set by hand, one row at a time: a reimbursed expense, a bill a friend
+        # is paying back. Counted separately rather than skipped in silence --
+        # a budget quietly ignoring money that left the account is how a screen
+        # stops agreeing with the bank, and the whole point of this one is that
+        # it does.
+        if getattr(tx, "budget_excluded", False):
+            if tx.amount.minor < 0:
+                excluded_minor += -tx.amount.minor
             continue
         outflow = -tx.amount.minor
         spent[category] = spent.get(category, 0) + outflow
@@ -853,6 +866,7 @@ def status(
         asof=today,
         elapsed_days=elapsed,
         total_days=total_days,
+        excluded=Money(excluded_minor),
         lines=lines,
         spent_today=Money(max(today_minor, 0)),
         spent_this_week=Money(max(week_minor, 0)),

@@ -294,6 +294,11 @@ class BudgetDetailView(QWidget):
             if still.minor > 0:
                 note += f", with {still.format()} of them still to come"
             notes.append(note)
+        if state.excluded.minor:
+            notes.append(
+                f"{state.excluded.format()} excluded by hand and not counted here "
+                "— still in Spending and in your account totals"
+            )
         unbudgeted = [line for line in state.lines if line.unbudgeted]
         if unbudgeted:
             total = Money.zero()

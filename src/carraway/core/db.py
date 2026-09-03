@@ -236,6 +236,14 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE manual_subscriptions ADD COLUMN category TEXT;
     """,
+    # v16 - transactions the user has told the budget to ignore. A reimbursed
+    # expense or a bill a friend is paying back is money that left the account,
+    # so it belongs in the ledger and in every statement-matching total; it is
+    # simply not spending the budget should be judged against. Default 0, so
+    # every existing row keeps counting exactly as it did.
+    """
+    ALTER TABLE transactions ADD COLUMN budget_excluded INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 
@@ -374,6 +382,10 @@ def _row_to_transaction(r: sqlite3.Row) -> Transaction:
         transfer_group=r["transfer_group"],
         occurrence=r["occurrence"],
         auto_categorized=bool(r["auto_categorized"]),
+        # dict(r).get, not r["..."]: a Row from a connection opened before the
+        # migration has no such column, and sqlite3.Row raises rather than
+        # returning None.
+        budget_excluded=bool(dict(r).get("budget_excluded") or 0),
     )
 
 
@@ -1053,6 +1065,27 @@ def update_transfer_groups(conn: sqlite3.Connection, transactions: list[Transact
         changed += cur.rowcount
     conn.commit()
     return changed
+
+
+def set_budget_excluded(
+    conn: sqlite3.Connection, transaction_ids: list[str], excluded: bool
+) -> int:
+    """Mark rows as ignored by budgets, or put them back. Returns rows changed.
+
+    Only the budget honours this. The rows stay in the ledger, in Spending, and
+    in anything that claims to agree with the bank statement -- money that left
+    the account has left it whatever the user thinks of it. What changes is
+    only whether a budget is judged against it.
+    """
+    if not transaction_ids:
+        return 0
+    marks = ",".join("?" for _ in transaction_ids)
+    cur = conn.execute(
+        f"UPDATE transactions SET budget_excluded = ? WHERE id IN ({marks})",
+        [int(bool(excluded)), *transaction_ids],
+    )
+    conn.commit()
+    return cur.rowcount
 
 
 def list_transactions(

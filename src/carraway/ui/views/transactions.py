@@ -17,7 +17,7 @@ from PySide6.QtCore import (
     QSortFilterProxyModel,
     Qt,
 )
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QTableView,
     QVBoxLayout,
@@ -33,6 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...analysis import categorize as cat
+from ...core import db
 from ...core.models import Transaction
 from ...core.money import Money
 from .. import theme
@@ -94,6 +96,11 @@ class TransactionModel(QAbstractTableModel):
                 self.ledger.account_name(tx.account_id),
                 tx.amount.minor,
             ][column]
+
+        # An excluded row still shows -- it is money that left the account --
+        # but muted, so the state is legible without opening a menu to ask.
+        if role == Qt.ItemDataRole.ForegroundRole and getattr(tx, "budget_excluded", False):
+            return QColor(theme.ACTIVE.muted)
 
         if role == Qt.ItemDataRole.TextAlignmentRole and column == 4:
             return int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -329,6 +336,8 @@ class TransactionsView(QWidget):
         # Row-wide hover; Qt's stylesheet :hover only covers one cell.
         self._hover = enable_row_hover(self.table)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._row_menu)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         for column in (0, 2, 3, 4):
@@ -618,6 +627,58 @@ class TransactionsView(QWidget):
             # The chosen category no longer exists, so the filter it applied
             # must go too rather than silently showing nothing.
             self.proxy.set_kind("All")
+
+    def _row_menu(self, position) -> None:
+        """Right-click on transactions: take rows in or out of budgeting.
+
+        Works on the whole selection, because the case that prompted it is a
+        run of rows -- a trip somebody else paid for, a month of a shared bill
+        -- and doing them one at a time is the kind of chore that means it
+        never gets done.
+        """
+        rows = {index.row() for index in self.table.selectionModel().selectedRows()}
+        clicked = self.table.indexAt(position)
+        if clicked.isValid():
+            rows.add(clicked.row())
+        chosen = []
+        for row in rows:
+            source = self.proxy.mapToSource(self.proxy.index(row, 0))
+            if source.isValid():
+                chosen.append(self.model.rows[source.row()])
+        if not chosen:
+            return
+
+        menu = QMenu(self)
+        # If any are still counted, the useful action is to exclude them all.
+        # Only when every one is already out does the menu offer to put them
+        # back, so a mixed selection has one obvious meaning.
+        counted = [tx for tx in chosen if not getattr(tx, "budget_excluded", False)]
+        excluding = bool(counted)
+        many = len(chosen) > 1
+        label = (
+            f"Exclude {len(chosen)} transactions from budgets" if excluding and many
+            else "Exclude from budgets" if excluding
+            else f"Include {len(chosen)} transactions in budgets" if many
+            else "Include in budgets"
+        )
+        action = QAction(label, self)
+        action.triggered.connect(lambda: self._set_excluded(chosen, excluding))
+        menu.addAction(action)
+
+        note = QAction("Excluded rows stay in Spending and in every total", self)
+        note.setEnabled(False)
+        menu.addSeparator()
+        menu.addAction(note)
+        menu.exec(self.table.viewport().mapToGlobal(position))
+
+    def _set_excluded(self, transactions, excluded: bool) -> None:
+        conn = db.connect(self.ledger.path)
+        db.set_budget_excluded(conn, [tx.id for tx in transactions], excluded)
+        conn.close()
+        for tx in transactions:
+            tx.budget_excluded = excluded
+        self.ledger.load()
+        refresh_everything(self)
 
     def refresh(self) -> None:
         self._rebuild_kinds()

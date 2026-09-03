@@ -1155,3 +1155,64 @@ def test_a_commitment_outside_the_window_is_somebody_elses_month():
     ]
     state = budgets.status(budget, [], asof=date(2026, 9, 3), schedule=schedule)
     assert state.scheduled_so_far == Money.zero()
+
+
+# -- transactions the user takes out of budgeting ---------------------------
+
+
+def _excluded_tx(day: date, amount: str, category: str) -> Transaction:
+    tx = _tx(day, amount, category)
+    tx.budget_excluded = True
+    return tx
+
+
+def test_an_excluded_transaction_is_not_judged_against_the_budget():
+    # The case this exists for: a friend's share of a trip that lands on your
+    # card and comes straight back. It is money that left the account, so it
+    # belongs in the ledger -- but measuring a budget against it is measuring
+    # the wrong thing.
+    budget = _september(envelopes=[Envelope(category="Travel", allowance=Money.parse("500"))])
+    rows = [
+        _tx(date(2026, 9, 2), "-100", "Travel"),
+        _excluded_tx(date(2026, 9, 3), "-400", "Travel"),
+    ]
+
+    state = budgets.status(budget, rows, asof=date(2026, 9, 10))
+
+    assert state.spent == Money.parse("100")
+    assert state.excluded == Money.parse("400")
+
+
+def test_excluded_money_is_reported_rather_than_disappearing():
+    # A budget that quietly drops a spend is a budget that stops agreeing with
+    # the bank statement, which is the one thing this screen must never do. The
+    # figure is carried so every screen showing it can say so out loud.
+    budget = _september(envelopes=[Envelope(category="Dining", allowance=Money.parse("200"))])
+    rows = [_excluded_tx(date(2026, 9, 4), "-75", "Dining")]
+
+    state = budgets.status(budget, rows, asof=date(2026, 9, 10))
+
+    assert state.spent == Money.zero()
+    assert state.excluded == Money.parse("75")
+    assert state.remaining == Money.parse("200")
+
+
+def test_excluding_is_reversible_and_changes_nothing_else():
+    budget = _september(envelopes=[Envelope(category="Travel", allowance=Money.parse("500"))])
+    counted = [_tx(date(2026, 9, 2), "-100", "Travel"), _tx(date(2026, 9, 3), "-400", "Travel")]
+
+    both = budgets.status(budget, counted, asof=date(2026, 9, 10))
+    assert both.spent == Money.parse("500")
+    assert both.excluded == Money.zero()
+
+
+def test_an_excluded_inflow_is_not_counted_as_excluded_spending():
+    # Only outflows are money spent. A refund marked excluded must not inflate
+    # the "excluded" figure, or the number stops meaning anything.
+    budget = _september(envelopes=[Envelope(category="Travel", allowance=Money.parse("500"))])
+    refund = _tx(date(2026, 9, 5), "200", "Travel")
+    refund.budget_excluded = True
+
+    state = budgets.status(budget, [refund], asof=date(2026, 9, 10))
+
+    assert state.excluded == Money.zero()
