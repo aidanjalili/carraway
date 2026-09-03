@@ -625,6 +625,49 @@ class Ledger:
             out[category] = out.get(category, 0) + monthly
         return {name: Money(minor) for name, minor in out.items() if minor > 0}
 
+    def commitments_in(self, category: str) -> list[dict]:
+        """The individual things making up a category's committed figure.
+
+        A total is not an explanation. "$49.28 of Uncategorized is committed"
+        invites exactly one question -- committed to *what* -- and until this
+        existed the only way to answer it was to go and read the
+        Subscriptions screen with the figure held in your head.
+        """
+        from collections import Counter
+
+        per_year = {"weekly": 52, "biweekly": 26, "monthly": 12, "quarterly": 4, "yearly": 1}
+        by_id = {tx.id: tx for tx in self.transactions}
+        stale = {id(series) for series in self.stale_series}
+
+        found: list[dict] = []
+        for series in self.series:
+            if self.kind_of(series) not in budget_mod.COMMITTED_KINDS:
+                continue
+            if id(series) in stale:
+                continue
+            amount = self.current_amount(series)
+            if amount.minor >= 0:
+                continue
+            votes = Counter(
+                self.category_of(by_id[tx_id]) for tx_id in series.transaction_ids if tx_id in by_id
+            )
+            landed = votes.most_common(1)[0][0] if votes else "Subscriptions"
+            if landed != category:
+                continue
+            found.append(
+                {
+                    "series": series,
+                    "merchant": series.merchant,
+                    "amount": abs(amount),
+                    "cadence": series.cadence,
+                    "kind": self.kind_of(series),
+                    "monthly": Money(abs(amount.minor) * per_year.get(series.cadence, 0) // 12),
+                    "next": series.next_expected,
+                }
+            )
+        found.sort(key=lambda item: -item["monthly"].minor)
+        return found
+
     def typical_monthly_income(self) -> Money:
         """Recurring income at its monthly rate, as a starting figure."""
         per_year = {"weekly": 52, "biweekly": 26, "monthly": 12, "quarterly": 4, "yearly": 1}

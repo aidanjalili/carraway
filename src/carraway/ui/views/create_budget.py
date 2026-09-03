@@ -25,7 +25,7 @@ import uuid
 from datetime import date, timedelta
 
 from PySide6.QtCore import QDate, Qt
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
     QRadioButton,
@@ -59,10 +60,12 @@ _HEADERS = ["Category", "You usually spend", "Allowance", "Change"]
 # the field meant to suggest a number could not display the number.
 _FIGURE_WIDTH = 150
 
-# Tall enough that the editor Qt opens inside a cell is not clipped. At the
-# default height the text of an allowance being typed was cut off top and
-# bottom, which is the one cell on the screen a person actually types into.
-_ROW_HEIGHT = 34
+# Tall enough for the editor Qt opens inside a cell, which is a QLineEdit and
+# so inherits the app's 8px vertical padding on top of the table item's own.
+# Between them a 34px row left the editor 17 pixels for something needing 39,
+# and the figure being typed rendered as a horizontal sliver. Measured rather
+# than guessed, and the padding is trimmed for this table besides.
+_ROW_HEIGHT = 42
 
 # A floor for the numeric columns, wide enough for the cell editor rather than
 # just for the text it displays.
@@ -455,6 +458,19 @@ class CreateBudgetView(QWidget):
         # sized to "$162.31" clipped the box you type into and showed the
         # figure as a row of dots. A floor under every numeric column.
         self.table.horizontalHeader().setMinimumSectionSize(_FIGURE_COLUMN)
+        # And trim the padding on that editor specifically, so the row does not
+        # have to be enormous to hold it. The app-wide QLineEdit rule is right
+        # for a form and far too generous for a table cell.
+        # Two app-wide rules conspire against the editor in a cell: QLineEdit
+        # carries 8px of vertical padding meant for a form, and table items
+        # carry another 8px top and bottom. Between them the 42px row left the
+        # editor 25 pixels for something needing 27, so the figure being typed
+        # came out as a sliver. Both are trimmed here and nowhere else, since
+        # they are right for every other table in the app.
+        self.table.setStyleSheet(
+            "QTableWidget::item { padding: 4px 8px; }"
+            "QTableWidget QLineEdit { padding: 2px 6px; border-radius: 4px; margin: 0; }"
+        )
         self.table.setAlternatingRowColors(True)
         self._hover = enable_row_hover(self.table)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -471,6 +487,8 @@ class CreateBudgetView(QWidget):
             self.table.horizontalHeaderItem(column).setTextAlignment(align)
         self.table.horizontalHeaderItem(1).setToolTip(_HELP["usual"])
         self.table.itemChanged.connect(self._allowance_edited)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._row_menu)
         outer.addWidget(self.table, stretch=1)
 
         # The total sits below the table rather than in it. As the last row of
@@ -1127,6 +1145,54 @@ class CreateBudgetView(QWidget):
             return ""
         found = budgets_mod.impacts(draft, self.ledger.budgets)
         return found[0].describe() if found else ""
+
+    def _row_menu(self, position) -> None:
+        """Right-click a row to see what is committed in it.
+
+        A total is not an explanation. "$49.28 of Uncategorized is committed"
+        invites exactly one question -- to what -- and answering it used to
+        mean reading the Subscriptions screen with the figure held in mind.
+        """
+        item = self.table.itemAt(position)
+        if item is None:
+            return
+        name = self.table.item(item.row(), 0)
+        if name is None or not name.data(Qt.ItemDataRole.UserRole):
+            return
+        category = str(name.data(Qt.ItemDataRole.UserRole + 1) or name.text())
+
+        menu = QMenu(self)
+        found = self.ledger.commitments_in(category)
+        if found:
+            show = QAction(f"What is committed in {category}?", self)
+            show.triggered.connect(lambda: self._show_commitments(category, found))
+            menu.addAction(show)
+        else:
+            nothing = QAction(f"Nothing is committed in {category}", self)
+            nothing.setEnabled(False)
+            menu.addAction(nothing)
+        menu.exec(self.table.viewport().mapToGlobal(position))
+
+    def _show_commitments(self, category: str, found: list) -> None:
+        """List the recurring charges behind a category's committed figure."""
+        lines = []
+        for item in found:
+            when = f", next {item['next']}" if item["next"] else ""
+            lines.append(
+                f"• {item['merchant']} — {item['amount'].format()} {item['cadence']}"
+                f"  ({item['monthly'].format()}/month{when})"
+            )
+        monthly = Money(sum(item["monthly"].minor for item in found))
+        QMessageBox.information(
+            self,
+            f"Committed in {category}",
+            f"{len(found)} recurring charge(s), {monthly.format()} a month:\n\n"
+            + "\n".join(lines)
+            + "\n\nThese are counted as already spent, so the budget does not "
+            "offer them to you again. Anything here you have cancelled, mark "
+            "as cancelled on the Subscriptions screen and it will stop "
+            "counting.",
+        )
 
     def _target(self):
         """What this budget is meant to add up to, or None if nothing says.

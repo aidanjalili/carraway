@@ -438,3 +438,80 @@ def test_a_typed_allowance_with_a_dollar_sign_is_read_back(view):
     view.table.item(row, 2).setText("$250.00")
     saved = {e.category: e.allowance for e in view.envelopes()}
     assert saved[name] == Money.parse("250.00")
+
+
+def test_a_row_can_say_what_is_committed_in_it(view, ledger):
+    """A total is not an explanation. "$49.28 of Uncategorized is committed"
+    invites exactly one question, and answering it used to mean reading
+    another screen with the figure held in your head."""
+    _backwards(view)
+    found = ledger.commitments_in("Subscriptions")
+    # This ledger may have none, in which case the menu says so rather than
+    # offering an empty list.
+    assert isinstance(found, list)
+    for item in found:
+        assert item["merchant"]
+        assert item["monthly"].minor >= 0
+        assert item["cadence"]
+
+
+def test_the_context_menu_handler_is_callable(view, monkeypatch):
+    """The standing rule: a menu handler nobody invokes is a handler that can
+    call a method which does not exist.
+
+    QMenu is replaced wholesale rather than its exec monkeypatched: exec is a
+    C++ method, and patching it by path leaves Qt still trying to open a real
+    popup -- which fails under Wayland with no parent window.
+    """
+    from carraway.ui.views import create_budget
+
+    opened = []
+
+    class Stub:
+        def __init__(self, parent=None):
+            self.actions_added = []
+
+        def addAction(self, action):
+            self.actions_added.append(action)
+
+        def exec(self, *args, **kwargs):
+            opened.append(self.actions_added)
+
+    monkeypatch.setattr(create_budget, "QMenu", Stub)
+    _backwards(view)
+    row = next(
+        r
+        for r in range(view.table.rowCount())
+        if view.table.item(r, 0) is not None
+        and view.table.item(r, 0).data(Qt.ItemDataRole.UserRole)
+    )
+    view._row_menu(view.table.visualItemRect(view.table.item(row, 0)).center())
+    assert opened, "the menu never opened"
+    assert opened[0], "the menu opened with no actions"
+
+
+def test_right_clicking_a_heading_opens_nothing(view, monkeypatch):
+    from carraway.ui.views import create_budget
+
+    opened = []
+
+    class Stub:
+        def __init__(self, parent=None):
+            pass
+
+        def addAction(self, action):
+            pass
+
+        def exec(self, *args, **kwargs):
+            opened.append(True)
+
+    monkeypatch.setattr(create_budget, "QMenu", Stub)
+    _backwards(view)
+    band = next(
+        r
+        for r in range(view.table.rowCount())
+        if view.table.item(r, 0) is not None
+        and not view.table.item(r, 0).data(Qt.ItemDataRole.UserRole)
+    )
+    view._row_menu(view.table.visualItemRect(view.table.item(band, 0)).center())
+    assert not opened, "a heading band offered a menu"
