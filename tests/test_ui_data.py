@@ -909,3 +909,40 @@ def test_a_subscription_that_stopped_charging_is_not_a_commitment(tmp_path):
     assert total == Money.parse("20.00").minor, (
         f"expected only the live subscription, got {committed}"
     )
+
+
+def _lapsed_statement() -> str:
+    """A monthly subscription that charged for a year and then simply stopped."""
+    rows = ["Date,Description,Amount"]
+    for month in range(1, 13):
+        rows.append(f"2025-{month:02d}-05,SPOTIFY USA,-11.99")
+    # A second, still-live subscription, so the ledger is not entirely stale.
+    for month in range(1, 13):
+        rows.append(f"2025-{month:02d}-16,NETFLIX.COM 866-579-7172 CA,-8.43")
+    for month in range(1, 9):
+        rows.append(f"2026-{month:02d}-16,NETFLIX.COM 866-579-7172 CA,-8.43")
+    return "\n".join(rows) + "\n"
+
+
+def test_stale_series_leave_both_committed_figures_alike(tmp_path):
+    """The headline fixed-cost figure and the per-category breakdown must agree.
+
+    committed_by_category has skipped stale series since a quarterly
+    subscription last charged in May 2025 was found still claiming $16 a month
+    of someone's budget. committed_per_month never got the same treatment, so
+    the two disagreed by exactly the cost of whatever had quietly stopped
+    billing -- and the headline number, the one offered to the user as "your
+    fixed costs are...", was the wrong one of the pair. Money reserved for a
+    subscription that stopped billing is money the user is told they may not
+    spend.
+    """
+    ledger = _ledger(tmp_path, _lapsed_statement())
+
+    # Assert the fixture first: with nothing stale this test proves nothing,
+    # and would keep passing after the guard it exists to protect was removed.
+    assert len(ledger.stale_series) == 1, "fixture stopped producing a stale series"
+    lapsed = ledger.current_amount(ledger.stale_series[0])
+    assert lapsed.minor != 0, "a stale series costing nothing cannot show the bug"
+
+    by_category = sum(m.minor for m in ledger.committed_by_category().values())
+    assert ledger.committed_per_month().minor == by_category

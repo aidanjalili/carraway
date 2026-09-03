@@ -226,6 +226,16 @@ MIGRATIONS: list[str] = [
     ALTER TABLE series_overrides ADD COLUMN paid_via TEXT;
     ALTER TABLE series_overrides ADD COLUMN paid_via_account TEXT;
     """,
+    # v15 - what a tracked subscription actually buys. A tracked entry has no
+    # charges of its own to vote on a category, and every one of them was
+    # therefore filed as "Subscriptions" in the committed-by-category figures.
+    # That is the wrong answer for most of them: a gym membership is Health and
+    # a Costco card is Shopping, and a budget that cannot say so hides real
+    # money under a label that describes how it is billed rather than what it
+    # is for. Empty means "work it out from the name".
+    """
+    ALTER TABLE manual_subscriptions ADD COLUMN category TEXT;
+    """,
 ]
 
 
@@ -495,6 +505,7 @@ def add_manual_subscription(
     paid_via_account: str | None = None,
     notes: str = "",
     started_on: date | None = None,
+    category: str = "",
 ) -> str:
     """Record a subscription detection cannot see. Returns its id.
 
@@ -509,8 +520,8 @@ def add_manual_subscription(
         """
         INSERT INTO manual_subscriptions
             (id, merchant, amount_minor, currency, cadence, kind, paid_via, notes,
-             active, started_on, paid_via_account)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+             active, started_on, paid_via_account, category)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
         """,
         (
             subscription_id,
@@ -523,6 +534,7 @@ def add_manual_subscription(
             notes,
             started_on.isoformat() if started_on else None,
             paid_via_account or None,
+            category or None,
         ),
     )
     conn.commit()
@@ -543,6 +555,7 @@ def list_manual_subscriptions(
             "kind": r["kind"],
             "paid_via": r["paid_via"],
             "paid_via_account": r["paid_via_account"] or "",
+            "category": (r["category"] or "") if "category" in r.keys() else "",
             "notes": r["notes"],
             "active": bool(r["active"]),
             "started_on": (date.fromisoformat(r["started_on"]) if r["started_on"] else None),

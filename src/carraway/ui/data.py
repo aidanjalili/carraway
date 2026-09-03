@@ -574,15 +574,38 @@ class Ledger:
         is to separate the two.
         """
         per_year = {"weekly": 52, "biweekly": 26, "monthly": 12, "quarterly": 4, "yearly": 1}
+        # A series whose expected charge never arrived is not a commitment.
+        # committed_by_category has skipped these since the day a quarterly
+        # subscription last charged in May 2025 was found still claiming $16 a
+        # month; this function was left counting it, so the headline fixed-cost
+        # figure and the per-category breakdown disagreed by exactly that
+        # amount. Money the budget reserves for a subscription that stopped
+        # billing is money the user is told they cannot spend.
+        stale = {id(series) for series in self.stale_series}
         minor = 0
         for series in self.series:
             if self.kind_of(series) not in budget_mod.COMMITTED_KINDS:
+                continue
+            if id(series) in stale:
                 continue
             amount = self.current_amount(series)
             if amount.minor >= 0:
                 continue
             minor += abs(amount.minor) * per_year.get(series.cadence, 0) // 12
         return Money(minor)
+
+    def tracked_category(self, series) -> str:
+        """What a manually tracked entry says it buys, or "" if it says nothing.
+
+        Detection-backed series take their category from their own charges by
+        majority vote. A tracked entry has no charges, so this is the only
+        place it can come from.
+        """
+        wanted = (getattr(series, "merchant", "") or "").casefold()
+        for entry in self.manual:
+            if str(entry.get("merchant", "")).casefold() == wanted:
+                return str(entry.get("category") or "").strip()
+        return ""
 
     def committed_by_category(self) -> dict[str, Money]:
         """What commitments cost per month, split by the category they land in.
@@ -617,10 +640,19 @@ class Ledger:
             votes = Counter(
                 self.category_of(by_id[tx_id]) for tx_id in series.transaction_ids if tx_id in by_id
             )
-            # A tracked entry has no transactions to vote, so it has no
-            # category of its own; those land in Subscriptions, which is where
-            # the user would look for them.
-            category = votes.most_common(1)[0][0] if votes else "Subscriptions"
+            # A tracked entry has no charges to vote, so it says for itself
+            # what it buys. Without that every one of them landed in
+            # Subscriptions, which is the same mistake the Subscriptions
+            # *category* invites everywhere else: it describes how the money is
+            # billed rather than what it is for, so a gym membership and a
+            # Costco card both vanished into one label. Entries with nothing
+            # set still fall back to Subscriptions, which is where someone
+            # would look for an uncategorised recurring charge.
+            category = (
+                votes.most_common(1)[0][0]
+                if votes
+                else (self.tracked_category(series) or "Subscriptions")
+            )
             monthly = abs(amount.minor) * per_year.get(series.cadence, 0) // 12
             out[category] = out.get(category, 0) + monthly
         return {name: Money(minor) for name, minor in out.items() if minor > 0}
@@ -651,7 +683,11 @@ class Ledger:
             votes = Counter(
                 self.category_of(by_id[tx_id]) for tx_id in series.transaction_ids if tx_id in by_id
             )
-            landed = votes.most_common(1)[0][0] if votes else "Subscriptions"
+            landed = (
+                votes.most_common(1)[0][0]
+                if votes
+                else (self.tracked_category(series) or "Subscriptions")
+            )
             if landed != category:
                 continue
             found.append(
