@@ -1059,3 +1059,99 @@ def test_a_trip_filling_the_whole_window_leaves_no_other_days():
     assert made.other_days == 0
     assert made.per_day_after == _money("0.00")
     assert made.describe()
+
+
+# -- pace that knows when the bills land -----------------------------------
+
+
+def _rent_month() -> tuple[Budget, list]:
+    """A budget whose money is mostly a single bill due on the 3rd."""
+    budget = _september(
+        envelopes=[
+            Envelope(category="Rent/Mortgage", allowance=Money.parse("900")),
+            Envelope(category="Dining", allowance=Money.parse("300")),
+        ]
+    )
+    schedule = [
+        budgets.Commitment(
+            due=date(2026, 9, 3), category="Rent/Mortgage", amount=Money.parse("-900")
+        )
+    ]
+    return budget, schedule
+
+
+def test_pace_steps_on_the_day_a_bill_is_due():
+    # Three days into September, a flat pace expects 3/30 of $1,200 -- $120.
+    # But $900 of rent was always leaving on the 3rd, so paying it is not
+    # overspending, and a budget that says otherwise is training the user to
+    # ignore it every month.
+    budget, schedule = _rent_month()
+    asof = date(2026, 9, 3)
+
+    flat = budgets.status(budget, [], asof=asof)
+    aware = budgets.status(budget, [], asof=asof, schedule=schedule)
+
+    assert flat.pace == Money.parse("120")
+    assert aware.pace == Money.parse("930")  # $900 rent + 3/30 of $300 dining
+    assert aware.scheduled_so_far == Money.parse("900")
+
+
+def test_a_bill_not_yet_due_does_not_inflate_the_pace():
+    # The other half of the same idea: on the 2nd the rent has not gone out, so
+    # the pace must not pretend it has and quietly excuse real overspending.
+    budget, schedule = _rent_month()
+    aware = budgets.status(budget, [], asof=date(2026, 9, 2), schedule=schedule)
+
+    assert aware.scheduled_so_far == Money.zero()
+    assert aware.pace == Money.parse("20")  # 2/30 of the $300 that is discretionary
+
+
+def test_bill_aware_and_flat_pace_agree_on_the_last_day():
+    # By the end every bill has landed, so the staircase has to arrive at the
+    # same place as the straight line. A pace that finished anywhere else would
+    # mean the budget could never be spent exactly.
+    budget, schedule = _rent_month()
+    asof = date(2026, 9, 30)
+
+    flat = budgets.status(budget, [], asof=asof)
+    aware = budgets.status(budget, [], asof=asof, schedule=schedule)
+
+    assert aware.pace == flat.pace == Money.parse("1200")
+
+
+def test_no_schedule_leaves_the_pace_exactly_as_it_was():
+    budget, _ = _rent_month()
+    asof = date(2026, 9, 10)
+    assert budgets.status(budget, [], asof=asof).pace == budgets.status(
+        budget, [], asof=asof, schedule=[]
+    ).pace
+
+
+def test_a_bill_larger_than_its_envelope_cannot_pace_past_the_allowance():
+    # Otherwise a line whose bill exceeds what was budgeted for it reports a
+    # pace above its own allowance, and then calls genuinely overspent money
+    # "on track" -- the one thing this screen must never do.
+    budget = _september(
+        envelopes=[Envelope(category="Rent/Mortgage", allowance=Money.parse("500"))]
+    )
+    schedule = [
+        budgets.Commitment(
+            due=date(2026, 9, 1), category="Rent/Mortgage", amount=Money.parse("-900")
+        )
+    ]
+    state = budgets.status(budget, [], asof=date(2026, 9, 5), schedule=schedule)
+
+    assert state.pace == Money.parse("500")
+    line = state.lines[0]
+    assert line.pace.minor <= line.allowance.minor
+
+
+def test_a_commitment_outside_the_window_is_somebody_elses_month():
+    budget, _ = _rent_month()
+    schedule = [
+        budgets.Commitment(
+            due=date(2026, 8, 3), category="Rent/Mortgage", amount=Money.parse("-900")
+        )
+    ]
+    state = budgets.status(budget, [], asof=date(2026, 9, 3), schedule=schedule)
+    assert state.scheduled_so_far == Money.zero()

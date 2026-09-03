@@ -8,7 +8,7 @@ instant and every screen agrees about the numbers it is showing.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from ..analysis import budget as budget_mod
@@ -490,7 +490,15 @@ class Ledger:
         any guesses applied, so the budget agrees with what the Spending screen
         shows rather than re-deriving categories from the built-in rules.
         """
-        return budgets_mod.status(budget, self.transactions, asof=asof, categories=self.categories)
+        return budgets_mod.status(
+            budget,
+            self.transactions,
+            asof=asof,
+            categories=self.categories,
+            # Without this the pace is a straight line, and a month whose bills
+            # land on the 1st reads as a disaster on the 2nd.
+            schedule=self.commitment_schedule(budget.starts_on, budget.ends_on),
+        )
 
     def suggest_envelopes(self, starts_on: date, ends_on: date, accounts=None):
         """What this window costs at the user's usual rate, per category."""
@@ -594,6 +602,79 @@ class Ledger:
             minor += abs(amount.minor) * per_year.get(series.cadence, 0) // 12
         return Money(minor)
 
+    def series_category(self, series) -> str:
+        """Which category a recurring series' money lands in.
+
+        One definition, used by everything that needs it. It existed in three
+        places at once and they had already drifted apart -- the per-category
+        breakdown skipped stale series while the headline figure counted them,
+        and the two disagreed by exactly the cost of a subscription cancelled
+        sixteen months earlier. A single answer cannot drift from itself.
+
+        Charges vote when there are any, so a mis-normalised merchant name
+        cannot move rent out of Rent/Mortgage. A tracked entry has no charges,
+        so it says for itself; one that says nothing falls back to
+        Subscriptions, where somebody would look for it.
+        """
+        from collections import Counter
+
+        by_id = {tx.id: tx for tx in self.transactions}
+        votes = Counter(
+            self.category_of(by_id[tx_id])
+            for tx_id in getattr(series, "transaction_ids", ()) or ()
+            if tx_id in by_id
+        )
+        if votes:
+            return votes.most_common(1)[0][0]
+        return self.tracked_category(series) or "Subscriptions"
+
+    def commitment_schedule(self, start: date, end: date) -> list:
+        """Every charge already expected between two dates, with its date.
+
+        A budget's pace is a straight line without this, which is wrong in any
+        month that contains bills: rent leaving on the 1st is not overspending
+        on the 2nd. See analysis.budgets.Commitment.
+
+        Stale series are left out for the same reason they are left out of the
+        committed totals -- a charge that stopped arriving is not expected.
+        """
+        step_days = {"weekly": 7, "biweekly": 14}
+        step_months = {"monthly": 1, "quarterly": 3, "yearly": 12}
+        stale = {id(series) for series in self.stale_series}
+
+        out = []
+        for series in self.series:
+            if self.kind_of(series) not in budget_mod.COMMITTED_KINDS:
+                continue
+            if id(series) in stale:
+                continue
+            amount = self.current_amount(series)
+            if amount.minor >= 0:
+                continue
+            when = getattr(series, "next_expected", None)
+            if when is None:
+                continue
+            category = self.series_category(series)
+            cadence = getattr(series, "cadence", "")
+
+            # A prediction can sit in the past; roll it forward rather than
+            # dropping it, exactly as the Upcoming screen does.
+            for _ in range(200):  # a hard stop: never spin on a bad cadence
+                if when > end:
+                    break
+                if when >= start:
+                    out.append(
+                        budgets_mod.Commitment(due=when, category=category, amount=amount)
+                    )
+                if cadence in step_days:
+                    when = when + timedelta(days=step_days[cadence])
+                elif cadence in step_months:
+                    when = _add_months(when, step_months[cadence])
+                else:
+                    break  # an unknown cadence charges once, as far as we know
+        out.sort(key=lambda c: (c.due, c.category))
+        return out
+
     def tracked_category(self, series) -> str:
         """What a manually tracked entry says it buys, or "" if it says nothing.
 
@@ -618,10 +699,7 @@ class Ledger:
         from the merchant name, so a mis-normalised name cannot move rent out
         of Housing.
         """
-        from collections import Counter
-
         per_year = {"weekly": 52, "biweekly": 26, "monthly": 12, "quarterly": 4, "yearly": 1}
-        by_id = {tx.id: tx for tx in self.transactions}
         # A series whose expected charge never arrived is not a commitment.
         # One quarterly subscription last charged in May 2025 and overdue ever
         # since was still being counted as $16 a month of fixed costs, which
@@ -637,9 +715,7 @@ class Ledger:
             amount = self.current_amount(series)
             if amount.minor >= 0:
                 continue
-            votes = Counter(
-                self.category_of(by_id[tx_id]) for tx_id in series.transaction_ids if tx_id in by_id
-            )
+
             # A tracked entry has no charges to vote, so it says for itself
             # what it buys. Without that every one of them landed in
             # Subscriptions, which is the same mistake the Subscriptions
@@ -648,11 +724,7 @@ class Ledger:
             # Costco card both vanished into one label. Entries with nothing
             # set still fall back to Subscriptions, which is where someone
             # would look for an uncategorised recurring charge.
-            category = (
-                votes.most_common(1)[0][0]
-                if votes
-                else (self.tracked_category(series) or "Subscriptions")
-            )
+            category = self.series_category(series)
             monthly = abs(amount.minor) * per_year.get(series.cadence, 0) // 12
             out[category] = out.get(category, 0) + monthly
         return {name: Money(minor) for name, minor in out.items() if minor > 0}
@@ -665,10 +737,7 @@ class Ledger:
         existed the only way to answer it was to go and read the
         Subscriptions screen with the figure held in your head.
         """
-        from collections import Counter
-
         per_year = {"weekly": 52, "biweekly": 26, "monthly": 12, "quarterly": 4, "yearly": 1}
-        by_id = {tx.id: tx for tx in self.transactions}
         stale = {id(series) for series in self.stale_series}
 
         found: list[dict] = []
@@ -680,14 +749,7 @@ class Ledger:
             amount = self.current_amount(series)
             if amount.minor >= 0:
                 continue
-            votes = Counter(
-                self.category_of(by_id[tx_id]) for tx_id in series.transaction_ids if tx_id in by_id
-            )
-            landed = (
-                votes.most_common(1)[0][0]
-                if votes
-                else (self.tracked_category(series) or "Subscriptions")
-            )
+            landed = self.series_category(series)
             if landed != category:
                 continue
             found.append(
@@ -1268,3 +1330,20 @@ class Ledger:
         rows = [(name, abs(total(items)), counts[name]) for name, items in amounts.items()]
         rows.sort(key=lambda r: -r[1].minor)
         return rows
+
+
+def _add_months(when: date, months: int) -> date:
+    """Same day-of-month, `months` later, clamped to the month's length.
+
+    The 31st plus one month is the 28th, 29th or 30th depending on where you
+    land; naive arithmetic raises instead, and a bill that falls on the 31st is
+    not a rare thing.
+    """
+    import calendar
+
+    month_index = when.month - 1 + months
+    year = when.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(when.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+

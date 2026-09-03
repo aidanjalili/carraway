@@ -509,6 +509,28 @@ def describe_clashes(clashes_found: Sequence[Clash]) -> str:
 
 
 @dataclass(frozen=True, slots=True)
+class Commitment:
+    """A charge the ledger already expects, on the day it expects it.
+
+    Pace is otherwise a straight line: two days into a thirty-day budget you
+    should have spent 2/30 of it. That is wrong in any month containing bills.
+    Rent leaves on the 1st, so by the 2nd a quarter of the month's money is
+    legitimately gone and the screen reads as a disaster when nothing has gone
+    wrong -- and the same straight line flatters you later in a month whose
+    bills have not landed yet.
+
+    Knowing when the known charges fall turns that line into a staircase which
+    steps on the days the money was always going to leave. Whatever is left
+    over is still spread evenly, because discretionary spending genuinely has
+    no schedule.
+    """
+
+    due: date
+    category: str
+    amount: Money
+
+
+@dataclass(frozen=True, slots=True)
 class EnvelopeStatus:
     """One budget line part way through the window."""
 
@@ -516,6 +538,11 @@ class EnvelopeStatus:
     allowance: Money
     spent: Money
     pace: Money  # what "on schedule" looks like today
+    # The part of this line that was never discretionary. Kept so a screen can
+    # say *why* the pace jumped: "$948 of rent was due by now" explains a
+    # figure that otherwise looks like a mistake.
+    scheduled_so_far: Money = field(default_factory=Money.zero)
+    scheduled_total: Money = field(default_factory=Money.zero)
 
     @property
     def remaining(self) -> Money:
@@ -596,13 +623,42 @@ class BudgetStatus:
 
     @property
     def pace(self) -> Money:
-        """What should have been spent by now to finish exactly on budget."""
+        """What should have been spent by now to finish exactly on budget.
+
+        Summed from the lines rather than recomputed over the total. Each line
+        already knows which of its money was owed on a date and which is
+        discretionary; doing the arithmetic again up here would quietly go back
+        to a straight line and disagree with the rows the user is reading.
+        """
         if not self.total_days:
             return self.allowance
+        if self.lines:
+            return Money(
+                sum(line.pace.minor for line in self.lines), self.allowance.currency
+            )
         fraction = Decimal(self.elapsed_days) / Decimal(self.total_days)
         return Money(
             int((Decimal(self.allowance.minor) * fraction).to_integral_value()),
             self.allowance.currency,
+        )
+
+    @property
+    def scheduled_so_far(self) -> Money:
+        """Known charges that have already fallen due inside the window.
+
+        This is the number that explains a pace nobody expected: spending can
+        be far ahead of a straight line and still be exactly on plan when most
+        of it was rent.
+        """
+        return Money(
+            sum(line.scheduled_so_far.minor for line in self.lines), self.allowance.currency
+        )
+
+    @property
+    def scheduled_total(self) -> Money:
+        """Known charges the whole window is expecting."""
+        return Money(
+            sum(line.scheduled_total.minor for line in self.lines), self.allowance.currency
         )
 
     @property
@@ -679,6 +735,7 @@ def status(
     *,
     asof: date | None = None,
     categories: Mapping[str, str] | None = None,
+    schedule: Sequence[Commitment] | None = None,
 ) -> BudgetStatus:
     """Compare spending inside the budget's window against its envelopes.
 
@@ -725,18 +782,38 @@ def status(
             week_minor += outflow
 
     fraction = Decimal(elapsed) / Decimal(total_days) if total_days else Decimal(0)
+
+    # Known charges, split into what has fallen due and what the window holds
+    # in total. Anything dated outside the window is somebody else's month.
+    due_by_now: dict[str, int] = {}
+    due_in_all: dict[str, int] = {}
+    for commitment in schedule or ():
+        if not budget.covers(commitment.due):
+            continue
+        owed = abs(commitment.amount.minor)
+        due_in_all[commitment.category] = due_in_all.get(commitment.category, 0) + owed
+        if commitment.due <= today:
+            due_by_now[commitment.category] = due_by_now.get(commitment.category, 0) + owed
+
     lines: list[EnvelopeStatus] = []
     for envelope in budget.envelopes:
         allowance = envelope.allowance
+        booked = min(due_in_all.get(envelope.category, 0), allowance.minor)
+        landed = min(due_by_now.get(envelope.category, 0), booked)
+        # Only the part nobody has already committed gets spread evenly.
+        loose = max(allowance.minor - booked, 0)
+        paced = landed + int((Decimal(loose) * fraction).to_integral_value())
         lines.append(
             EnvelopeStatus(
                 category=envelope.category,
                 allowance=allowance,
                 spent=Money(max(spent.pop(envelope.category, 0), 0), allowance.currency),
-                pace=Money(
-                    int((Decimal(allowance.minor) * fraction).to_integral_value()),
-                    allowance.currency,
-                ),
+                # Never promise more than the envelope holds: a bill larger
+                # than its own allowance would otherwise report a pace above
+                # the allowance and call an overspent line "on track".
+                pace=Money(min(paced, allowance.minor), allowance.currency),
+                scheduled_so_far=Money(landed, allowance.currency),
+                scheduled_total=Money(booked, allowance.currency),
             )
         )
     # Whatever is left was never budgeted for.
