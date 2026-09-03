@@ -367,3 +367,24 @@ def test_a_trading_or_betting_account_is_a_transfer():
     assert categorize(make_tx("KALSHI KLEAR LLC NEW YORK NY", "-500.00")) == "Transfer"
     assert categorize(make_tx("TWINSPIRES TWINSPIRES PPD", "60.00")) == "Transfer"
     assert categorize(make_tx("NON-CHASE ATM WITHDRAW 009446", "-103.00")) == "Transfer"
+
+
+def test_short_catalogue_names_do_not_match_inside_words():
+    # The subscription catalogue matches short names on word boundaries, because
+    # "AWS" appears inside "MATT LAWS" and "BOX" inside "LIQUOR BOX". Those rules
+    # are also turned into category rules, and the boundary was being dropped in
+    # that translation -- so a Venmo payment to a friend called Matt Laws was
+    # filed as a cloud subscription, and no amount of user rules could dislodge
+    # it, since the user rule matched the description while this one matched the
+    # normalised merchant.
+    assert categorize(make_tx("MATT LAWS COFFEE")) == "Dining"
+    # No built-in claims "MEXICAN", so this lands Uncategorized -- which is
+    # the honest answer. The bug was that it landed *Subscriptions*, a wrong
+    # answer that looks like a right one and hides in a budget total.
+    assert categorize(make_tx("MATT LAWS DINNER. MEXICAN")) != "Subscriptions"
+    assert categorize(make_tx("OUTLAWS BBQ")) != "Subscriptions"
+
+    # The catalogue entry itself must still work, or the fix traded one bug for
+    # another: these are the names the boundaries are protecting, not blocking.
+    assert categorize(make_tx("AWS")) == "Subscriptions"
+    assert categorize(make_tx("DIGITALOCEAN")) == "Subscriptions"

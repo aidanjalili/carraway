@@ -965,7 +965,7 @@ def _catalogue_rules() -> list[Rule]:
     specific built-in rule should still win, but a catalogue entry should beat
     a bare keyword match.
     """
-    from .subscriptions import subscription_names
+    from .subscriptions import _UNAMBIGUOUS_LENGTH, subscription_names
 
     # Only the subscription half. Deriving rules from the biller list was
     # tried and reverted: it names rent, insurance and loan providers
@@ -973,9 +973,27 @@ def _catalogue_rules() -> list[Rule]:
     # rent into the wrong category and made Rent/Mortgage vanish from the
     # breakdown entirely. The hand-written rules place those correctly, and
     # each needs its own category rather than one bucket.
-    return [
-        Rule(name, SUBSCRIPTIONS, priority=PRIORITY_BUILTIN - 10) for name in subscription_names()
-    ]
+    #
+    # Short names carry the same word boundaries the catalogue itself uses.
+    # Without them these rules are plain substrings, and "AWS" fires inside
+    # "MATT LAWS" -- filing a Venmo payment to a friend as a cloud
+    # subscription. subscriptions.py documents that exact trap and guards
+    # against it; the guard was being lost in the translation to a Rule, so a
+    # merchant could be categorised by a rule the catalogue would not match.
+    #
+    # Inflating the pattern does skew _ordered's longest-first tiebreak, which
+    # is harmless here precisely because every rule below returns the same
+    # category: their order relative to each other cannot change an answer.
+    rules = []
+    for name in subscription_names():
+        if len(name) >= _UNAMBIGUOUS_LENGTH:
+            pattern, is_regex = name, False
+        else:
+            pattern, is_regex = rf"(?<![A-Z0-9]){re.escape(name)}(?![A-Z0-9])", True
+        rules.append(
+            Rule(pattern, SUBSCRIPTIONS, priority=PRIORITY_BUILTIN - 10, regex=is_regex)
+        )
+    return rules
 
 
 def _ordered(rules: Sequence[Rule]) -> list[Rule]:
