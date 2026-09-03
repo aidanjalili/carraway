@@ -555,7 +555,9 @@ def list_manual_subscriptions(
             "kind": r["kind"],
             "paid_via": r["paid_via"],
             "paid_via_account": r["paid_via_account"] or "",
-            "category": (r["category"] or "") if "category" in r.keys() else "",
+            # dict(r).get, not `"category" in r`: sqlite3.Row iterates its
+            # values, so the membership test would ask the wrong question.
+            "category": dict(r).get("category") or "",
             "notes": r["notes"],
             "active": bool(r["active"]),
             "started_on": (date.fromisoformat(r["started_on"]) if r["started_on"] else None),

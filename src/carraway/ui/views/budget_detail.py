@@ -279,6 +279,21 @@ class BudgetDetailView(QWidget):
 
     def _draw_footnote(self, budget, state) -> None:
         notes = []
+        # Why "on schedule" is where it is. Without this the pace looks wrong
+        # in any month with bills near the start: on the 3rd, after rent, being
+        # a thousand dollars "ahead of schedule" is alarming until you are told
+        # that a thousand dollars of it was always leaving on the 3rd.
+        if state.scheduled_so_far.minor:
+            still = Money(
+                state.scheduled_total.minor - state.scheduled_so_far.minor,
+                state.scheduled_total.currency,
+            )
+            note = (
+                f"{state.scheduled_so_far.format()} of that pace is bills already due"
+            )
+            if still.minor > 0:
+                note += f", with {still.format()} of them still to come"
+            notes.append(note)
         unbudgeted = [line for line in state.lines if line.unbudgeted]
         if unbudgeted:
             total = Money.zero()

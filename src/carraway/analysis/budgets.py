@@ -643,6 +643,24 @@ class BudgetStatus:
         )
 
     @property
+    def even_pace(self) -> Money:
+        """The straight-line pace, ignoring when anything is due.
+
+        Kept beside `pace` rather than replaced by it. The even line is still
+        the honest answer to "how much of the window has passed", and showing
+        both is what makes the difference between them legible: being far ahead
+        of an even pace is only reassuring once you can see that bills account
+        for it.
+        """
+        if not self.total_days:
+            return self.allowance
+        fraction = Decimal(self.elapsed_days) / Decimal(self.total_days)
+        return Money(
+            int((Decimal(self.allowance.minor) * fraction).to_integral_value()),
+            self.allowance.currency,
+        )
+
+    @property
     def scheduled_so_far(self) -> Money:
         """Known charges that have already fallen due inside the window.
 

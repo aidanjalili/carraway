@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import uuid
 from datetime import date, datetime
 from pathlib import Path
@@ -138,9 +139,9 @@ class MainWindow(QMainWindow):
         saved = self.ledger.setting("window_geometry")
         if saved:
             try:
-                if self.restoreGeometry(QByteArray.fromBase64(saved.encode("ascii"))):
-                    if self._is_on_a_screen():
-                        return
+                restored = self.restoreGeometry(QByteArray.fromBase64(saved.encode("ascii")))
+                if restored and self._is_on_a_screen():
+                    return
             except Exception:
                 # A corrupt or stale value must never stop the app opening;
                 # falling through just sizes the window from scratch.
@@ -168,14 +169,12 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         """Remember the window before it goes."""
-        try:
+        # Failing to record a window size is not a reason to refuse to quit.
+        with contextlib.suppress(Exception):
             self.ledger.save_setting(
                 "window_geometry",
                 bytes(self.saveGeometry().toBase64()).decode("ascii"),
             )
-        except Exception:
-            # Failing to record a window size is not a reason to refuse to quit.
-            pass
         super().closeEvent(event)
 
     def _build_sidebar(self) -> QWidget:

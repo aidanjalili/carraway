@@ -396,13 +396,36 @@ class Ledger:
                     "left_this_week": _wire(state.left_this_week),
                     "per_day": _wire(state.daily_remaining),
                     "on_track": state.on_track,
-                    # Where an even pace says you should be by now, and how
-                    # far from it you actually are. "On track" is a yes or no;
-                    # this is the number that says whether to worry, and by
-                    # how much. Negative means spent more than the pace.
+                    # Where you should be by now, and how far from it you
+                    # actually are. "On track" is a yes or no; this is the
+                    # number that says whether to worry, and by how much.
+                    # Negative means spent more than the pace.
+                    #
+                    # The pace is not an even line: it steps on the days the
+                    # known bills fall, so a month whose rent leaves on the 3rd
+                    # does not read as a disaster on the 4th.
                     "pace": _wire(state.pace),
                     "ahead_by": _wire(
                         Money(state.pace.minor - state.spent.minor, state.spent.currency)
+                    ),
+                    # What the pace is made of, so the phone can say why it
+                    # moved. A number that jumps a thousand dollars overnight
+                    # needs to explain itself or it will not be believed.
+                    # Both paces travel. The dynamic one leads on the phone,
+                    # but the even line stays available underneath: the gap
+                    # between them is the whole point, and a figure with
+                    # nothing to compare it against explains nothing.
+                    "even_pace": _wire(state.even_pace),
+                    "even_ahead_by": _wire(
+                        Money(state.even_pace.minor - state.spent.minor, state.spent.currency)
+                    ),
+                    "bills_due": _wire(state.scheduled_so_far),
+                    "bills_total": _wire(state.scheduled_total),
+                    "bills_to_come": _wire(
+                        Money(
+                            state.scheduled_total.minor - state.scheduled_so_far.minor,
+                            state.scheduled_total.currency,
+                        )
                     ),
                     "elapsed_days": state.elapsed_days,
                     "total_days": state.total_days,
