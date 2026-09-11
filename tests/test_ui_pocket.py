@@ -980,3 +980,137 @@ def test_the_history_the_phone_reads_carries_ids_and_the_current_verdict(app, tm
     rows = ledger.pocket_history()["transactions"]
     row = next(r for r in rows if r["id"] == "spend1")
     assert row["excluded"] is True
+
+
+# -- collecting on a timer rather than on a button press ------------------
+
+
+def test_a_quiet_collection_says_nothing(app):
+    """The header is a label, not a log. A cycle that found nothing must
+    leave whatever is on screen alone."""
+    from carraway.ui.views.pocket import describe_collection
+
+    assert describe_collection({"added": 0, "skipped": 0, "corrections": []}) == ""
+    assert describe_collection({}) == ""
+
+
+def test_an_unmatched_entry_alone_stays_quiet(app):
+    """It persists until the account is named, so including it would nag
+    about the same entry four times an hour."""
+    from carraway.ui.views.pocket import describe_collection
+
+    assert describe_collection({"added": 0, "unmatched": ["COFFEE", "BUS"]}) == ""
+
+
+def test_a_cash_correction_is_always_named(app):
+    """A transaction nobody typed never enters the ledger unmentioned, and
+    collecting on a timer does not change that."""
+    from carraway.core.money import Money
+    from carraway.ui.views.pocket import describe_collection
+
+    note = describe_collection(
+        {
+            "added": 1,
+            "corrections": [
+                {
+                    "account": "Cash",
+                    "counted": Money.parse("55.00"),
+                    "correction": Money.parse("-15.00"),
+                }
+            ],
+        }
+    )
+    assert "1 from your phone" in note
+    assert "counted $55.00 in Cash" in note
+    assert "-$15.00 to square it up" in note
+
+
+def test_a_correction_of_nothing_is_not_worth_saying(app):
+    from carraway.core.money import Money
+    from carraway.ui.views.pocket import describe_collection
+
+    note = describe_collection(
+        {
+            "corrections": [
+                {
+                    "account": "Cash",
+                    "counted": Money.parse("70.00"),
+                    "correction": Money.parse("0.00"),
+                }
+            ]
+        }
+    )
+    assert note == ""
+
+
+def test_budgeting_changes_from_the_phone_are_reported(app):
+    from carraway.ui.views.pocket import describe_collection
+
+    assert "2 taken out of budgeting" in describe_collection({"excluded": 2})
+    assert "1 put back into budgeting" in describe_collection({"included": 1})
+
+
+def test_collecting_is_skipped_when_pocket_is_not_set_up(app, tmp_path):
+    from PySide6.QtWidgets import QWidget
+
+    from carraway.ui.views.pocket import collect_in_background
+
+    ledger = _cash_ledger(tmp_path)
+    owner = QWidget()
+    assert collect_in_background(owner, ledger) is False
+
+
+def test_the_window_collects_on_open_and_then_publishes(app, tmp_path, monkeypatch):
+    """The order is load-bearing: collecting changes the ledger, and the
+    publish that follows should carry the result."""
+    from carraway.ui.views import pocket as pocket_view
+
+    ledger = _cash_ledger(tmp_path)
+    order: list[str] = []
+
+    monkeypatch.setattr(
+        pocket_view,
+        "collect_in_background",
+        lambda owner, led, on_result=None: (order.append("collect"), True)[1],
+    )
+    monkeypatch.setattr(
+        pocket_view,
+        "publish_in_background",
+        lambda owner, led, **kw: order.append("publish"),
+    )
+
+    from carraway.ui.main_window import MainWindow
+
+    window = MainWindow.__new__(MainWindow)
+    window.ledger = ledger
+    window._pocket_round_trip()
+    # Publishing is chained off the collection's result, not fired alongside
+    # it, or it would send the ledger as it was before the phone's entries.
+    assert order == ["collect"]
+
+
+def test_a_collection_that_found_nothing_does_not_rebuild_every_screen(
+    app, tmp_path, monkeypatch
+):
+    from carraway.ui.views import pocket as pocket_view
+
+    ledger = _cash_ledger(tmp_path)
+    published: list[str] = []
+    monkeypatch.setattr(
+        pocket_view, "publish_in_background", lambda owner, led, **kw: published.append("p")
+    )
+
+    from carraway.ui.main_window import MainWindow
+
+    window = MainWindow.__new__(MainWindow)
+    window.ledger = ledger
+    from PySide6.QtWidgets import QLabel
+
+    window.refresh_all = lambda: pytest.fail("refreshed on an empty collection")
+    window.sync_status = QLabel()
+
+    window._collected({"added": 0, "corrections": []})
+    assert window.sync_status.text() == ""
+    # Still publishes: a budget edited on this laptop has to go out even
+    # when the phone had nothing waiting.
+    assert published == ["p"]

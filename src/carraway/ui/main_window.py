@@ -106,9 +106,46 @@ class MainWindow(QMainWindow):
         # published before. It skips when nothing has changed.
         self._pocket_timer = QTimer(self)
         self._pocket_timer.setInterval(15 * 60 * 1000)
-        self._pocket_timer.timeout.connect(self._publish_if_changed)
+        self._pocket_timer.timeout.connect(self._pocket_round_trip)
         self._pocket_timer.start()
-        QTimer.singleShot(4000, self._publish_if_changed)
+        QTimer.singleShot(4000, self._pocket_round_trip)
+
+    def _pocket_round_trip(self) -> None:
+        """Collect first, then publish.
+
+        In that order, because collecting changes the ledger and the publish
+        that follows should carry the result. Publishing is skipped when
+        nothing has moved, so chaining them costs nothing on a quiet cycle.
+
+        Collecting was a button until now, which was survivable while the
+        phone only ever sent cash entries -- those are the user's own typing
+        and they keep. It stopped being survivable when the phone gained the
+        ability to take a row out of budgeting: a tap that does nothing until
+        somebody remembers to press Collect on a laptop is a tap that looks
+        broken.
+        """
+        if not self._collect_now():
+            self._publish_if_changed()
+
+    def _collect_now(self) -> bool:
+        """Start a collection. False when Pocket is not set up at all."""
+        from .views.pocket import collect_in_background
+
+        return collect_in_background(self, self.ledger, self._collected)
+
+    def _collected(self, result: dict) -> None:
+        """Back on the GUI thread with whatever the phone had been holding."""
+        from .views.pocket import describe_collection
+
+        note = describe_collection(result)
+        if note:
+            # Reloaded only when something actually arrived; rebuilding every
+            # screen on an empty cycle is a visible stutter for no reason,
+            # the same rule a bank sync follows.
+            self.ledger.load()
+            self.refresh_all()
+            self.sync_status.setText(f"From Pocket: {note}")
+        self._publish_if_changed()
 
     def _publish_if_changed(self) -> None:
         from .views.pocket import publish_in_background

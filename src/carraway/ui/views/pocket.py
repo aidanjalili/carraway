@@ -628,6 +628,65 @@ class PocketCard(Card):
         self.rebuild()
 
 
+def describe_collection(result: dict) -> str:
+    """One line for what a collection did, or "" when it did nothing.
+
+    Empty is the important case. This ends up in the header, which is a label
+    rather than a log -- it stays on screen until something replaces it -- so
+    a cycle that found nothing must leave whatever was there alone instead of
+    writing "nothing happened" over it every fifteen minutes.
+
+    An unmatched entry is left out for the same reason. It persists until the
+    account is named, so including it would mean the header nagged about the
+    same entry four times an hour, and the Pocket screen already reports it
+    where it can actually be acted on.
+    """
+    parts: list[str] = []
+    added = result.get("added", 0)
+    if added:
+        parts.append(f"{added} from your phone")
+    for made in result.get("corrections") or []:
+        # Named, always. A cash correction is a transaction nobody typed, and
+        # the rule everywhere else in this app is that one of those never
+        # enters the ledger without being mentioned. Collecting on a timer
+        # rather than on a button press does not change that -- it is the
+        # reason this line exists at all.
+        gap = made["correction"]
+        if gap.minor:
+            parts.append(
+                f"counted {made['counted'].format()} in {made['account']}, "
+                f"{gap.format()} to square it up"
+            )
+    excluded = result.get("excluded", 0)
+    if excluded:
+        parts.append(f"{excluded} taken out of budgeting")
+    included = result.get("included", 0)
+    if included:
+        parts.append(f"{included} put back into budgeting")
+    return " · ".join(parts)
+
+
+def collect_in_background(owner: QWidget, ledger: Ledger, on_result=None) -> bool:
+    """Bring in whatever the phone has been holding. False if not set up.
+
+    Quiet about failures, exactly like publishing: the phone's entries are
+    safe on the server until they are claimed, so a collection that cannot
+    reach it has lost nothing and has no business interrupting someone who
+    was reading their spending.
+    """
+    if not ledger.pocket_configured:
+        return False
+    runner = getattr(owner, "_pocket_collector", None)
+    if runner is None:
+        runner = _Runner(owner)
+        owner._pocket_collector = runner
+    return runner.start(
+        ledger.collect_from_pocket,
+        on_result or (lambda _: None),
+        lambda _: None,
+    )
+
+
 def publish_in_background(owner: QWidget, ledger: Ledger, *, only_if_changed: bool = False) -> bool:
     """Push the budget summary to the phone, quietly. Returns False if not set up.
 
