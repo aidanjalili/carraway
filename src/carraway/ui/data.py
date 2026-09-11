@@ -245,6 +245,7 @@ class Ledger:
             self.load()
 
         corrections = self._apply_counts(entries, by_name, unmatched)
+        verdicts = self._apply_verdicts(entries)
 
         # Only claim what was actually stored. An entry naming an account
         # this ledger does not have stays on the server, so it is not lost
@@ -259,6 +260,53 @@ class Ledger:
             "added": added,
             "skipped": skipped,
             "unmatched": [e.description for e in unmatched],
+            **verdicts,
+        }
+
+    def _apply_verdicts(self, entries) -> dict:
+        """Apply "stop counting this" / "count it again" from the phone.
+
+        Later verdicts win over earlier ones on the same transaction, which
+        is what happens naturally when they are applied oldest first: a row
+        toggled twice on the way to the shops ends where it was left.
+
+        A verdict naming a transaction this ledger does not have is counted
+        and dropped rather than left on the server. Unlike an entry with an
+        unfamiliar account name, there is nothing the user could do to make
+        it apply later -- the history the phone was reading only reaches back
+        ninety days, and an id outside that is gone from its own point of
+        view too. Leaving it would mean retrying it at every collection for
+        ever.
+        """
+        verdicts = sorted(
+            (e for e in entries if getattr(e, "is_verdict", False)),
+            key=lambda e: e.occurred_on,
+        )
+        if not verdicts:
+            return {}
+
+        known = {tx.id for tx in self.transactions}
+        wanted: dict[str, bool] = {}
+        unknown = 0
+        for entry in verdicts:
+            if entry.subject not in known:
+                unknown += 1
+                continue
+            wanted[entry.subject] = entry.excludes
+
+        if wanted:
+            conn = db.connect(self.path)
+            for excluded in (True, False):
+                ids = [i for i, flag in wanted.items() if flag is excluded]
+                if ids:
+                    db.set_budget_excluded(conn, ids, excluded)
+            conn.close()
+            self.load()
+
+        return {
+            "excluded": sum(1 for flag in wanted.values() if flag),
+            "included": sum(1 for flag in wanted.values() if not flag),
+            "unknown_verdicts": unknown,
         }
 
     def _apply_counts(self, entries, by_name: dict, unmatched: list) -> list[dict]:
@@ -340,11 +388,19 @@ class Ledger:
         names = {a.id: a.name for a in self.accounts}
         rows = [
             {
+                # The ledger's own id, so a row read on the phone can be
+                # acted on there and the answer applied to the right
+                # transaction here. It rides inside the sealed blob like
+                # everything else in this payload; the only place it appears
+                # in the clear is on a verdict coming back, where it is the
+                # one field there is.
+                "id": tx.id,
                 "date": tx.date.isoformat(),
                 "description": tx.description,
                 "amount": f"{tx.amount.decimal:.2f}",
                 "category": self.category_of(tx),
                 "account": names.get(tx.account_id, ""),
+                "excluded": bool(getattr(tx, "budget_excluded", False)),
             }
             for tx in self.transactions
             if tx.date >= cutoff and not tx.is_transfer

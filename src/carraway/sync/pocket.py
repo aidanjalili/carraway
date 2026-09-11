@@ -56,11 +56,25 @@ class InboxEntry:
     # actually in their wallet, which is not a transaction: the difference
     # against what this ledger implies is, and only this end can work that
     # out, because the phone never learns the balance.
+    # "exclude" and "include" are neither. They are a verdict on a
+    # transaction this ledger already holds -- stop counting it toward
+    # budgets, or start again -- and `subject` is that transaction's id. They
+    # exist because the decision is usually made while looking at the row on
+    # a phone, hours before the laptop is next open.
     kind: str = "spend"
+    subject: str = ""
 
     @property
     def is_count(self) -> bool:
         return self.kind == "count"
+
+    @property
+    def is_verdict(self) -> bool:
+        return self.kind in ("exclude", "include")
+
+    @property
+    def excludes(self) -> bool:
+        return self.kind == "exclude"
 
     @classmethod
     def from_json(cls, payload: dict) -> InboxEntry:
@@ -78,10 +92,14 @@ class InboxEntry:
             # part that faces the internet, which makes it the part to treat
             # as a claim rather than a fact.
             amount=_amount(payload["amount"]),
-            description=str(payload["description"]),
+            # A verdict carries no description -- the server refuses to
+            # store one -- so this has to tolerate the key being absent
+            # rather than index into it.
+            description=str(payload.get("description") or ""),
             category=str(payload.get("category") or ""),
             account=str(payload.get("account") or "Cash"),
             kind=str(payload.get("kind") or "spend"),
+            subject=str(payload.get("subject") or ""),
         )
 
 
@@ -223,7 +241,9 @@ def to_transactions(
     for entry in entries:
         # A count is not a movement and has no transaction of its own. The
         # caller reconciles it against the ledger and writes the difference.
-        if entry.is_count:
+        # A verdict is not a movement either -- it is an edit to a row that
+        # already exists, applied by the caller for the same reason.
+        if entry.is_count or entry.is_verdict:
             continue
         account_id = lowered.get(entry.account.lower())
         if account_id is None:

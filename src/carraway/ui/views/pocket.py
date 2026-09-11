@@ -532,6 +532,21 @@ class PocketCard(Card):
                     f"{len(unmatched)} could not be matched to an account "
                     f"and are still waiting: {', '.join(unmatched[:3])}."
                 )
+            # Budgeting changed under the user without them touching this
+            # computer, so it gets said out loud rather than left to be
+            # noticed as a total that moved.
+            excluded = result.get("excluded", 0)
+            included = result.get("included", 0)
+            if excluded:
+                parts.append(f"{excluded} taken out of budgeting from your phone.")
+            if included:
+                parts.append(f"{included} put back into budgeting from your phone.")
+            missing = result.get("unknown_verdicts", 0)
+            if missing:
+                parts.append(
+                    f"{missing} budgeting change(s) named transactions this ledger "
+                    "no longer has, and were dropped."
+                )
             from ..widgets import refresh_everything
 
             refresh_everything(self)

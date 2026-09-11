@@ -850,3 +850,133 @@ def test_the_digest_changes_when_the_history_does(app, tmp_path, monkeypatch):
 
     ledger.vault_key = lambda: vault.new_key()
     assert ledger.pocket_digest() != before
+
+
+# -- taking a row out of budgeting from the phone -------------------------
+
+
+def _verdict(subject: str, kind: str = "exclude"):
+    from datetime import date
+
+    from carraway.core.money import Money
+    from carraway.sync.pocket import InboxEntry
+
+    return InboxEntry(
+        id=f"v-{kind}-{subject}",
+        occurred_on=date.today(),
+        amount=Money.parse("0.00"),
+        # The server refuses to store a description on a verdict, so one
+        # never arrives with one. This is the shape the laptop really sees.
+        description="",
+        category="",
+        account="",
+        kind=kind,
+        subject=subject,
+    )
+
+
+def test_a_verdict_from_the_phone_excludes_the_transaction(app, tmp_path, monkeypatch):
+    ledger = _cash_ledger(tmp_path)
+    assert [t.budget_excluded for t in ledger.transactions] == [False]
+
+    client = FakeClient()
+    client.entries = [_verdict("spend1")]
+    monkeypatch.setattr(Ledger, "pocket_client", lambda self: client)
+    ledger.save_setting("pocket_url", "https://money.example.com")
+
+    result = ledger.collect_from_pocket()
+    assert result["excluded"] == 1
+    assert result["included"] == 0
+    assert [t.budget_excluded for t in ledger.transactions] == [True]
+    # Applied, so it must not come round again at the next collection.
+    assert "v-exclude-spend1" in client.claimed
+
+
+def test_a_verdict_can_put_it_back(app, tmp_path, monkeypatch):
+    from carraway.core import db
+
+    ledger = _cash_ledger(tmp_path)
+    conn = db.connect(ledger.path)
+    db.set_budget_excluded(conn, ["spend1"], True)
+    conn.close()
+    ledger.load()
+    assert [t.budget_excluded for t in ledger.transactions] == [True]
+
+    client = FakeClient()
+    client.entries = [_verdict("spend1", "include")]
+    monkeypatch.setattr(Ledger, "pocket_client", lambda self: client)
+    ledger.save_setting("pocket_url", "https://money.example.com")
+
+    result = ledger.collect_from_pocket()
+    assert result["included"] == 1
+    assert [t.budget_excluded for t in ledger.transactions] == [False]
+
+
+def test_the_last_verdict_on_a_row_wins(app, tmp_path, monkeypatch):
+    """Toggled twice on the way to the shops, collected in one go."""
+    import dataclasses
+    from datetime import date, timedelta
+
+    ledger = _cash_ledger(tmp_path)
+    # Arriving out of order on purpose: they are applied by when they were
+    # made, not by where they happen to sit in the list.
+    earlier = dataclasses.replace(
+        _verdict("spend1", "exclude"), occurred_on=date.today() - timedelta(days=1)
+    )
+    later = dataclasses.replace(_verdict("spend1", "include"), occurred_on=date.today())
+
+    client = FakeClient()
+    client.entries = [later, earlier]
+    monkeypatch.setattr(Ledger, "pocket_client", lambda self: client)
+    ledger.save_setting("pocket_url", "https://money.example.com")
+
+    ledger.collect_from_pocket()
+    assert [t.budget_excluded for t in ledger.transactions] == [False]
+
+
+def test_a_verdict_for_an_unknown_transaction_is_dropped_not_retried(
+    app, tmp_path, monkeypatch
+):
+    """Nothing the user could do would make it apply, and leaving it on the
+    server means retrying it at every collection for ever."""
+    ledger = _cash_ledger(tmp_path)
+    client = FakeClient()
+    client.entries = [_verdict("a-row-from-last-year")]
+    monkeypatch.setattr(Ledger, "pocket_client", lambda self: client)
+    ledger.save_setting("pocket_url", "https://money.example.com")
+
+    result = ledger.collect_from_pocket()
+    assert result["unknown_verdicts"] == 1
+    assert result["excluded"] == 0
+    assert client.claimed == ["v-exclude-a-row-from-last-year"]
+
+
+def test_a_verdict_is_not_turned_into_a_transaction(app, tmp_path, monkeypatch):
+    """It is an edit to a row that exists, not money moving."""
+    ledger = _cash_ledger(tmp_path)
+    before = len(ledger.transactions)
+
+    client = FakeClient()
+    client.entries = [_verdict("spend1")]
+    monkeypatch.setattr(Ledger, "pocket_client", lambda self: client)
+    ledger.save_setting("pocket_url", "https://money.example.com")
+
+    result = ledger.collect_from_pocket()
+    assert result["added"] == 0
+    assert result["unmatched"] == []
+    assert len(ledger.transactions) == before
+
+
+def test_the_history_the_phone_reads_carries_ids_and_the_current_verdict(app, tmp_path):
+    """Without the id there is nothing for the phone to name back."""
+    from carraway.core import db
+
+    ledger = _cash_ledger(tmp_path)
+    conn = db.connect(ledger.path)
+    db.set_budget_excluded(conn, ["spend1"], True)
+    conn.close()
+    ledger.load()
+
+    rows = ledger.pocket_history()["transactions"]
+    row = next(r for r in rows if r["id"] == "spend1")
+    assert row["excluded"] is True
