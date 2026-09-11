@@ -7,6 +7,7 @@ every one of them. The model builds only what is on screen.
 
 from __future__ import annotations
 
+import contextlib
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -153,13 +154,15 @@ class _FilterProxy(QSortFilterProxyModel):
 
     def __init__(self) -> None:
         super().__init__()
-        self.account_id: str | None = None
+        # None means every account. A set is only built when the user has
+        # actually narrowed it, so the common case stays a single `is None`.
+        self.account_ids: set[str] | None = None
         self.kind: str = "All"
         self.since: date | None = None
         self.until: date | None = None
 
-    def set_account(self, account_id: str | None) -> None:
-        self.account_id = account_id
+    def set_accounts(self, account_ids) -> None:
+        self.account_ids = set(account_ids) if account_ids else None
         self.invalidateFilter()
 
     def set_range(self, since: date | None, until: date | None) -> None:
@@ -173,10 +176,8 @@ class _FilterProxy(QSortFilterProxyModel):
 
     def filterAcceptsRow(self, row: int, parent: QModelIndex) -> bool:  # noqa: N802
         model = self.sourceModel()
-        if self.account_id is not None:
-            transaction = model.rows[row]
-            if transaction.account_id != self.account_id:
-                return False
+        if self.account_ids is not None and model.rows[row].account_id not in self.account_ids:
+            return False
 
         if self.since or self.until:
             when = model.rows[row].date
@@ -235,7 +236,17 @@ class TransactionsView(QWidget):
         # A wrapping row rather than a tab bar, because ten accounts in a tab
         # bar hides most of them behind scroll arrows.
         self.tabs = FilterStrip()
-        self.tabs.currentChanged.connect(self._account_changed)
+        self.tabs.setMultiSelect(True)
+        self.tabs.selectionChanged.connect(self._accounts_clicked)
+        self.tabs.setToolTip(
+            "Click to filter. Click more than one to see them together; "
+            "click a selected account again to drop it."
+        )
+        # The selection is held as account *ids*, not chip positions. The
+        # strip is rebuilt on every refresh and ordered by transaction count,
+        # so an index means a different account after new rows land. Empty
+        # means "All accounts".
+        self._selected_ids: list[str] = []
         layout.addWidget(self.tabs)
 
         search_row = QHBoxLayout()
@@ -350,12 +361,115 @@ class TransactionsView(QWidget):
 
         self._build_tabs()
         self._reset_dates()
+        # Sorting is part of how the screen was left, so it is remembered
+        # too. Connected after the table is built and before the restore, so
+        # the restore itself does not count as the user changing anything.
+        self.table.horizontalHeader().sortIndicatorChanged.connect(
+            lambda *_: self._save_view()
+        )
+        self._restore_view()
         # The banner was built empty and only filled in when a tab was
         # clicked, so opening Transactions showed a blank card where the
         # balance goes -- and the two cash buttons visible over it, which
         # belong to a cash account rather than to "all accounts".
-        self._update_balance(self.tabs.tabData(self.tabs.currentIndex()))
+        self._apply_accounts()
         self._update_count()
+
+    # -- remembering how the screen was left -------------------------------
+
+    _VIEW_SETTING = "transactions_view"
+
+    _restoring = False
+
+    def _save_view(self) -> None:
+        """Write the current filters so the next open lands where this left.
+
+        A no-op while restoring. Putting the saved state back moves the very
+        controls that save on change, so without this the restore would write
+        itself out again several times on every launch -- and a half-applied
+        restore would be the thing written.
+
+        The search box is deliberately *not* kept. A remembered search reads
+        as a broken app: you open Transactions, see four rows out of 2,600,
+        and nothing on screen looks like a filter until you notice the text
+        box. The chips and the date range announce themselves; a search
+        string does not.
+        """
+        if self._restoring:
+            return
+        header = self.table.horizontalHeader()
+        self.ledger.save_setting(
+            self._VIEW_SETTING,
+            {
+                "accounts": list(self._selected_ids),
+                "preset": self.range_preset.currentText(),
+                "since": self.since.date().toPython().isoformat(),
+                "until": self.until.date().toPython().isoformat(),
+                "kind": self.kind.currentText(),
+                "sort_column": header.sortIndicatorSection(),
+                "sort_desc": header.sortIndicatorOrder() == Qt.SortOrder.DescendingOrder,
+            },
+        )
+
+    def _restore_view(self) -> None:
+        """Put back whatever was saved, ignoring anything that no longer fits."""
+        saved = self.ledger.setting(self._VIEW_SETTING)
+        if not isinstance(saved, dict):
+            return
+        self._restoring = True
+        try:
+            self._restore_from(saved)
+        finally:
+            self._restoring = False
+        self._apply_accounts()
+
+    def _restore_from(self, saved: dict) -> None:
+
+        self._select_ids(saved.get("accounts") or [])
+
+        # Each of these is guarded rather than trusted. A category that has
+        # since been hidden, or a preset renamed in a later version, would
+        # otherwise restore as a filter matching nothing with no clue why.
+        kind = saved.get("kind")
+        if kind and self.kind.findText(kind) >= 0:
+            self.kind.blockSignals(True)
+            self.kind.setCurrentText(kind)
+            self.kind.blockSignals(False)
+            self.proxy.set_kind(kind)
+
+        preset = saved.get("preset")
+        if preset and self.range_preset.findText(preset) >= 0:
+            self.range_preset.blockSignals(True)
+            self.range_preset.setCurrentText(preset)
+            self.range_preset.blockSignals(False)
+            self._set_dates_enabled(preset != "All time")
+            if preset == "Custom":
+                # Only a custom range carries its own dates. Every named
+                # preset is recomputed from today, or "last 3 months" would
+                # come back meaning the three months before whenever it was
+                # last saved.
+                for picker, key in ((self.since, "since"), (self.until, "until")):
+                    raw = saved.get(key)
+                    if raw:
+                        with contextlib.suppress(ValueError):
+                            value = date.fromisoformat(str(raw))
+                            picker.blockSignals(True)
+                            picker.setDate(QDate(value.year, value.month, value.day))
+                            picker.blockSignals(False)
+                self._apply_range(
+                    self.since.date().toPython(), self.until.date().toPython()
+                )
+            else:
+                self._preset_chosen(preset)
+
+        column = saved.get("sort_column")
+        if isinstance(column, int) and 0 <= column < len(_COLUMNS):
+            order = (
+                Qt.SortOrder.DescendingOrder
+                if saved.get("sort_desc", True)
+                else Qt.SortOrder.AscendingOrder
+            )
+            self.table.sortByColumn(column, order)
 
     def _reset_dates(self) -> None:
         """Set the pickers to the ledger's own span, without filtering yet."""
@@ -402,6 +516,7 @@ class TransactionsView(QWidget):
             picker.setDate(QDate(value.year, value.month, value.day))
             picker.blockSignals(False)
         self._apply_range(since, last)
+        self._save_view()
 
     def _set_dates_enabled(self, enabled: bool) -> None:
         """Grey the pickers out when the preset already decides the range."""
@@ -420,6 +535,7 @@ class TransactionsView(QWidget):
         since = self.since.date().toPython()
         until = self.until.date().toPython()
         self._apply_range(since, until)
+        self._save_view()
 
     def _apply_range(self, since: date, until: date) -> None:
         dates = [t.date for t in self.ledger.transactions]
@@ -483,6 +599,7 @@ class TransactionsView(QWidget):
     def _kind_changed(self, kind: str) -> None:
         self.proxy.set_kind(kind)
         self._update_count()
+        self._save_view()
 
     def _build_tabs(self) -> None:
         """Rebuild the tab bar from the ledger's accounts."""
@@ -508,62 +625,149 @@ class TransactionsView(QWidget):
                 index, f"{account.name} — {account.institution or account.type}"
             )
 
+        # Every chip was just destroyed and remade, which checks the first one
+        # and nothing else. Without this a refresh -- a bank sync, a category
+        # edit, collecting from the phone -- would silently throw away
+        # whatever the user was looking at and snap back to All accounts.
+        self._select_ids(self._selected_ids)
         self.tabs.blockSignals(False)
 
-    def _account_changed(self, index: int) -> None:
-        account_id = self.tabs.tabData(index)
-        self.proxy.set_account(account_id)
-        # The account column says the same thing as the tab once one is
-        # chosen, so it only earns its place on "All accounts".
-        self.table.setColumnHidden(3, account_id is not None)
-        self._update_balance(account_id)
+    # -- which accounts are being looked at --------------------------------
+
+    def _accounts_clicked(self, indexes: list) -> None:
+        """Apply the strip's new selection, with "All accounts" arbitrated.
+
+        The first chip means "do not filter", so it cannot simply coexist
+        with the others -- "All accounts and also Cash" is not a question.
+        Three rules, and between them every click has one obvious result:
+
+        * clicking All turns everything else off;
+        * clicking an account while All is on replaces All rather than adding
+          to it, so the first click out of the default does what it looks
+          like it does;
+        * unticking the last account falls back to All, because an empty
+          strip showing an empty table looks broken rather than deliberate.
+        """
+        new = set(indexes)
+        was_all = not self._selected_ids
+
+        if not new:
+            # The last checked chip was just unchecked. Nothing selected shows
+            # an empty table, which reads as broken rather than deliberate.
+            new = {0}
+        elif 0 in new and len(new) > 1:
+            # All plus something else, which is not a question. Which half to
+            # keep is decided by what was on a moment ago: coming *from* All
+            # means the click landed on the account, so All gives way; coming
+            # from a set of accounts means the click landed on All, so it
+            # wins and clears them.
+            new = new - {0} if was_all else {0}
+
+        if new != set(indexes):
+            self.tabs.setSelectedIndexes(new)
+        self._selected_ids = [
+            account_id for i in sorted(new) if (account_id := self.tabs.tabData(i))
+        ]
+        self._apply_accounts()
+        self._save_view()
+
+    def _select_ids(self, account_ids) -> None:
+        """Check the chips for these accounts. Unknown ids are dropped.
+
+        Ids rather than positions, and dropping what it cannot find, because
+        this also runs after an account is closed or removed -- a remembered
+        selection naming something gone should fall back to All rather than
+        check whatever now sits at that position.
+        """
+        wanted = set(account_ids or [])
+        indexes = [i for i in range(self.tabs.count()) if self.tabs.tabData(i) in wanted]
+        if not indexes:
+            indexes = [0]
+        self.tabs.setSelectedIndexes(indexes)
+        self._selected_ids = [
+            account_id for i in indexes if (account_id := self.tabs.tabData(i))
+        ]
+
+    def _selected_account_ids(self) -> list[str]:
+        """The chosen account ids. Empty means every account."""
+        ids = [self.tabs.tabData(i) for i in self.tabs.selectedIndexes()]
+        return [account_id for account_id in ids if account_id]
+
+    def _apply_accounts(self) -> None:
+        chosen = self._selected_account_ids()
+        self.proxy.set_accounts(chosen)
+        # The account column repeats the chip once exactly one is chosen. With
+        # several it is the only thing telling two rows apart, so it comes
+        # back.
+        self.table.setColumnHidden(3, len(chosen) == 1)
+        self._update_balance(chosen)
         self._update_count()
 
-    def _update_balance(self, account_id: str | None) -> None:
-        """Show the balance for whichever account the tabs are filtered to."""
-        is_cash = self.ledger.is_cash_account(account_id)
+    def _update_balance(self, account_ids: list) -> None:
+        """Show the balance for whatever the strip is filtered to."""
+        # Typing a balance only means anything for one cash account. With
+        # several selected there is no single thing the figure would be about.
+        only = account_ids[0] if len(account_ids) == 1 else None
+        is_cash = self.ledger.is_cash_account(only)
         self.set_balance_button.setVisible(is_cash)
         self.add_txn_button.setVisible(is_cash)
+
         balances = self.ledger.balances
-        if account_id is None:
-            if not balances:
-                self.balance.show_nothing("no balances recorded yet")
+        if only is not None:
+            name = self.ledger.account_name(only)
+            balance = balances.get(only)
+            if balance is None:
+                self.balance.show_nothing(f"{name} · no balance recorded")
                 return
-            # Liabilities subtract: a card you owe $500 on is -$500 against
-            # what you hold, which is what makes this figure a net worth
-            # rather than a sum of unrelated numbers.
-            net = sum(
-                (
-                    -abs(balance) if self._is_liability(aid) else balance
-                    for aid, balance in balances.items()
-                ),
-                Money.zero(),
-            )
-            counted = len(balances)
+            owed = self._is_liability(only) and balance.minor != 0
             self.balance.show_balance(
-                net.format(),
-                f"net across {counted} account{'s' if counted != 1 else ''}",
-                owed=net.minor < 0,
+                abs(balance).format(),
+                f"{name} · {'owed' if owed else 'balance'}",
+                owed=owed,
             )
             return
 
-        name = self.ledger.account_name(account_id)
-        balance = balances.get(account_id)
-        if balance is None:
-            self.balance.show_nothing(f"{name} · no balance recorded")
+        # Everything, or a hand-picked handful. Same arithmetic either way.
+        counting = {
+            aid: amount
+            for aid, amount in balances.items()
+            if not account_ids or aid in set(account_ids)
+        }
+        if not counting:
+            self.balance.show_nothing(
+                "no balances recorded yet"
+                if not account_ids
+                else "no balance recorded for these accounts"
+            )
             return
-
-        owed = self._is_liability(account_id) and balance.minor != 0
+        # Liabilities subtract: a card you owe $500 on is -$500 against what
+        # you hold, which is what makes this figure a net worth rather than a
+        # sum of unrelated numbers.
+        net = sum(
+            (
+                -abs(balance) if self._is_liability(aid) else balance
+                for aid, balance in counting.items()
+            ),
+            Money.zero(),
+        )
+        counted = len(counting)
         self.balance.show_balance(
-            abs(balance).format(),
-            f"{name} · {'owed' if owed else 'balance'}",
-            owed=owed,
+            net.format(),
+            f"net across {counted} account{'s' if counted != 1 else ''}",
+            owed=net.minor < 0,
         )
 
     def _cash_account(self) -> str | None:
-        """The selected account id when it is a cash account, else None."""
-        account_id = self.tabs.tabData(self.tabs.currentIndex())
-        return account_id if self.ledger.is_cash_account(account_id) else None
+        """The selected account when exactly one is chosen and it is cash.
+
+        Exactly one, because everything this answers -- setting a balance,
+        adding a movement by hand -- has to name a single account, and with
+        two selected there is nothing to name.
+        """
+        chosen = self._selected_account_ids()
+        if len(chosen) != 1:
+            return None
+        return chosen[0] if self.ledger.is_cash_account(chosen[0]) else None
 
     def _set_cash_balance(self) -> None:
         """Ask what the account really holds, and optionally reconcile to it."""
@@ -686,5 +890,5 @@ class TransactionsView(QWidget):
         self.model.rows = list(self.ledger.transactions)
         self.model.endResetModel()
         self._build_tabs()
-        self._update_balance(self.tabs.tabData(self.tabs.currentIndex()))
+        self._apply_accounts()
         self._update_count()

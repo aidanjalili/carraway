@@ -19,6 +19,7 @@ pytest.importorskip("PySide6", reason="GUI tests need the [gui] extra")
 
 from datetime import date  # noqa: E402
 
+from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
 
 from carraway.core import db  # noqa: E402
@@ -519,3 +520,224 @@ def test_an_undated_entry_is_allowed_and_sorts_last(app, with_balance):
     from carraway.ui.views.expected_money import describe
 
     assert describe(with_balance.expected_money()[1]) == "date unknown"
+
+
+# -- looking at several accounts at once ----------------------------------
+
+
+@pytest.fixture
+def three_accounts(tmp_path) -> Ledger:
+    from carraway.core.models import AccountType as T
+
+    path = tmp_path / "multi.db"
+    conn = db.connect(path)
+    for aid, name, kind in (
+        ("chk", "Checking", T.CHECKING),
+        ("card", "Card", T.CREDIT_CARD),
+        ("cash", "Cash", T.CASH),
+    ):
+        db.upsert_account(conn, Account(id=aid, name=name, type=kind))
+    db.record_balance(conn, "chk", Money.parse("1000.00"), date(2026, 9, 1))
+    db.record_balance(conn, "card", Money.parse("200.00"), date(2026, 9, 1))
+    db.record_balance(conn, "cash", Money.parse("50.00"), date(2026, 9, 1))
+    db.insert_transactions(
+        conn,
+        [
+            Transaction(
+                id=f"{aid}{n}",
+                account_id=aid,
+                date=date(2026, 8, 10 + n),
+                amount=Money.parse("-5.00"),
+                description=f"{aid.upper()} SPEND {n}",
+            )
+            for aid, count in (("chk", 4), ("card", 3), ("cash", 2))
+            for n in range(count)
+        ],
+    )
+    conn.close()
+    found = Ledger(path=path)
+    found.load()
+    return found
+
+
+def _chip_for(view, account_id):
+    return next(
+        i for i in range(view.tabs.count()) if view.tabs.tabData(i) == account_id
+    )
+
+
+def test_two_accounts_can_be_looked_at_together(app, three_accounts):
+    from carraway.ui.views.transactions import TransactionsView
+
+    view = TransactionsView(three_accounts)
+    assert view.proxy.rowCount() == 9  # opens on All
+
+    chk, card = _chip_for(view, "chk"), _chip_for(view, "card")
+    view.tabs.setSelectedIndexes([0, chk])
+    view._accounts_clicked([0, chk])
+    assert view.proxy.rowCount() == 4
+
+    view.tabs.setSelectedIndexes([chk, card])
+    view._accounts_clicked([chk, card])
+    assert view.proxy.rowCount() == 7
+
+
+def test_picking_an_account_while_all_is_on_replaces_it(app, three_accounts):
+    """The first click out of the default must do what it looks like it does,
+    not collapse straight back to All."""
+    from carraway.ui.views.transactions import TransactionsView
+
+    view = TransactionsView(three_accounts)
+    chk = _chip_for(view, "chk")
+    view.tabs.setSelectedIndexes([0, chk])
+    view._accounts_clicked([0, chk])
+    assert view.tabs.selectedIndexes() == [chk]
+
+
+def test_clicking_all_from_a_set_of_accounts_clears_them(app, three_accounts):
+    from carraway.ui.views.transactions import TransactionsView
+
+    view = TransactionsView(three_accounts)
+    chk, card = _chip_for(view, "chk"), _chip_for(view, "card")
+    view.tabs.setSelectedIndexes([chk, card])
+    view._accounts_clicked([chk, card])
+    view.tabs.setSelectedIndexes([0, chk, card])
+    view._accounts_clicked([0, chk, card])
+    assert view.tabs.selectedIndexes() == [0]
+    assert view.proxy.rowCount() == 9
+
+
+def test_unticking_the_last_account_falls_back_to_all(app, three_accounts):
+    """An empty strip over an empty table reads as broken, not deliberate."""
+    from carraway.ui.views.transactions import TransactionsView
+
+    view = TransactionsView(three_accounts)
+    view.tabs.setSelectedIndexes([])
+    view._accounts_clicked([])
+    assert view.tabs.selectedIndexes() == [0]
+    assert view.proxy.rowCount() == 9
+
+
+def test_the_banner_nets_a_handful_of_accounts(app, three_accounts):
+    """A card subtracts, the same as it does across all accounts."""
+    from carraway.ui.views.transactions import TransactionsView
+
+    view = TransactionsView(three_accounts)
+    chk, card = _chip_for(view, "chk"), _chip_for(view, "card")
+    view.tabs.setSelectedIndexes([chk, card])
+    view._accounts_clicked([chk, card])
+    assert view.balance.amount.text() == "$800.00"
+    assert "2 accounts" in view.balance.caption.text().lower()
+
+
+def test_cash_actions_need_exactly_one_account(app, three_accounts):
+    """Setting a balance has to name one account; with two there is none."""
+    from carraway.ui.views.transactions import TransactionsView
+
+    view = TransactionsView(three_accounts)
+    cash, chk = _chip_for(view, "cash"), _chip_for(view, "chk")
+    view.tabs.setSelectedIndexes([cash])
+    view._accounts_clicked([cash])
+    assert view._cash_account() == "cash"
+
+    view.tabs.setSelectedIndexes([cash, chk])
+    view._accounts_clicked([cash, chk])
+    assert view._cash_account() is None
+
+
+def test_the_account_column_comes_back_when_several_are_shown(app, three_accounts):
+    from carraway.ui.views.transactions import TransactionsView
+
+    view = TransactionsView(three_accounts)
+    chk, card = _chip_for(view, "chk"), _chip_for(view, "card")
+    view.tabs.setSelectedIndexes([chk])
+    view._accounts_clicked([chk])
+    assert view.table.isColumnHidden(3) is True
+
+    view.tabs.setSelectedIndexes([chk, card])
+    view._accounts_clicked([chk, card])
+    assert view.table.isColumnHidden(3) is False
+
+
+def test_a_refresh_keeps_the_accounts_being_looked_at(app, three_accounts):
+    """_build_tabs destroys and remakes every chip, which checks the first
+    one -- a sync must not silently snap the view back to All."""
+    from carraway.ui.views.transactions import TransactionsView
+
+    view = TransactionsView(three_accounts)
+    chk, card = _chip_for(view, "chk"), _chip_for(view, "card")
+    view.tabs.setSelectedIndexes([chk, card])
+    view._accounts_clicked([chk, card])
+
+    view.refresh()
+    assert set(view._selected_account_ids()) == {"chk", "card"}
+    assert view.proxy.rowCount() == 7
+
+
+# -- and remembering how it was left --------------------------------------
+
+
+def test_the_view_reopens_where_it_was_left(app, three_accounts):
+    from carraway.ui.views.transactions import TransactionsView
+
+    view = TransactionsView(three_accounts)
+    chk, card = _chip_for(view, "chk"), _chip_for(view, "card")
+    view.tabs.setSelectedIndexes([chk, card])
+    view._accounts_clicked([chk, card])
+    view.kind.setCurrentText("Spending")
+    view.table.sortByColumn(4, Qt.SortOrder.AscendingOrder)
+
+    reopened = TransactionsView(three_accounts)
+    assert set(reopened._selected_account_ids()) == {"chk", "card"}
+    assert reopened.kind.currentText() == "Spending"
+    header = reopened.table.horizontalHeader()
+    assert header.sortIndicatorSection() == 4
+    assert header.sortIndicatorOrder() == Qt.SortOrder.AscendingOrder
+
+
+def test_each_control_saves_on_its_own(app, three_accounts):
+    """Saving from only some of them persists by accident, depending on which
+    control was touched last."""
+    from carraway.ui.views.transactions import TransactionsView
+
+    view = TransactionsView(three_accounts)
+    view.kind.setCurrentText("Spending")
+    del view
+
+    assert TransactionsView(three_accounts).kind.currentText() == "Spending"
+
+
+def test_a_search_is_not_remembered(app, three_accounts):
+    """Four rows out of 2,600 with no visible filter reads as a broken app."""
+    from carraway.ui.views.transactions import TransactionsView
+
+    view = TransactionsView(three_accounts)
+    view.search.setText("CHK SPEND 1")
+    view.kind.setCurrentText("Spending")  # force a save
+
+    assert TransactionsView(three_accounts).search.text() == ""
+
+
+def test_a_remembered_account_that_no_longer_exists_falls_back_to_all(
+    app, three_accounts
+):
+    from carraway.ui.views.transactions import TransactionsView
+
+    three_accounts.save_setting(
+        "transactions_view", {"accounts": ["an-account-since-closed"]}
+    )
+    view = TransactionsView(three_accounts)
+    assert view.tabs.selectedIndexes() == [0]
+    assert view.proxy.rowCount() == 9
+
+
+def test_a_remembered_category_that_was_hidden_is_ignored(app, three_accounts):
+    """Restoring it would filter to nothing with no clue why."""
+    from carraway.ui.views.transactions import TransactionsView
+
+    three_accounts.save_setting(
+        "transactions_view", {"kind": "A Category Nobody Has Any More"}
+    )
+    view = TransactionsView(three_accounts)
+    assert view.kind.currentText() == "All"
+    assert view.proxy.rowCount() == 9

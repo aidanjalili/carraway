@@ -439,6 +439,10 @@ class FilterStrip(QWidget):
     currentChanged = Signal(int)
     # The labels, in their new order, after the user drags one somewhere else.
     orderChanged = Signal(list)
+    # Every checked index, when multi-select is on. Emitted instead of
+    # currentChanged, because "which one" stops being a question that has an
+    # answer the moment two can be on at once.
+    selectionChanged = Signal(list)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -448,7 +452,8 @@ class FilterStrip(QWidget):
         self._group.setExclusive(True)
         self._buttons: list[QPushButton] = []
         self._data: list[object] = []
-        self._group.idClicked.connect(self.currentChanged.emit)
+        self._multi = False
+        self._group.idClicked.connect(self._chip_clicked)
 
         # Drag-to-reorder state. `_press` is where the mouse went down, kept
         # so a drag only starts once it has moved far enough to be meant --
@@ -471,6 +476,41 @@ class FilterStrip(QWidget):
         self._layout.addWidget(button)
         button.installEventFilter(self)
         return index
+
+    # -- one at a time, or several ---------------------------------------
+
+    def setMultiSelect(self, enabled: bool) -> None:  # noqa: N802
+        """Let several chips be on at once.
+
+        Off by default, so every strip that has only ever meant "one of
+        these" keeps behaving exactly as it did. Turning it on drops the
+        button group's exclusivity, which is also what makes a checked chip
+        clickable *off* -- an exclusive group refuses to uncheck its last
+        checked button, by design.
+        """
+        self._multi = enabled
+        self._group.setExclusive(not enabled)
+
+    def selectedIndexes(self) -> list[int]:  # noqa: N802
+        return [i for i, button in enumerate(self._buttons) if button.isChecked()]
+
+    def setSelectedIndexes(self, indexes) -> None:  # noqa: N802
+        """Check exactly these and nothing else. Emits nothing."""
+        wanted = set(indexes)
+        exclusive = self._group.exclusive()
+        # Lifted for the duration: an exclusive group will not let the last
+        # checked button go, so clearing one to set another would silently
+        # leave both on.
+        self._group.setExclusive(False)
+        for index, button in enumerate(self._buttons):
+            button.setChecked(index in wanted)
+        self._group.setExclusive(exclusive)
+
+    def _chip_clicked(self, index: int) -> None:
+        if self._multi:
+            self.selectionChanged.emit(self.selectedIndexes())
+        else:
+            self.currentChanged.emit(index)
 
     # -- dragging one chip somewhere else --------------------------------
 
