@@ -294,3 +294,228 @@ def test_transactions_shows_its_balance_the_moment_it_opens(app, ledger):
     assert view.balance.caption.text().strip()
     assert view.add_txn_button.isVisible() is False
     assert view.set_balance_button.isVisible() is False
+
+
+# -- money on its way, on the Net worth screen ----------------------------
+
+
+@pytest.fixture
+def with_balance(tmp_path) -> Ledger:
+    """A ledger with a real balance, so net worth has an anchor to work from."""
+    path = tmp_path / "worth.db"
+    conn = db.connect(path)
+    db.upsert_account(conn, Account(id="chk", name="Checking", type=AccountType.CHECKING))
+    db.upsert_account(conn, Account(id="ret", name="Retirement", type=AccountType.INVESTMENT))
+    db.record_balance(conn, "chk", Money.parse("1000.00"), date(2026, 9, 1))
+    db.record_balance(conn, "ret", Money.parse("5000.00"), date(2026, 9, 1))
+    db.insert_transactions(
+        conn,
+        [
+            Transaction(
+                id="t1",
+                account_id="chk",
+                date=date(2026, 8, 20),
+                amount=Money.parse("-40.00"),
+                description="GROCERIES",
+            )
+        ],
+    )
+    conn.close()
+    found = Ledger(path=path)
+    found.load()
+    return found
+
+
+def test_the_net_worth_screen_builds_and_refreshes_with_money_on_its_way(app, with_balance):
+    from carraway.ui.views.networth import NetWorthView
+
+    with_balance.add_expected_money(
+        "Tax refund cheque", Money.parse("412.50"), expected_on=date(2026, 9, 20)
+    )
+    view = NetWorthView(with_balance)
+    view.refresh()
+
+    assert view.expected_table.rowCount() == 1
+    assert view.expected_table.item(0, 1).text() == "Tax refund cheque"
+    assert "$412.50" in view.expected_table.item(0, 2).text()
+    # The headline stays what the bank says; the projection sits under it.
+    assert "412.50" not in view.net_card.value_label.text()
+    assert "on its way" in view.net_card._comparison.text()
+
+
+def test_the_projected_total_is_the_real_one_plus_what_is_coming(app, with_balance):
+    from carraway.ui.views.networth import NetWorthView
+
+    view = NetWorthView(with_balance)
+    real = view.ledger.networth_points("monthly")[-1].net
+
+    with_balance.add_expected_money("Cheque", Money.parse("412.50"))
+    with_balance.add_expected_money("Bill I know about", Money.parse("-100.00"))
+    view.refresh()
+
+    assert with_balance.expected_total() == Money.parse("312.50")
+    after = Money(real.minor + 31250, real.currency)
+    assert after.format() in view.expected_blurb.text()
+    # Unchanged: nothing here may move the figure the bank would agree with.
+    assert view.ledger.networth_points("monthly")[-1].net == real
+
+
+def test_money_landing_in_an_account_left_out_of_net_worth_is_left_out_too(app, with_balance):
+    """Otherwise it moves a total that account is not part of."""
+    with_balance.save_setting("networth_excluded_accounts", ["ret"])
+    with_balance.load()
+    with_balance.add_expected_money("Dividend", Money.parse("200.00"), account_id="ret")
+    with_balance.add_expected_money("Cheque", Money.parse("50.00"), account_id="chk")
+
+    assert with_balance.expected_total() == Money.parse("50.00")
+
+    from carraway.ui.views.networth import NetWorthView
+
+    view = NetWorthView(with_balance)
+    view.refresh()
+    rows = [view.expected_table.item(r, 3).text() for r in range(view.expected_table.rowCount())]
+    assert any("not counted" in text for text in rows)
+
+
+def test_removing_an_entry_takes_it_back_out_of_the_projection(app, with_balance):
+    entry_id = with_balance.add_expected_money("Cheque", Money.parse("412.50"))
+    assert with_balance.expected_total() == Money.parse("412.50")
+    assert with_balance.delete_expected_money(entry_id) is True
+    assert with_balance.expected_total() == Money.zero()
+    assert with_balance.expected_money() == []
+
+
+def test_the_panel_still_draws_when_no_balance_is_known(app, tmp_path):
+    """No anchor means no net worth line at all, but what is written down
+    here must not vanish along with it."""
+    from carraway.ui.views.networth import NetWorthView
+
+    path = tmp_path / "empty.db"
+    conn = db.connect(path)
+    db.upsert_account(conn, Account(id="chk", name="Checking", type=AccountType.CHECKING))
+    conn.close()
+    ledger = Ledger(path=path)
+    ledger.load()
+    ledger.add_expected_money("Cheque", Money.parse("412.50"))
+
+    view = NetWorthView(ledger)
+    view.refresh()
+    assert view.expected_table.rowCount() == 1
+    assert "no known balance" in view.expected_blurb.text()
+
+
+def test_the_add_handler_writes_what_the_dialog_answered(app, with_balance, monkeypatch):
+    from carraway.ui.views import expected_money
+    from carraway.ui.views.networth import NetWorthView
+
+    _accept(
+        monkeypatch,
+        expected_money.ExpectedMoneyDialog,
+        values={
+            "description": "Rent deposit back",
+            "amount": Money.parse("950.00"),
+            "expected_on": date(2026, 10, 1),
+            "account_id": "chk",
+            "note": "landlord said two weeks",
+        },
+    )
+    view = NetWorthView(with_balance)
+    view._add_expected()
+
+    written = with_balance.expected_money()
+    assert len(written) == 1
+    assert written[0].description == "Rent deposit back"
+    assert written[0].amount == Money.parse("950.00")
+    assert written[0].expected_on == date(2026, 10, 1)
+    assert written[0].note == "landlord said two weeks"
+
+
+def test_the_remove_handler_deletes_the_selected_row(app, with_balance, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    from carraway.ui.views.networth import NetWorthView
+
+    with_balance.add_expected_money("Cheque", Money.parse("412.50"))
+    view = NetWorthView(with_balance)
+    view.expected_table.selectRow(0)
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes
+    )
+
+    view._remove_expected()
+    assert with_balance.expected_money() == []
+
+
+def test_cancelling_the_dialog_writes_nothing(app, with_balance, monkeypatch):
+    from carraway.ui.views import expected_money
+    from carraway.ui.views.networth import NetWorthView
+
+    monkeypatch.setattr(
+        expected_money.ExpectedMoneyDialog, "exec", lambda self: QDialog.DialogCode.Rejected
+    )
+    view = NetWorthView(with_balance)
+    view._add_expected()
+    assert with_balance.expected_money() == []
+
+
+# -- the dialog's own arithmetic ------------------------------------------
+
+
+def test_the_dialog_signs_the_amount_by_the_direction_chosen(app):
+    from carraway.ui.views.expected_money import ExpectedMoneyDialog
+
+    dialog = ExpectedMoneyDialog(current_net=Money.parse("1000.00"))
+    dialog.description.setText("Cheque")
+    dialog.amount.setText("412.50")
+    assert dialog.values["amount"] == Money.parse("412.50")
+
+    dialog.direction.setCurrentText("going out")
+    assert dialog.values["amount"] == Money.parse("-412.50")
+    # Typing the minus sign as well must not flip it back to positive.
+    dialog.amount.setText("-412.50")
+    assert dialog.values["amount"] == Money.parse("-412.50")
+
+
+def test_the_dialog_previews_what_net_worth_becomes(app):
+    from carraway.ui.views.expected_money import ExpectedMoneyDialog
+
+    dialog = ExpectedMoneyDialog(current_net=Money.parse("1000.00"))
+    dialog.amount.setText("412.50")
+    assert "$1,412.50" in dialog.preview.text()
+
+    dialog.direction.setCurrentText("going out")
+    assert "$587.50" in dialog.preview.text()
+
+
+def test_the_dialog_refuses_an_empty_or_unreadable_entry(app):
+    from carraway.ui.views.expected_money import ExpectedMoneyDialog
+
+    dialog = ExpectedMoneyDialog(current_net=Money.parse("1000.00"))
+    dialog.amount.setText("412.50")
+    dialog._accept()
+    assert dialog.result() != QDialog.DialogCode.Accepted
+    assert "Say what it is" in dialog.preview.text()
+
+    dialog.description.setText("Cheque")
+    dialog.amount.setText("four hundred")
+    dialog._accept()
+    assert dialog.result() != QDialog.DialogCode.Accepted
+    assert "not an amount" in dialog.preview.text()
+
+    dialog.amount.setText("0")
+    dialog._accept()
+    assert "not worth writing down" in dialog.preview.text()
+
+
+def test_an_undated_entry_is_allowed_and_sorts_last(app, with_balance):
+    """"Sometime this month" is often all anyone knows."""
+    with_balance.add_expected_money("Sometime money", Money.parse("50.00"))
+    with_balance.add_expected_money(
+        "Dated money", Money.parse("60.00"), expected_on=date(2026, 9, 20)
+    )
+    order = [e.description for e in with_balance.expected_money()]
+    assert order == ["Dated money", "Sometime money"]
+
+    from carraway.ui.views.expected_money import describe
+
+    assert describe(with_balance.expected_money()[1]) == "date unknown"

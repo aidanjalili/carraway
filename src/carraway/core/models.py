@@ -151,6 +151,40 @@ class RecurringSeries:
         return abs(self.typical_amount) * per_year
 
 
+@dataclass(slots=True)
+class ExpectedMoney:
+    """Money that is real but has not landed yet.
+
+    A cheque in the post is the case this exists for: the money is yours, you
+    know the figure, and net worth is wrong by that much until it clears. So
+    you say so, and delete the entry when it does.
+
+    Deliberately *not* a transaction. It has no account statement behind it,
+    nothing reconciles against it, and it must never be mistaken for
+    something the bank has confirmed -- which is the whole reason it lives in
+    its own table and is added into net worth as a separate, named figure
+    rather than folded into a balance. The honest number and the projected
+    one stay side by side, and it is always obvious which is which.
+
+    Follows the same sign convention as everything else: positive is money
+    arriving, negative is money you know is going out and the bank has not
+    caught up with.
+    """
+
+    id: str
+    description: str
+    amount: Money
+    # When it is expected to land. Optional, because "sometime this month" is
+    # often all anyone knows, and demanding a date would mean inventing one.
+    expected_on: date | None = None
+    # Which account it will land in, when that is known. Empty is fine; it
+    # only matters so an entry against an account left out of net worth can
+    # be left out too, rather than counted against a total it is not part of.
+    account_id: str = ""
+    note: str = ""
+    added_on: date | None = None
+
+
 def assign_occurrences(transactions: list[Transaction]) -> list[Transaction]:
     """Number transactions that are otherwise indistinguishable, in file order.
 

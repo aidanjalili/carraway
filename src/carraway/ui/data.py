@@ -59,6 +59,7 @@ class Ledger:
     balances: dict = field(default_factory=dict)
     balance_dates: dict = field(default_factory=dict)  # account id -> when last observed
     manual: list = field(default_factory=list)
+    expected: list = field(default_factory=list)  # money owed that has not landed
     settings: dict = field(default_factory=dict)
     guesses: dict = field(default_factory=dict)  # transaction id -> Guess
     dismissed: list = field(default_factory=list)
@@ -83,6 +84,7 @@ class Ledger:
         self.balances = db.latest_balances(conn)
         self.balance_dates = db.latest_balance_dates(conn)
         self.manual = db.list_manual_subscriptions(conn)
+        self.expected = db.list_expected_money(conn)
         self.overrides = db.get_series_overrides(conn)
         self.user_rules = db.list_user_rules(conn)
         self.budgets = db.list_budgets(conn)
@@ -1263,6 +1265,60 @@ class Ledger:
         if not balances:
             return []
         return networth_mod.reconstruct(accounts, transactions, balances, granularity=granularity)
+
+    # -- money that has not landed yet -------------------------------------
+
+    def expected_money(self) -> list:
+        """Everything outstanding, soonest first."""
+        return list(self.expected)
+
+    def counted_expected_money(self) -> list:
+        """The entries that belong in *this* net worth figure.
+
+        An entry against an account the user has taken out of net worth is
+        left out too. Counting it would move a total that account is not part
+        of, which is the same mistake as subtracting an excluded balance
+        afterwards instead of dropping it from the inputs.
+        """
+        excluded = self.excluded_accounts
+        return [
+            e for e in self.expected_money() if not (e.account_id and e.account_id in excluded)
+        ]
+
+    def expected_total(self) -> Money:
+        """The net of what is coming and going but has not arrived."""
+        counted = self.counted_expected_money()
+        currency = counted[0].amount.currency if counted else "USD"
+        return Money(sum(e.amount.minor for e in counted), currency)
+
+    def add_expected_money(
+        self,
+        description: str,
+        amount: Money,
+        *,
+        expected_on=None,
+        account_id: str = "",
+        note: str = "",
+    ) -> str:
+        conn = db.connect(self.path)
+        entry_id = db.add_expected_money(
+            conn,
+            description,
+            amount,
+            expected_on=expected_on,
+            account_id=account_id,
+            note=note,
+        )
+        conn.close()
+        self.load()
+        return entry_id
+
+    def delete_expected_money(self, entry_id: str) -> bool:
+        conn = db.connect(self.path)
+        removed = db.delete_expected_money(conn, entry_id)
+        conn.close()
+        self.load()
+        return bool(removed)
 
     def accounts_without_balances(self) -> list[Account]:
         return networth_mod.accounts_missing_balances(self.accounts, self.balances)

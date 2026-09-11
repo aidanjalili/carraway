@@ -543,8 +543,10 @@ class PocketCard(Card):
                 parts.append(f"{included} put back into budgeting from your phone.")
             missing = result.get("unknown_verdicts", 0)
             if missing:
+                changes = "change" if missing == 1 else "changes"
+                names = "a transaction" if missing == 1 else "transactions"
                 parts.append(
-                    f"{missing} budgeting change(s) named transactions this ledger "
+                    f"{missing} budgeting {changes} named {names} this ledger "
                     "no longer has, and were dropped."
                 )
             from ..widgets import refresh_everything

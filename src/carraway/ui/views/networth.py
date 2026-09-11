@@ -19,8 +19,11 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMessageBox,
+    QPushButton,
     QSizePolicy,
     QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -30,6 +33,7 @@ from ...core.money import Money
 from .. import theme
 from ..data import Ledger
 from ..widgets import Card, SortableItem, StatCard, StatRow, shorten
+from . import expected_money
 
 
 class NetWorthChart(QWidget):
@@ -215,6 +219,8 @@ class NetWorthChart(QWidget):
 
 _HEADERS = ["Date", "Assets", "Owed", "Net worth", "Change"]
 
+_EXPECTED_HEADERS = ["Expected", "What it is", "Amount", "Landing in", "Note"]
+
 
 class NetWorthView(QWidget):
     def __init__(self, ledger: Ledger) -> None:
@@ -280,6 +286,8 @@ class NetWorthView(QWidget):
             head.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         layout.addWidget(self.table)
 
+        layout.addWidget(self._build_expected_panel())
+
         self.footnote = QLabel("")
         self.footnote.setObjectName("Muted")
         self.footnote.setWordWrap(True)
@@ -287,6 +295,158 @@ class NetWorthView(QWidget):
 
         self._build_account_toggles()
         self.refresh()
+
+    # -- money that has not landed yet -------------------------------------
+
+    def _build_expected_panel(self) -> Card:
+        """Things the bank has not seen, listed under the real figures.
+
+        Below the chart and the history rather than beside the headline,
+        because everything above this point is what the bank says and this is
+        not. Keeping them in that order is the whole reason a projected net
+        worth can be shown at all without muddying the real one.
+        """
+        card = Card()
+        inner = QVBoxLayout(card)
+        inner.setContentsMargins(16, 14, 16, 14)
+        inner.setSpacing(9)
+
+        head = QHBoxLayout()
+        title = QLabel("Money on its way")
+        title.setObjectName("SectionHeading")
+        head.addWidget(title)
+        head.addStretch(1)
+        self.expected_add = QPushButton("Add")
+        self.expected_add.clicked.connect(self._add_expected)
+        head.addWidget(self.expected_add)
+        self.expected_remove = QPushButton("It arrived — remove")
+        self.expected_remove.setEnabled(False)
+        self.expected_remove.clicked.connect(self._remove_expected)
+        head.addWidget(self.expected_remove)
+        inner.addLayout(head)
+
+        self.expected_blurb = QLabel("")
+        self.expected_blurb.setObjectName("Muted")
+        self.expected_blurb.setWordWrap(True)
+        inner.addWidget(self.expected_blurb)
+
+        self.expected_table = QTableWidget(0, len(_EXPECTED_HEADERS))
+        self.expected_table.setHorizontalHeaderLabels(_EXPECTED_HEADERS)
+        self.expected_table.verticalHeader().setVisible(False)
+        self.expected_table.setAlternatingRowColors(True)
+        self.expected_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.expected_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.expected_table.setMaximumHeight(160)
+        head_view = self.expected_table.horizontalHeader()
+        head_view.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        for column in (0, 2, 3, 4):
+            head_view.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        self.expected_table.itemSelectionChanged.connect(self._expected_selection_changed)
+        inner.addWidget(self.expected_table)
+        return card
+
+    def _expected_selection_changed(self) -> None:
+        self.expected_remove.setEnabled(bool(self.expected_table.selectedItems()))
+
+    def _selected_expected(self):
+        rows = {i.row() for i in self.expected_table.selectedIndexes()}
+        entries = self.ledger.expected_money()
+        return [entries[r] for r in sorted(rows) if r < len(entries)]
+
+    def _add_expected(self) -> None:
+        points = self.ledger.networth_points(self.granularity.currentText())
+        # The figure the dialog previews against is the real one, before
+        # anything already written down is added -- otherwise the preview
+        # compounds the last entry into the next one.
+        current = points[-1].net if points else None
+        values = expected_money.prompt(self.ledger.accounts, current, self)
+        if values is None:
+            return
+        self.ledger.add_expected_money(
+            values["description"],
+            values["amount"],
+            expected_on=values["expected_on"],
+            account_id=values["account_id"],
+            note=values["note"],
+        )
+        from ..widgets import refresh_everything
+
+        refresh_everything(self)
+
+    def _remove_expected(self) -> None:
+        chosen = self._selected_expected()
+        if not chosen:
+            return
+        names = ", ".join(e.description for e in chosen[:3])
+        confirm = QMessageBox.question(
+            self,
+            "Remove from what is on its way?",
+            f"{names} will stop counting towards your projected net worth.\n\n"
+            "Do this once the money has actually landed — the real transaction "
+            "will be in your ledger by then, and leaving this here would count "
+            "it twice.",
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        for entry in chosen:
+            self.ledger.delete_expected_money(entry.id)
+        from ..widgets import refresh_everything
+
+        refresh_everything(self)
+
+    def _refresh_expected(self, current_net) -> None:
+        entries = self.ledger.expected_money()
+        counted = {e.id for e in self.ledger.counted_expected_money()}
+        names = {a.id: a.name for a in self.ledger.accounts}
+
+        self.expected_table.setRowCount(len(entries))
+        for row, entry in enumerate(entries):
+            where = names.get(entry.account_id, "") if entry.account_id else ""
+            if entry.account_id and entry.id not in counted:
+                # Said on the row rather than silently dropped from the
+                # total. An entry landing in an account left out of net worth
+                # would otherwise look like it was being counted and was not.
+                where = f"{where or entry.account_id} (not counted)"
+            cells = [
+                SortableItem(
+                    expected_money.describe(entry),
+                    entry.expected_on.toordinal() if entry.expected_on else 10**7,
+                ),
+                QTableWidgetItem(entry.description),
+                SortableItem(entry.amount.format(), entry.amount.minor),
+                QTableWidgetItem(where),
+                QTableWidgetItem(entry.note),
+            ]
+            cells[2].setTextAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
+            cells[2].setForeground(
+                QColor(
+                    theme.ACTIVE.accent if entry.amount.minor >= 0 else theme.ACTIVE.danger
+                )
+            )
+            for column, cell in enumerate(cells):
+                self.expected_table.setItem(row, column, cell)
+
+        total = self.ledger.expected_total()
+        if not entries:
+            self.expected_blurb.setText(
+                "Nothing written down. Use this for a cheque in the post or a "
+                "reimbursement you are owed — your net worth above keeps saying "
+                "what your bank says, and what is coming is added separately."
+            )
+        elif current_net is None:
+            self.expected_blurb.setText(
+                f"{total.format()} written down, but there is no known balance "
+                "to add it to yet."
+            )
+        else:
+            after = Money(current_net.minor + total.minor, current_net.currency)
+            self.expected_blurb.setText(
+                f"{total.format()} on its way. Net worth is {current_net.format()} "
+                f"today and would be {after.format()} once it all lands."
+            )
+        self._expected_selection_changed()
 
     def _build_account_toggles(self) -> None:
         """One checkbox per account, so the total can be recut on the spot."""
@@ -369,10 +529,28 @@ class NetWorthView(QWidget):
                 "Run 'carraway sync simplefin' to record one."
             )
             self.table.setRowCount(0)
+            # Still drawn: something written down here is worth seeing even
+            # when there is no balance to add it to, and disappearing without
+            # explanation would read as having lost it.
+            self._refresh_expected(None)
+            self.net_card.set_comparison("")
             return
 
         latest = points[-1]
         self.net_card.set_value(latest.net.format())
+        self._refresh_expected(latest.net)
+        # Under the headline, never inside it. The big figure stays the one
+        # the bank would agree with; this says what it becomes.
+        expected_total = self.ledger.expected_total()
+        if expected_total.minor:
+            after = Money(latest.net.minor + expected_total.minor, latest.net.currency)
+            sign = "+" if expected_total.minor > 0 else "-"
+            self.net_card.set_comparison(
+                f"{sign}{abs(expected_total).format()} on its way → {after.format()}",
+                "Accent" if expected_total.minor > 0 else "Danger",
+            )
+        else:
+            self.net_card.set_comparison("")
         self.assets_card.set_value(latest.assets.format())
         self.owed_card.set_value(latest.liabilities.format())
 
@@ -416,6 +594,13 @@ class NetWorthView(QWidget):
             by_id = {a.id: a.name for a in self.ledger.accounts}
             left_out = [by_id.get(i, i) for i in sorted(excluded)]
             notes.append("not counted: " + ", ".join(left_out))
+
+        expected_count = len(self.ledger.expected_money())
+        if expected_count:
+            notes.append(
+                f"{expected_count} thing{'' if expected_count == 1 else 's'} on the way, "
+                "not in the chart — the line is only what the bank has confirmed"
+            )
 
         missing = self.ledger.accounts_without_balances()
         if missing:

@@ -16,7 +16,7 @@ import sqlite3
 from datetime import date
 from pathlib import Path
 
-from .models import Account, AccountType, Transaction
+from .models import Account, AccountType, ExpectedMoney, Transaction
 from .money import Money
 
 MIGRATIONS: list[str] = [
@@ -243,6 +243,28 @@ MIGRATIONS: list[str] = [
     # every existing row keeps counting exactly as it did.
     """
     ALTER TABLE transactions ADD COLUMN budget_excluded INTEGER NOT NULL DEFAULT 0;
+    """,
+    # v17 - money that is real but has not landed. A cheque in the post is
+    # the case: the figure is known, it is yours, and net worth is wrong by
+    # that much until it clears.
+    #
+    # Its own table rather than a transaction, and the reason matters. A row
+    # in `transactions` is something a statement can be reconciled against;
+    # this is the user's word, with no bank behind it. Mixing the two would
+    # put an unconfirmed figure into every total that is supposed to match
+    # the bank, and there would be no way to tell them apart afterwards.
+    # Here it can only ever be added in deliberately, and named when it is.
+    """
+    CREATE TABLE expected_money (
+        id           TEXT PRIMARY KEY,
+        description  TEXT NOT NULL,
+        amount_minor INTEGER NOT NULL,
+        currency     TEXT NOT NULL DEFAULT 'USD',
+        expected_on  TEXT,
+        account_id   TEXT,
+        note         TEXT NOT NULL DEFAULT '',
+        added_on     TEXT NOT NULL
+    );
     """,
 ]
 
@@ -576,6 +598,87 @@ def list_manual_subscriptions(
         }
         for r in rows
     ]
+
+
+# -- money that has not landed yet ---------------------------------------
+
+
+def add_expected_money(
+    conn: sqlite3.Connection,
+    description: str,
+    amount: Money,
+    *,
+    expected_on: date | None = None,
+    account_id: str = "",
+    note: str = "",
+) -> str:
+    """Record money you are owed, or owe, that the bank has not seen. Returns its id.
+
+    The sign is kept exactly as given: positive for a cheque arriving,
+    negative for something known to be going out. Nothing here corrects it,
+    because "I am about to be paid $400" and "I am about to pay $400" are
+    both real answers and only the caller knows which was meant.
+    """
+    import uuid
+
+    entry_id = uuid.uuid4().hex[:12]
+    conn.execute(
+        """
+        INSERT INTO expected_money
+            (id, description, amount_minor, currency, expected_on, account_id, note, added_on)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            entry_id,
+            description,
+            amount.minor,
+            amount.currency,
+            expected_on.isoformat() if expected_on else None,
+            account_id or None,
+            note,
+            date.today().isoformat(),
+        ),
+    )
+    conn.commit()
+    return entry_id
+
+
+def list_expected_money(conn: sqlite3.Connection) -> list[ExpectedMoney]:
+    """Everything still outstanding, soonest first.
+
+    Entries with no expected date sort last: a known date is a stronger claim
+    than "sometime", and the thing being scanned for is what lands next.
+    """
+    rows = conn.execute(
+        """
+        SELECT * FROM expected_money
+        ORDER BY expected_on IS NULL, expected_on, added_on
+        """
+    ).fetchall()
+    return [
+        ExpectedMoney(
+            id=r["id"],
+            description=r["description"],
+            amount=Money(r["amount_minor"], r["currency"]),
+            expected_on=(date.fromisoformat(r["expected_on"]) if r["expected_on"] else None),
+            account_id=r["account_id"] or "",
+            note=r["note"] or "",
+            added_on=(date.fromisoformat(r["added_on"]) if r["added_on"] else None),
+        )
+        for r in rows
+    ]
+
+
+def delete_expected_money(conn: sqlite3.Connection, entry_id: str) -> int:
+    """Gone, not deactivated.
+
+    Unlike a cancelled subscription there is no history worth keeping: once
+    the cheque clears, the real transaction is in the ledger and this was
+    only ever a placeholder standing in for it.
+    """
+    cur = conn.execute("DELETE FROM expected_money WHERE id = ?", (entry_id,))
+    conn.commit()
+    return cur.rowcount
 
 
 def remove_manual_subscription(conn: sqlite3.Connection, subscription_id: str) -> int:
