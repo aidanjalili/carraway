@@ -61,7 +61,7 @@ class ExpectedMoneyDialog(QDialog):
             current_net = Money(
                 current_net.minor - entry.amount.minor, current_net.currency
             )
-        self.setWindowTitle("Money on its way" if entry is None else "Edit this")
+        self.setWindowTitle("On its way" if entry is None else "Edit this")
         self.setMinimumWidth(460)
         self._current_net = current_net
 
@@ -69,15 +69,17 @@ class ExpectedMoneyDialog(QDialog):
         layout.setContentsMargins(22, 20, 22, 18)
         layout.setSpacing(12)
 
-        heading = QLabel("Money on its way")
+        heading = QLabel("Money or a bill on its way")
         heading.setObjectName("SectionHeading")
         layout.addWidget(heading)
 
         blurb = QLabel(
-            "A cheque in the post, a reimbursement owed to you, a bill you know "
-            "is coming. Carraway will show what your net worth becomes once it "
-            "lands, without touching the figure your bank reports. Delete the "
-            "entry when the money actually arrives."
+            "Money coming in — a cheque in the post, a reimbursement owed to "
+            "you — or money going out, like a bill you know about that has not "
+            "reached the statement yet. Use the box on the right to say which. "
+            "Carraway shows what your net worth becomes once it lands, without "
+            "touching the figure your bank reports. Delete the entry once it "
+            "actually happens."
         )
         blurb.setObjectName("Muted")
         blurb.setWordWrap(True)

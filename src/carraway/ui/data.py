@@ -586,13 +586,20 @@ class Ledger:
         )
 
     def suggest_envelopes(self, starts_on: date, ends_on: date, accounts=None):
-        """What this window costs at the user's usual rate, per category."""
+        """What this window costs at the user's usual rate, per category.
+
+        Handed the commitment schedule as well as the history, so a bill is
+        counted in the window it actually lands in rather than smeared across
+        every window at a daily rate. See `budgets.suggest`.
+        """
         return budgets_mod.suggest(
             self.transactions,
             starts_on,
             ends_on,
             categories=self.categories,
             accounts=accounts,
+            scheduled_monthly=self.committed_by_category(),
+            scheduled_in_window=self.committed_by_category(starts_on, ends_on),
         )
 
     def spending_weights(self, accounts=None) -> dict:

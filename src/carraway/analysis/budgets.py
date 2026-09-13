@@ -347,12 +347,30 @@ def suggest(
     lookback_months: int = DEFAULT_LOOKBACK_MONTHS,
     categories: Mapping[str, str] | None = None,
     accounts: Sequence[str] | None = None,
+    scheduled_monthly: Mapping[str, Money] | None = None,
+    scheduled_in_window: Mapping[str, Money] | None = None,
 ) -> list[Envelope]:
     """What this window would cost at the user's usual rate, per category.
 
     The honest default for "start a budget": it is not a recommendation to
     spend this much, it is what will happen if nothing changes. Deciding what
     to cut is the user's job, and they can only do it against a number.
+
+    **A scheduled charge is not a daily rate.** Spreading a monthly figure
+    evenly across the window is right for groceries, which really are bought a
+    bit at a time, and wrong for rent, which is one charge on one day. Asked
+    for 14-30 September, the even version suggested $529 of rent for a window
+    whose rent had been paid on the 2nd and whose next one falls in October --
+    a bill counted in a window it cannot land in.
+
+    So each category is split in two. What the user's commitments cost per
+    month (`scheduled_monthly`) is taken out of the baseline, and only what is
+    left over is treated as a daily rate. Added back is what actually falls
+    inside the window (`scheduled_in_window`) -- nothing, for rent, here.
+
+    Both default to empty, which reproduces the old behaviour exactly: no
+    known commitments means everything is loose, which is the right assumption
+    when there is nothing better.
     """
     days = (ends_on - starts_on).days + 1
     baselines = monthly_baselines(
@@ -362,10 +380,23 @@ def suggest(
         categories=categories,
         accounts=accounts,
     )
-    lines = [
-        Envelope(category=name, allowance=scale_to_window(amount, days))
-        for name, amount in baselines.items()
-    ]
+    per_month = scheduled_monthly or {}
+    landing = scheduled_in_window or {}
+
+    lines = []
+    for name, amount in baselines.items():
+        committed = per_month.get(name)
+        # Never more than the baseline: a commitment the user has recorded but
+        # that the statements do not show costs this category nothing, and
+        # subtracting it whole would push the loose part negative.
+        booked = min(abs(committed.minor) if committed else 0, amount.minor)
+        loose = Money(amount.minor - booked, amount.currency)
+        due = landing.get(name)
+        allowance = Money(
+            scale_to_window(loose, days).minor + (abs(due.minor) if due else 0),
+            amount.currency,
+        )
+        lines.append(Envelope(category=name, allowance=allowance))
     lines = [line for line in lines if line.allowance.minor > 0]
     lines.sort(key=lambda line: (-line.allowance.minor, line.category))
     return lines

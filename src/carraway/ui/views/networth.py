@@ -223,6 +223,40 @@ _HEADERS = ["Date", "Assets", "Owed", "Net worth", "Change"]
 _EXPECTED_HEADERS = ["Expected", "What it is", "Amount", "Landing in", "Note"]
 
 
+def _split_flows(entries) -> tuple[Money, Money]:
+    """(arriving, leaving), both as positive figures."""
+    arriving = sum((e.amount.minor for e in entries if e.amount.minor > 0), 0)
+    leaving = sum((-e.amount.minor for e in entries if e.amount.minor < 0), 0)
+    currency = entries[0].amount.currency if entries else "USD"
+    return Money(arriving, currency), Money(leaving, currency)
+
+
+def _summarise_flows(entries) -> str:
+    """The short form, for the line under the headline figure.
+
+    Both halves are named whenever both exist. A single netted figure is the
+    one thing this must not print: "$2,531.02 on its way" for $3,048 arriving
+    and $517 going out is true arithmetic and a false description -- it hides
+    the outgoing half completely, and this panel holds bills as readily as
+    cheques.
+    """
+    arriving, leaving = _split_flows(entries)
+    if arriving.minor and leaving.minor:
+        return f"+{arriving.format()} in, -{leaving.format()} out"
+    if leaving.minor:
+        return f"-{leaving.format()} still to go out"
+    return f"+{arriving.format()} on its way"
+
+
+def _summarise_flows_long(entries) -> str:
+    arriving, leaving = _split_flows(entries)
+    if arriving.minor and leaving.minor:
+        return f"{arriving.format()} coming in and {leaving.format()} going out"
+    if leaving.minor:
+        return f"{leaving.format()} still to go out"
+    return f"{arriving.format()} on its way"
+
+
 class NetWorthView(QWidget):
     def __init__(self, ledger: Ledger) -> None:
         super().__init__()
@@ -310,14 +344,14 @@ class NetWorthView(QWidget):
         inner.setSpacing(9)
 
         head = QHBoxLayout()
-        title = QLabel("Money on its way")
+        title = QLabel("On its way")
         title.setObjectName("SectionHeading")
         head.addWidget(title)
         head.addStretch(1)
         self.expected_add = QPushButton("Add")
         self.expected_add.clicked.connect(self._add_expected)
         head.addWidget(self.expected_add)
-        self.expected_remove = QPushButton("It arrived — remove")
+        self.expected_remove = QPushButton("It landed — remove")
         self.expected_remove.setEnabled(False)
         self.expected_remove.clicked.connect(self._remove_expected)
         head.addWidget(self.expected_remove)
@@ -474,22 +508,26 @@ class NetWorthView(QWidget):
                 self.expected_table.setItem(row, column, cell)
 
         total = self.ledger.expected_total()
+        counted = self.ledger.counted_expected_money()
         if not entries:
             self.expected_blurb.setText(
-                "Nothing written down. Use this for a cheque in the post or a "
-                "reimbursement you are owed — your net worth above keeps saying "
-                "what your bank says, and what is coming is added separately."
+                "Nothing written down. Use this for money you are owed — a "
+                "cheque in the post, a reimbursement — or for money you know "
+                "is going out, like a bill that has not hit the statement yet. "
+                "Net worth above keeps saying what your bank says; what has "
+                "not landed is added separately."
             )
         elif current_net is None:
             self.expected_blurb.setText(
-                f"{total.format()} written down, but there is no known balance "
-                "to add it to yet."
+                f"{_summarise_flows_long(counted)}, but there is no known "
+                "balance to add it to yet."
             )
         else:
             after = Money(current_net.minor + total.minor, current_net.currency)
             self.expected_blurb.setText(
-                f"{total.format()} on its way. Net worth is {current_net.format()} "
-                f"today and would be {after.format()} once it all lands."
+                f"{_summarise_flows_long(counted)}. Net worth is "
+                f"{current_net.format()} today and would be {after.format()} "
+                "once it all lands."
             )
         self._expected_selection_changed()
 
@@ -586,13 +624,13 @@ class NetWorthView(QWidget):
         self._refresh_expected(latest.net)
         # Under the headline, never inside it. The big figure stays the one
         # the bank would agree with; this says what it becomes.
+        counted = self.ledger.counted_expected_money()
         expected_total = self.ledger.expected_total()
-        if expected_total.minor:
+        if counted:
             after = Money(latest.net.minor + expected_total.minor, latest.net.currency)
-            sign = "+" if expected_total.minor > 0 else "-"
             self.net_card.set_comparison(
-                f"{sign}{abs(expected_total).format()} on its way → {after.format()}",
-                "Accent" if expected_total.minor > 0 else "Danger",
+                f"{_summarise_flows(counted)} → {after.format()}",
+                "Accent" if expected_total.minor >= 0 else "Danger",
             )
         else:
             self.net_card.set_comparison("")
@@ -641,8 +679,8 @@ class NetWorthView(QWidget):
         expected_count = len(self.ledger.expected_money())
         if expected_count:
             notes.append(
-                f"{expected_count} thing{'' if expected_count == 1 else 's'} on the way, "
-                "not in the chart — the line is only what the bank has confirmed"
+                f"{expected_count} thing{'' if expected_count == 1 else 's'} not landed "
+                "yet, and not in the chart — the line is only what the bank has confirmed"
             )
 
         missing = self.ledger.accounts_without_balances()
