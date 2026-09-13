@@ -261,10 +261,7 @@ class NetWorthView(QWidget):
         self.net_card = StatCard("Net worth", "-", tone="Accent")
         self.assets_card = StatCard("Assets", "-")
         self.owed_card = StatCard("Owed", "-")
-        self.change_card = StatCard("Change", "-")
-        layout.addWidget(
-            StatRow([self.net_card, self.assets_card, self.owed_card, self.change_card])
-        )
+        layout.addWidget(StatRow([self.net_card, self.assets_card, self.owed_card]))
 
         chart_card = Card()
         chart_layout = QVBoxLayout(chart_card)
@@ -555,8 +552,6 @@ class NetWorthView(QWidget):
         self.owed_card.set_value(latest.liabilities.format())
 
         summary = networth.summarise(points)
-        sign = "+" if summary.change.minor >= 0 else "-"
-        self.change_card.set_value(f"{sign}{abs(summary.change).format()}")
 
         recent = points[-24:]
         self.table.setRowCount(len(recent))
