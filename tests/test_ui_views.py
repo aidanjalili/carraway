@@ -741,3 +741,90 @@ def test_a_remembered_category_that_was_hidden_is_ignored(app, three_accounts):
     view = TransactionsView(three_accounts)
     assert view.kind.currentText() == "All"
     assert view.proxy.rowCount() == 9
+
+
+# -- correcting an entry rather than retyping it --------------------------
+
+
+def test_an_entry_can_be_edited_in_place(app, with_balance):
+    from carraway.ui.views.networth import NetWorthView
+
+    entry_id = with_balance.add_expected_money(
+        "Card pending", Money.parse("-150.00"), expected_on=date(2027, 9, 15)
+    )
+    view = NetWorthView(with_balance)
+    view.expected_table.selectRow(0)
+
+    with_balance.update_expected_money(
+        entry_id, "Card pending", Money.parse("-150.00"), expected_on=date(2026, 9, 15)
+    )
+    fixed = with_balance.expected_money()[0]
+    # The id survives, so anything holding it is not left pointing at nothing.
+    assert fixed.id == entry_id
+    assert fixed.expected_on == date(2026, 9, 15)
+    assert fixed.amount == Money.parse("-150.00")
+
+
+def test_the_dialog_comes_back_filled_in(app, with_balance):
+    from carraway.ui.views.expected_money import ExpectedMoneyDialog
+
+    with_balance.add_expected_money(
+        "Card pending",
+        Money.parse("-150.00"),
+        expected_on=date(2027, 9, 15),
+        account_id="chk",
+        note="should clear by wed",
+    )
+    entry = with_balance.expected_money()[0]
+    dialog = ExpectedMoneyDialog(with_balance.accounts, Money.parse("1000.00"), None, entry)
+
+    assert dialog.description.text() == "Card pending"
+    assert dialog.amount.text() == "150.00"
+    assert dialog.direction.currentText() == "going out"
+    assert dialog.dated.isChecked() is True
+    assert dialog.expected_on.date().toPython() == date(2027, 9, 15)
+    assert dialog.account.currentData() == "chk"
+    assert dialog.note.text() == "should clear by wed"
+    # Unchanged, it must give back exactly what it was handed.
+    assert dialog.values["amount"] == Money.parse("-150.00")
+
+
+def test_editing_does_not_double_count_the_entry_in_its_own_preview(app, with_balance):
+    """Net worth already includes this entry's effect in what the view shows,
+    so previewing against it unbacked would add the figure twice."""
+    from carraway.ui.views.expected_money import ExpectedMoneyDialog
+
+    with_balance.add_expected_money("Card pending", Money.parse("-150.00"))
+    entry = with_balance.expected_money()[0]
+
+    dialog = ExpectedMoneyDialog(None, Money.parse("1000.00"), None, entry)
+    assert "$1,150.00" in dialog.preview.text()  # the real figure, entry backed out
+    assert "$1,000.00" in dialog.preview.text()  # and where it lands again
+
+
+def test_an_undated_entry_reopens_undated(app, with_balance):
+    """Reopening it must not silently invent a date."""
+    from carraway.ui.views.expected_money import ExpectedMoneyDialog
+
+    with_balance.add_expected_money("Sometime money", Money.parse("50.00"))
+    entry = with_balance.expected_money()[0]
+
+    dialog = ExpectedMoneyDialog(None, Money.parse("1000.00"), None, entry)
+    assert dialog.dated.isChecked() is False
+    assert dialog.values["expected_on"] is None
+
+
+def test_one_day_away_reads_as_tomorrow(app, with_balance):
+    from datetime import timedelta
+
+    from carraway.ui.views.expected_money import describe
+
+    with_balance.add_expected_money(
+        "Cheque", Money.parse("10.00"), expected_on=date.today() + timedelta(days=1)
+    )
+    with_balance.add_expected_money(
+        "Late one", Money.parse("10.00"), expected_on=date.today() - timedelta(days=1)
+    )
+    entries = {e.description: e for e in with_balance.expected_money()}
+    assert describe(entries["Cheque"]).endswith("tomorrow")
+    assert describe(entries["Late one"]).endswith("1 day overdue")

@@ -669,6 +669,44 @@ def list_expected_money(conn: sqlite3.Connection) -> list[ExpectedMoney]:
     ]
 
 
+def update_expected_money(
+    conn: sqlite3.Connection,
+    entry_id: str,
+    description: str,
+    amount: Money,
+    *,
+    expected_on: date | None = None,
+    account_id: str = "",
+    note: str = "",
+) -> int:
+    """Correct an entry in place. Returns the number of rows changed.
+
+    In place rather than delete-and-reinsert, so the id survives. A mistyped
+    date is the common case and it should not cost the entry its identity --
+    anything holding onto that id, a selection in the table included, would
+    quietly be pointing at nothing.
+    """
+    cur = conn.execute(
+        """
+        UPDATE expected_money
+           SET description = ?, amount_minor = ?, currency = ?,
+               expected_on = ?, account_id = ?, note = ?
+         WHERE id = ?
+        """,
+        (
+            description,
+            amount.minor,
+            amount.currency,
+            expected_on.isoformat() if expected_on else None,
+            account_id or None,
+            note,
+            entry_id,
+        ),
+    )
+    conn.commit()
+    return cur.rowcount
+
+
 def delete_expected_money(conn: sqlite3.Connection, entry_id: str) -> int:
     """Gone, not deactivated.
 

@@ -50,9 +50,17 @@ class ExpectedMoneyDialog(QDialog):
         accounts: list[Account] | None = None,
         current_net: Money | None = None,
         parent=None,
+        entry=None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Money on its way")
+        # Editing subtracts the entry's own figure from the net it previews
+        # against, or correcting a $150 bill would preview as though a second
+        # $150 were being added on top of it.
+        if entry is not None and current_net is not None:
+            current_net = Money(
+                current_net.minor - entry.amount.minor, current_net.currency
+            )
+        self.setWindowTitle("Money on its way" if entry is None else "Edit this")
         self.setMinimumWidth(460)
         self._current_net = current_net
 
@@ -142,6 +150,28 @@ class ExpectedMoneyDialog(QDialog):
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
 
+        if entry is not None:
+            self._fill_from(entry)
+
+    def _fill_from(self, entry) -> None:
+        """Show an existing entry, ready to be corrected."""
+        self.description.setText(entry.description)
+        self.amount.setText(f"{abs(entry.amount).decimal:.2f}")
+        self.direction.setCurrentText(_LEAVING if entry.amount.minor < 0 else _ARRIVING)
+        # An entry saved without a date has to come back with the box
+        # unticked, or reopening it would silently invent one.
+        self.dated.setChecked(entry.expected_on is not None)
+        if entry.expected_on is not None:
+            self.expected_on.setDate(
+                QDate(entry.expected_on.year, entry.expected_on.month, entry.expected_on.day)
+            )
+        if entry.account_id:
+            index = self.account.findData(entry.account_id)
+            if index >= 0:
+                self.account.setCurrentIndex(index)
+        self.note.setText(entry.note)
+        self._update_preview()
+
     # -- the figure being previewed ---------------------------------------
 
     def _magnitude(self) -> Money | None:
@@ -208,9 +238,13 @@ def prompt(
     accounts: list[Account] | None = None,
     current_net: Money | None = None,
     parent=None,
+    entry=None,
 ) -> dict | None:
-    """Run the dialog. Returns the values, or None if cancelled."""
-    dialog = ExpectedMoneyDialog(accounts, current_net, parent)
+    """Run the dialog. Returns the values, or None if cancelled.
+
+    Pass `entry` to correct one that already exists rather than add a new one.
+    """
+    dialog = ExpectedMoneyDialog(accounts, current_net, parent, entry)
     if dialog.exec() != QDialog.DialogCode.Accepted:
         return None
     return dialog.values
@@ -224,7 +258,10 @@ def describe(entry) -> str:
     if days < 0:
         # Worth saying rather than showing a date that has quietly gone by:
         # a cheque that was due last week is the one to chase.
-        return f"{entry.expected_on} · {abs(days)} days overdue"
+        late = abs(days)
+        return f"{entry.expected_on} · {late} day{'' if late == 1 else 's'} overdue"
     if days == 0:
         return f"{entry.expected_on} · today"
+    if days == 1:
+        return f"{entry.expected_on} · tomorrow"
     return f"{entry.expected_on} · in {days} days"

@@ -1313,6 +1313,30 @@ class Ledger:
         self.load()
         return entry_id
 
+    def update_expected_money(
+        self,
+        entry_id: str,
+        description: str,
+        amount: Money,
+        *,
+        expected_on=None,
+        account_id: str = "",
+        note: str = "",
+    ) -> bool:
+        conn = db.connect(self.path)
+        changed = db.update_expected_money(
+            conn,
+            entry_id,
+            description,
+            amount,
+            expected_on=expected_on,
+            account_id=account_id,
+            note=note,
+        )
+        conn.close()
+        self.load()
+        return bool(changed)
+
     def delete_expected_money(self, entry_id: str) -> bool:
         conn = db.connect(self.path)
         removed = db.delete_expected_money(conn, entry_id)

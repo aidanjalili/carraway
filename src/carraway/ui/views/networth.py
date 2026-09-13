@@ -11,7 +11,7 @@ and it keeps the promise that the only runtime dependency is Qt.
 from __future__ import annotations
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QAction, QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSizePolicy,
@@ -339,8 +340,55 @@ class NetWorthView(QWidget):
         for column in (0, 2, 3, 4):
             head_view.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         self.expected_table.itemSelectionChanged.connect(self._expected_selection_changed)
+        # Right-click to correct one. A mistyped date is the common mistake
+        # here, and without this the only way to fix it is to delete the entry
+        # and type the whole thing again.
+        self.expected_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.expected_table.customContextMenuRequested.connect(self._expected_menu)
+        # Double-click does the same, because that is what a row in a table
+        # that can be edited is expected to do.
+        self.expected_table.doubleClicked.connect(lambda _: self._edit_expected())
         inner.addWidget(self.expected_table)
         return card
+
+    def _expected_menu(self, position) -> None:
+        row = self.expected_table.indexAt(position).row()
+        if row < 0:
+            return
+        # Right-clicking a row nobody selected should act on that row, not on
+        # whatever was selected before it.
+        self.expected_table.selectRow(row)
+
+        menu = QMenu(self)
+        edit = QAction("Edit…", self)
+        edit.triggered.connect(self._edit_expected)
+        menu.addAction(edit)
+        remove = QAction("It landed — remove", self)
+        remove.triggered.connect(self._remove_expected)
+        menu.addAction(remove)
+        menu.exec(self.expected_table.viewport().mapToGlobal(position))
+
+    def _edit_expected(self) -> None:
+        chosen = self._selected_expected()
+        if len(chosen) != 1:
+            return
+        entry = chosen[0]
+        points = self.ledger.networth_points(self.granularity.currentText())
+        current = points[-1].net if points else None
+        values = expected_money.prompt(self.ledger.accounts, current, self, entry)
+        if values is None:
+            return
+        self.ledger.update_expected_money(
+            entry.id,
+            values["description"],
+            values["amount"],
+            expected_on=values["expected_on"],
+            account_id=values["account_id"],
+            note=values["note"],
+        )
+        from ..widgets import refresh_everything
+
+        refresh_everything(self)
 
     def _expected_selection_changed(self) -> None:
         self.expected_remove.setEnabled(bool(self.expected_table.selectedItems()))
