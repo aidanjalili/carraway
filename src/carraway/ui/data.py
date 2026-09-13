@@ -60,6 +60,8 @@ class Ledger:
     balance_dates: dict = field(default_factory=dict)  # account id -> when last observed
     manual: list = field(default_factory=list)
     expected: list = field(default_factory=list)  # money owed that has not landed
+    # budget id -> transaction ids taken out of that budget alone
+    exclusions: dict = field(default_factory=dict)
     settings: dict = field(default_factory=dict)
     guesses: dict = field(default_factory=dict)  # transaction id -> Guess
     dismissed: list = field(default_factory=list)
@@ -85,6 +87,7 @@ class Ledger:
         self.balance_dates = db.latest_balance_dates(conn)
         self.manual = db.list_manual_subscriptions(conn)
         self.expected = db.list_expected_money(conn)
+        self.exclusions = db.all_budget_exclusions(conn)
         self.overrides = db.get_series_overrides(conn)
         self.user_rules = db.list_user_rules(conn)
         self.budgets = db.list_budgets(conn)
@@ -583,6 +586,29 @@ class Ledger:
             # Without this the pace is a straight line, and a month whose bills
             # land on the 1st reads as a disaster on the 2nd.
             schedule=self.commitment_schedule(budget.starts_on, budget.ends_on),
+            excluded_ids=self.exclusions.get(budget.id),
+        )
+
+    # -- taking a row out of one budget rather than all of them -------------
+
+    def budget_exclusions(self, budget_id: str) -> set[str]:
+        return set(self.exclusions.get(budget_id) or ())
+
+    def set_budget_exclusion(
+        self, budget_id: str, transaction_ids: list[str], excluded: bool
+    ) -> int:
+        conn = db.connect(self.path)
+        changed = db.set_budget_exclusion(conn, budget_id, transaction_ids, excluded)
+        conn.close()
+        self.load()
+        return changed
+
+    def excluded_from(self, transaction_id: str) -> list[str]:
+        """The ids of every budget this transaction has been taken out of."""
+        return sorted(
+            budget_id
+            for budget_id, ids in self.exclusions.items()
+            if transaction_id in ids
         )
 
     def suggest_envelopes(self, starts_on: date, ends_on: date, accounts=None):

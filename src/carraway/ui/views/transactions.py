@@ -861,20 +861,48 @@ class TransactionsView(QWidget):
         excluding = bool(counted)
         many = len(chosen) > 1
         label = (
-            f"Exclude {len(chosen)} transactions from budgets" if excluding and many
-            else "Exclude from budgets" if excluding
-            else f"Include {len(chosen)} transactions in budgets" if many
-            else "Include in budgets"
+            f"Exclude {len(chosen)} transactions from every budget" if excluding and many
+            else "Exclude from every budget" if excluding
+            else f"Include {len(chosen)} transactions in every budget" if many
+            else "Include in every budget"
         )
         action = QAction(label, self)
         action.triggered.connect(lambda: self._set_excluded(chosen, excluding))
         menu.addAction(action)
+
+        # One entry per budget, because "not this trip, but yes September" is
+        # a different answer from "never count this at all" -- the same dollar
+        # can be real spending in one budget and noise in another.
+        live = [b for b in self.ledger.budgets]
+        if live:
+            per_budget = menu.addMenu("Exclude from just one budget")
+            ids = [tx.id for tx in chosen]
+            for budget in live:
+                out = self.ledger.budget_exclusions(budget.id)
+                already = [tx_id for tx_id in ids if tx_id in out]
+                # Same rule as above, one budget down: offer to take them out
+                # while any are still counted, and only offer to put them back
+                # when every one is already out.
+                taking_out = len(already) < len(ids)
+                entry = QAction(budget.name, self)
+                entry.setCheckable(True)
+                entry.setChecked(bool(already) and not taking_out)
+                entry.triggered.connect(
+                    lambda _=False, b=budget.id, ids=ids, out=taking_out: self._set_budget_excluded(
+                        b, ids, out
+                    )
+                )
+                per_budget.addAction(entry)
 
         note = QAction("Excluded rows stay in Spending and in every total", self)
         note.setEnabled(False)
         menu.addSeparator()
         menu.addAction(note)
         menu.exec(self.table.viewport().mapToGlobal(position))
+
+    def _set_budget_excluded(self, budget_id: str, transaction_ids: list, excluded: bool) -> None:
+        self.ledger.set_budget_exclusion(budget_id, transaction_ids, excluded)
+        refresh_everything(self)
 
     def _set_excluded(self, transactions, excluded: bool) -> None:
         conn = db.connect(self.ledger.path)

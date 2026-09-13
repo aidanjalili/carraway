@@ -1216,3 +1216,99 @@ def test_an_excluded_inflow_is_not_counted_as_excluded_spending():
     state = budgets.status(budget, [refund], asof=date(2026, 9, 10))
 
     assert state.excluded == Money.zero()
+
+
+# -- taking a row out of one budget rather than all of them ---------------
+
+
+def _two_budget_setup():
+    from datetime import date
+
+    from carraway.analysis.budgets import Budget, Envelope
+    from carraway.core.models import Transaction
+    from carraway.core.money import Money
+
+    window = {"starts_on": date(2026, 9, 1), "ends_on": date(2026, 9, 30)}
+    envelopes = [Envelope(category="Dining", allowance=Money.parse("300.00"))]
+    budget = Budget(id="sept", name="September", envelopes=envelopes, **window)
+    rows = [
+        Transaction(
+            id=f"t{n}",
+            account_id="a1",
+            date=date(2026, 9, 10 + n),
+            amount=Money.parse("-50.00"),
+            description=f"DINNER {n}",
+        )
+        for n in range(3)
+    ]
+    categories = {tx.id: "Dining" for tx in rows}
+    return budget, rows, categories
+
+
+def test_an_id_in_the_exclusion_set_is_left_out_of_that_budget():
+    from datetime import date
+
+    from carraway.analysis import budgets as B
+    from carraway.core.money import Money
+
+    budget, rows, categories = _two_budget_setup()
+    asof = date(2026, 9, 30)
+
+    full = B.status(budget, rows, asof=asof, categories=categories)
+    assert full.spent == Money.parse("150.00")
+
+    partial = B.status(
+        budget, rows, asof=asof, categories=categories, excluded_ids={"t1"}
+    )
+    assert partial.spent == Money.parse("100.00")
+    # Still reported, never silently dropped: money that left the account has
+    # to stay visible or this screen stops agreeing with the bank.
+    assert partial.excluded == Money.parse("50.00")
+
+
+def test_the_same_row_can_count_in_one_budget_and_not_another():
+    """The whole point: a trip is real spending in the travel budget and
+    noise in September."""
+    from datetime import date
+
+    from carraway.analysis import budgets as B
+    from carraway.core.money import Money
+
+    budget, rows, categories = _two_budget_setup()
+    asof = date(2026, 9, 30)
+
+    in_september = B.status(
+        budget, rows, asof=asof, categories=categories, excluded_ids={"t1"}
+    )
+    in_travel = B.status(budget, rows, asof=asof, categories=categories)
+    assert in_september.spent == Money.parse("100.00")
+    assert in_travel.spent == Money.parse("150.00")
+
+
+def test_the_global_flag_still_wins_everywhere():
+    from datetime import date
+
+    from carraway.analysis import budgets as B
+    from carraway.core.money import Money
+
+    budget, rows, categories = _two_budget_setup()
+    rows[0].budget_excluded = True
+    out = B.status(budget, rows, asof=date(2026, 9, 30), categories=categories)
+    assert out.spent == Money.parse("100.00")
+    assert out.excluded == Money.parse("50.00")
+
+
+def test_no_exclusions_behaves_exactly_as_before():
+    from datetime import date
+
+    from carraway.analysis import budgets as B
+
+    budget, rows, categories = _two_budget_setup()
+    asof = date(2026, 9, 30)
+    plain = B.status(budget, rows, asof=asof, categories=categories)
+    for empty in (None, set(), []):
+        same = B.status(
+            budget, rows, asof=asof, categories=categories, excluded_ids=empty
+        )
+        assert same.spent == plain.spent
+        assert same.excluded == plain.excluded

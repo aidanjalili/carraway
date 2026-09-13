@@ -266,6 +266,26 @@ MIGRATIONS: list[str] = [
         added_on     TEXT NOT NULL
     );
     """,
+    # v18 - taking a transaction out of one budget rather than all of them.
+    #
+    # `transactions.budget_excluded` (v16) is the blunt version: excluded
+    # everywhere, for ever. That is right for a reimbursement, which was never
+    # your money under any accounting. It is wrong for "this trip belongs to
+    # the travel budget, not to September" -- the same dollar is real spending
+    # in one budget and noise in another, and only a per-budget answer can say
+    # so. The two live side by side: the flag still means every budget.
+    #
+    # No foreign keys on purpose. A budget can be deleted and a transaction
+    # can vanish on a re-import, and neither should fail because a row here
+    # points at it; the orphan is harmless and is swept up on next write.
+    """
+    CREATE TABLE budget_exclusions (
+        budget_id      TEXT NOT NULL,
+        transaction_id TEXT NOT NULL,
+        PRIMARY KEY (budget_id, transaction_id)
+    );
+    CREATE INDEX budget_exclusions_budget ON budget_exclusions(budget_id);
+    """,
 ]
 
 
@@ -1206,6 +1226,51 @@ def update_transfer_groups(conn: sqlite3.Connection, transactions: list[Transact
         changed += cur.rowcount
     conn.commit()
     return changed
+
+
+def budget_exclusions(conn: sqlite3.Connection, budget_id: str) -> set[str]:
+    """The transaction ids taken out of this one budget."""
+    return {
+        r[0]
+        for r in conn.execute(
+            "SELECT transaction_id FROM budget_exclusions WHERE budget_id = ?",
+            (budget_id,),
+        )
+    }
+
+
+def all_budget_exclusions(conn: sqlite3.Connection) -> dict[str, set[str]]:
+    """Every per-budget exclusion, keyed by budget. One query, not one per budget."""
+    out: dict[str, set[str]] = {}
+    for budget_id, transaction_id in conn.execute(
+        "SELECT budget_id, transaction_id FROM budget_exclusions"
+    ):
+        out.setdefault(budget_id, set()).add(transaction_id)
+    return out
+
+
+def set_budget_exclusion(
+    conn: sqlite3.Connection,
+    budget_id: str,
+    transaction_ids: list[str],
+    excluded: bool,
+) -> int:
+    """Take these out of one budget, or put them back. Returns rows changed."""
+    if not transaction_ids:
+        return 0
+    if excluded:
+        cur = conn.executemany(
+            "INSERT OR IGNORE INTO budget_exclusions (budget_id, transaction_id) VALUES (?, ?)",
+            [(budget_id, tx_id) for tx_id in transaction_ids],
+        )
+    else:
+        marks = ",".join("?" for _ in transaction_ids)
+        cur = conn.execute(
+            f"DELETE FROM budget_exclusions WHERE budget_id = ? AND transaction_id IN ({marks})",
+            [budget_id, *transaction_ids],
+        )
+    conn.commit()
+    return cur.rowcount
 
 
 def set_budget_excluded(

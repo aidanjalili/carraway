@@ -34,7 +34,7 @@ what lets an eleven-day budget mean anything.
 from __future__ import annotations
 
 import statistics
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
@@ -788,6 +788,7 @@ def status(
     asof: date | None = None,
     categories: Mapping[str, str] | None = None,
     schedule: Sequence[Commitment] | None = None,
+    excluded_ids: Collection[str] | None = None,
 ) -> BudgetStatus:
     """Compare spending inside the budget's window against its envelopes.
 
@@ -804,6 +805,7 @@ def status(
     narrowing it is for when one account is genuinely a separate pot.
     """
     today = asof or date.today()
+    out_of_this_one = set(excluded_ids) if excluded_ids else None
     total_days = budget.days
     # Clamped so a finished budget reports itself complete and one that has
     # not started yet reports nothing spent, rather than either running off
@@ -832,7 +834,11 @@ def status(
         # a budget quietly ignoring money that left the account is how a screen
         # stops agreeing with the bank, and the whole point of this one is that
         # it does.
-        if getattr(tx, "budget_excluded", False):
+        # Two ways out of a budget. The flag on the transaction means every
+        # budget -- a reimbursement was never your money under any accounting.
+        # `excluded_ids` means this one only, which is the answer for a trip
+        # that belongs to the travel budget and not to September.
+        if getattr(tx, "budget_excluded", False) or (out_of_this_one and tx.id in out_of_this_one):
             if tx.amount.minor < 0:
                 excluded_minor += -tx.amount.minor
             continue
