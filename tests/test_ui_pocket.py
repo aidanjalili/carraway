@@ -1114,3 +1114,104 @@ def test_a_collection_that_found_nothing_does_not_rebuild_every_screen(
     # Still publishes: a budget edited on this laptop has to go out even
     # when the phone had nothing waiting.
     assert published == ["p"]
+
+
+def _scoped_verdict(subject: str, scope: str, kind: str = "exclude"):
+    import dataclasses
+
+    return dataclasses.replace(_verdict(subject, kind), scope=scope)
+
+
+def test_a_scoped_verdict_only_touches_that_budget(app, tmp_path, monkeypatch):
+    from datetime import date
+
+    from carraway.analysis.budgets import Budget, Envelope
+    from carraway.core.money import Money
+
+    ledger = _cash_ledger(tmp_path)
+    window = {"starts_on": date(2020, 1, 1), "ends_on": date(2030, 1, 1)}
+    envelopes = [Envelope(category="Uncategorized", allowance=Money.parse("500.00"))]
+    ledger.save_budget(Budget(id="sept", name="September", envelopes=envelopes, **window))
+    ledger.save_budget(Budget(id="trip", name="Trip", envelopes=envelopes, **window))
+
+    client = FakeClient()
+    client.entries = [_scoped_verdict("spend1", "sept")]
+    monkeypatch.setattr(Ledger, "pocket_client", lambda self: client)
+    ledger.save_setting("pocket_url", "https://money.example.com")
+
+    result = ledger.collect_from_pocket()
+    assert result["excluded"] == 1
+    assert ledger.budget_exclusions("sept") == {"spend1"}
+    assert ledger.budget_exclusions("trip") == set()
+    # The blunt flag is untouched: this was never "exclude it everywhere".
+    assert [t.budget_excluded for t in ledger.transactions] == [False]
+
+
+def test_an_unscoped_verdict_still_sets_the_global_flag(app, tmp_path, monkeypatch):
+    ledger = _cash_ledger(tmp_path)
+    client = FakeClient()
+    client.entries = [_verdict("spend1")]
+    monkeypatch.setattr(Ledger, "pocket_client", lambda self: client)
+    ledger.save_setting("pocket_url", "https://money.example.com")
+
+    ledger.collect_from_pocket()
+    assert [t.budget_excluded for t in ledger.transactions] == [True]
+
+
+def test_a_verdict_naming_a_budget_that_is_gone_is_dropped(app, tmp_path, monkeypatch):
+    ledger = _cash_ledger(tmp_path)
+    client = FakeClient()
+    client.entries = [_scoped_verdict("spend1", "a-budget-since-deleted")]
+    monkeypatch.setattr(Ledger, "pocket_client", lambda self: client)
+    ledger.save_setting("pocket_url", "https://money.example.com")
+
+    result = ledger.collect_from_pocket()
+    assert result["unknown_verdicts"] == 1
+    assert result["excluded"] == 0
+
+
+def test_two_scopes_for_one_row_do_not_overwrite_each_other(app, tmp_path, monkeypatch):
+    from datetime import date
+
+    """Out of September, still in the trip budget, collected in one go."""
+    from carraway.analysis.budgets import Budget, Envelope
+    from carraway.core.money import Money
+
+    ledger = _cash_ledger(tmp_path)
+    window = {"starts_on": date(2020, 1, 1), "ends_on": date(2030, 1, 1)}
+    envelopes = [Envelope(category="Uncategorized", allowance=Money.parse("500.00"))]
+    ledger.save_budget(Budget(id="sept", name="September", envelopes=envelopes, **window))
+    ledger.save_budget(Budget(id="trip", name="Trip", envelopes=envelopes, **window))
+    ledger.set_budget_exclusion("trip", ["spend1"], True)
+
+    client = FakeClient()
+    client.entries = [
+        _scoped_verdict("spend1", "sept", "exclude"),
+        _scoped_verdict("spend1", "trip", "include"),
+    ]
+    monkeypatch.setattr(Ledger, "pocket_client", lambda self: client)
+    ledger.save_setting("pocket_url", "https://money.example.com")
+
+    ledger.collect_from_pocket()
+    assert ledger.budget_exclusions("sept") == {"spend1"}
+    assert ledger.budget_exclusions("trip") == set()
+
+
+def test_the_history_says_which_budgets_a_row_is_out_of(app, tmp_path):
+    from datetime import date
+
+    from carraway.analysis.budgets import Budget, Envelope
+    from carraway.core.money import Money
+
+    ledger = _cash_ledger(tmp_path)
+    window = {"starts_on": date(2020, 1, 1), "ends_on": date(2030, 1, 1)}
+    envelopes = [Envelope(category="Uncategorized", allowance=Money.parse("500.00"))]
+    ledger.save_budget(Budget(id="sept", name="September", envelopes=envelopes, **window))
+    ledger.set_budget_exclusion("sept", ["spend1"], True)
+
+    rows = {r["id"]: r for r in ledger.pocket_history()["transactions"]}
+    assert rows["spend1"]["excluded_from"] == ["sept"]
+    # Absent, not empty, on every other row: ninety days of empty lists is
+    # payload that gets encrypted and sent on every publish for nothing.
+    others = [r for r in rows.values() if r["id"] != "spend1"]
+    assert all("excluded_from" not in r for r in others)

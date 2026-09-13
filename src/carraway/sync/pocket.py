@@ -63,6 +63,9 @@ class InboxEntry:
     # a phone, hours before the laptop is next open.
     kind: str = "spend"
     subject: str = ""
+    # Which budget the verdict is about. Empty means every budget, which is
+    # both the old meaning and the right default.
+    scope: str = ""
 
     @property
     def is_count(self) -> bool:
@@ -100,6 +103,7 @@ class InboxEntry:
             account=str(payload.get("account") or "Cash"),
             kind=str(payload.get("kind") or "spend"),
             subject=str(payload.get("subject") or ""),
+            scope=str(payload.get("scope") or ""),
         )
 
 

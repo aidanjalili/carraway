@@ -291,20 +291,40 @@ class Ledger:
             return {}
 
         known = {tx.id for tx in self.transactions}
-        wanted: dict[str, bool] = {}
+        budgets = {b.id for b in self.budgets}
+        # Keyed by (scope, transaction): a row can be taken out of September
+        # and left in the trip budget in one collection, and the two must not
+        # overwrite each other.
+        wanted: dict[tuple[str, str], bool] = {}
         unknown = 0
         for entry in verdicts:
+            scope = getattr(entry, "scope", "") or ""
             if entry.subject not in known:
                 unknown += 1
                 continue
-            wanted[entry.subject] = entry.excludes
+            if scope and scope not in budgets:
+                # Named a budget this ledger no longer has. Same reasoning as
+                # an unknown transaction: nothing the user could do would make
+                # it apply later.
+                unknown += 1
+                continue
+            wanted[(scope, entry.subject)] = entry.excludes
 
         if wanted:
             conn = db.connect(self.path)
-            for excluded in (True, False):
-                ids = [i for i, flag in wanted.items() if flag is excluded]
-                if ids:
-                    db.set_budget_excluded(conn, ids, excluded)
+            for scope in {s for s, _ in wanted}:
+                for excluded in (True, False):
+                    ids = [
+                        tx_id
+                        for (s, tx_id), flag in wanted.items()
+                        if s == scope and flag is excluded
+                    ]
+                    if not ids:
+                        continue
+                    if scope:
+                        db.set_budget_exclusion(conn, scope, ids, excluded)
+                    else:
+                        db.set_budget_excluded(conn, ids, excluded)
             conn.close()
             self.load()
 
@@ -406,6 +426,15 @@ class Ledger:
                 "category": self.category_of(tx),
                 "account": names.get(tx.account_id, ""),
                 "excluded": bool(getattr(tx, "budget_excluded", False)),
+                # Which budgets this row has been taken out of individually.
+                # Omitted when empty, which is nearly every row -- ninety days
+                # of statements would otherwise carry several hundred empty
+                # lists through a PBKDF2 seal on every publish.
+                **(
+                    {"excluded_from": out}
+                    if (out := self.excluded_from(tx.id))
+                    else {}
+                ),
             }
             for tx in self.transactions
             if tx.date >= cutoff and not tx.is_transfer
@@ -446,6 +475,9 @@ class Ledger:
 
             summaries.append(
                 {
+                    # The id as well as the name: the phone sends a verdict
+                    # naming a budget, and a name is not a handle.
+                    "id": budget.id,
                     "name": budget.name,
                     "allowance": _wire(state.allowance),
                     "spent": _wire(state.spent),
