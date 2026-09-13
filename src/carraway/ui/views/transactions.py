@@ -40,7 +40,14 @@ from ...core.models import Transaction
 from ...core.money import Money
 from .. import theme
 from ..data import Ledger
-from ..widgets import BalanceBanner, FilterStrip, enable_row_hover, refresh_everything, shorten
+from ..widgets import (
+    BalanceBanner,
+    FilterStrip,
+    dress_calendar,
+    enable_row_hover,
+    refresh_everything,
+    shorten,
+)
 from . import cash
 
 # Ranges someone actually asks for, with None meaning "everything".
@@ -488,13 +495,7 @@ class TransactionsView(QWidget):
             picker.blockSignals(True)
             picker.setDateRange(floor, ceiling)
             picker.setDate(QDate(value.year, value.month, value.day))
-            calendar = picker.calendarWidget()
-            if calendar is not None:
-                # The grid makes days easier to hit, and the navigation bar is
-                # where the month menu and the year spinner live -- the two
-                # controls that turn "next month" into "pick any date".
-                calendar.setGridVisible(True)
-                calendar.setNavigationBarVisible(True)
+            dress_calendar(picker)
             picker.blockSignals(False)
 
     def _preset_chosen(self, name: str) -> None:

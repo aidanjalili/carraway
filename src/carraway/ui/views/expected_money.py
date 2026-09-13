@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 
 from ...core.models import Account
 from ...core.money import Money
+from ..widgets import dress_calendar
 
 _UNKNOWN_ACCOUNT = "Not sure yet"
 
@@ -109,7 +110,7 @@ class ExpectedMoneyDialog(QDialog):
         self.expected_on.setCalendarPopup(True)
         self.expected_on.setDisplayFormat("yyyy-MM-dd")
         self.expected_on.setDate(QDate.currentDate().addDays(7))
-        self.expected_on.calendarWidget().setGridVisible(True)
+        dress_calendar(self.expected_on)
         when = QVBoxLayout()
         when.setContentsMargins(0, 0, 0, 0)
         when.setSpacing(5)

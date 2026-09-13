@@ -51,7 +51,16 @@ from ...analysis import budgets as budgets_mod
 from ...core.money import Money
 from .. import theme
 from ..data import Ledger
-from ..widgets import Card, FlowLayout, InfoDot, enable_row_hover, refresh_everything, shorten
+from ..widgets import (
+    Card,
+    FlowLayout,
+    InfoDot,
+    as_tooltip,
+    dress_calendar,
+    enable_row_hover,
+    refresh_everything,
+    shorten,
+)
 
 _HEADERS = ["Category", "You usually spend", "Allowance", "Change"]
 
@@ -286,12 +295,14 @@ class CreateBudgetView(QWidget):
 
         self.starts = QDateEdit()
         self.starts.setCalendarPopup(True)
+        dress_calendar(self.starts)
         self.starts.setDisplayFormat("yyyy-MM-dd")
         self.starts.dateChanged.connect(lambda _: self._dates_edited())
         row.addWidget(self.starts)
         row.addWidget(QLabel("to"))
         self.ends = QDateEdit()
         self.ends.setCalendarPopup(True)
+        dress_calendar(self.ends)
         self.ends.setDisplayFormat("yyyy-MM-dd")
         self.ends.dateChanged.connect(lambda _: self._dates_edited())
         row.addWidget(self.ends)
@@ -485,7 +496,7 @@ class CreateBudgetView(QWidget):
                 Qt.AlignmentFlag.AlignLeft if column == 0 else Qt.AlignmentFlag.AlignRight
             ) | Qt.AlignmentFlag.AlignVCenter
             self.table.horizontalHeaderItem(column).setTextAlignment(align)
-        self.table.horizontalHeaderItem(1).setToolTip(_HELP["usual"])
+        self.table.horizontalHeaderItem(1).setToolTip(as_tooltip(_HELP["usual"]))
         self.table.itemChanged.connect(self._allowance_edited)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._row_menu)
@@ -982,10 +993,12 @@ class CreateBudgetView(QWidget):
         typical.setFlags(typical.flags() & ~Qt.ItemFlag.ItemIsEditable)
         typical.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         typical.setToolTip(
-            _HELP["usual"]
-            if usual
-            else "Nothing spent here in the months this is drawn from, so there "
-            "is no usual figure to compare against."
+            as_tooltip(
+                _HELP["usual"]
+                if usual
+                else "Nothing spent here in the months this is drawn from, so there "
+                "is no usual figure to compare against."
+            )
         )
 
         allowance_item = QTableWidgetItem(allowance.format())
@@ -994,8 +1007,10 @@ class CreateBudgetView(QWidget):
             allowance_item.setFlags(allowance_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         if committed is not None and committed.minor > 0 and not locked:
             allowance_item.setToolTip(
-                f"Includes {committed.format()} already committed, which is not "
-                "yours to reduce this month."
+                as_tooltip(
+                    f"Includes {committed.format()} already committed, which is not "
+                    "yours to reduce this month."
+                )
             )
 
         if locked:
@@ -1014,7 +1029,9 @@ class CreateBudgetView(QWidget):
         elif change is not None and change.minor > 0:
             change_item.setForeground(QColor(theme.ACTIVE.accent))
         if locked:
-            change_item.setToolTip("Already committed in full, so there is nothing here to change.")
+            change_item.setToolTip(
+                as_tooltip("Already committed in full, so there is nothing here to change.")
+            )
 
         if bold:
             for item in (name, typical, allowance_item, change_item):

@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import date
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 
 from ...core.models import RecurringSeries
 from ...core.money import Money, total
+from .. import theme
 from ..data import Ledger
 from ..widgets import (
     FilterStrip,
@@ -96,6 +97,9 @@ def _cadence_label(series: RecurringSeries) -> str:
     return f"{series.cadence} ({count}x){suffix}" if count else series.cadence
 
 
+_PRICE_HEADERS = ["Merchant", "Was", "Now", "Changed", "Cadence", "Per year"]
+
+
 class SubscriptionsView(QWidget):
     def __init__(self, ledger: Ledger) -> None:
         super().__init__()
@@ -105,14 +109,18 @@ class SubscriptionsView(QWidget):
         layout.setContentsMargins(28, 24, 28, 24)
         layout.setSpacing(18)
 
-        title = QLabel("Subscriptions")
+        title = QLabel("Recurring")
         title.setObjectName("Title")
-        subtitle = QLabel("Everything that charges you on a schedule.")
+        subtitle = QLabel("Everything that charges you — or pays you — on a schedule.")
         subtitle.setObjectName("Subtitle")
         layout.addWidget(title)
         layout.addWidget(subtitle)
 
-        self.count_card = StatCard("Subscriptions", "0")
+        # "Recurring", not "Subscriptions": this screen has held bills, income
+        # and habits for a while, and the card counts whatever the chips are
+        # filtered to -- so under the Bills chip it was captioning a count of
+        # bills as subscriptions.
+        self.count_card = StatCard("Recurring", "0")
         self.monthly_card = StatCard("Per month", "-")
         self.yearly_card = StatCard("Per year", "-", tone="Accent")
         self.stale_card = StatCard("Unclassified", "0")
@@ -120,14 +128,39 @@ class SubscriptionsView(QWidget):
             StatRow([self.count_card, self.monthly_card, self.yearly_card, self.stale_card])
         )
 
-        # A price rise is the single most actionable thing this app can tell
-        # someone, so it gets its own line above the table rather than being a
-        # column they have to notice.
-        self.price_notice = QLabel("")
+        # A price rise is the most actionable thing this app can tell someone,
+        # so the headline stays in the open. What used to sit here was that
+        # headline and nothing else -- one merchant named, the rest summed
+        # into "and N others rose too", with no way to find out which. The
+        # history is now behind the same line, one click down, so the screen
+        # stays quiet without the detail being unreachable.
+        self.price_notice = QPushButton("")
         self.price_notice.setObjectName("Danger")
-        self.price_notice.setWordWrap(True)
+        self.price_notice.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.price_notice.setFlat(True)
+        self.price_notice.setStyleSheet("text-align: left;")
         self.price_notice.setVisible(False)
+        self.price_notice.clicked.connect(self._toggle_price_history)
         layout.addWidget(self.price_notice)
+
+        self.price_table = QTableWidget(0, len(_PRICE_HEADERS))
+        self.price_table.setHorizontalHeaderLabels(_PRICE_HEADERS)
+        self.price_table.verticalHeader().setVisible(False)
+        self.price_table.setAlternatingRowColors(True)
+        self.price_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.price_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.price_table.setMaximumHeight(190)
+        price_head = self.price_table.horizontalHeader()
+        price_head.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for column in range(1, len(_PRICE_HEADERS)):
+            price_head.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        # Held explicitly rather than read back off the widget. `isVisible()`
+        # is False for any child whose parent has not been shown yet, so using
+        # it as the source of truth makes the first toggle a no-op in any
+        # context where the view is built before it is displayed.
+        self._price_open = bool(ledger.setting("price_history_open"))
+        self.price_table.setVisible(self._price_open)
+        layout.addWidget(self.price_table)
 
         # Bills, subscriptions and stopped things answer different questions,
         # so they get their own tabs rather than one list the user must scan.
@@ -331,7 +364,12 @@ class SubscriptionsView(QWidget):
             name = item.merchant + ("  (stopped?)" if gone else "")
             kind = self.ledger.kind_of(item)
             change = self.ledger.price_change_for(item)
-            if change is not None:
+            # Only while it is still news. A marker that never expires stops
+            # being read: the row wears an arrow for ever and says nothing
+            # about what the thing costs today. The change itself is kept --
+            # it moves to the price history panel above, which is where the
+            # long view belongs.
+            if change is not None and change.is_recent():
                 name += "  ↑" if change.direction == "increase" else "  ↓"
             if self.ledger.is_edited(item):
                 name += "  ✎"
@@ -399,21 +437,7 @@ class SubscriptionsView(QWidget):
             notes.append(f"~ marks {varies} whose amount changes between charges")
         if stale:
             notes.append(f"{len(stale)} greyed out — expected charge never arrived")
-        rises = [c for c in self.ledger.price_changes if c.direction == "increase"]
-        if rises:
-            biggest = max(rises, key=lambda c: abs(c.annual_impact.minor))
-            extra = total([abs(c.annual_impact) for c in rises])
-            lead = (
-                f"{biggest.merchant} went from {abs(biggest.old_amount).format()} to "
-                f"{abs(biggest.new_amount).format()} on {biggest.changed_on}"
-            )
-            more = f" — and {len(rises) - 1} other rose too" if len(rises) > 1 else ""
-            self.price_notice.setText(
-                f"↑ {lead}{more}. Price rises are costing you {extra.format()}/year more."
-            )
-            self.price_notice.setVisible(True)
-        else:
-            self.price_notice.setVisible(False)
+        self._refresh_price_history()
 
         self.footnote.setText("   ·   ".join(notes))
         pending = len(unknown)
@@ -421,6 +445,81 @@ class SubscriptionsView(QWidget):
             f"Classify {pending} unclassified…" if pending else "Reclassify a merchant…"
         )
         self.review_button.setEnabled(bool(series))
+
+    # -- what things used to cost ------------------------------------------
+
+    def _toggle_price_history(self) -> None:
+        self._price_open = not self._price_open
+        self.ledger.save_setting("price_history_open", self._price_open)
+        self._refresh_price_history()
+
+    def _refresh_price_history(self) -> None:
+        changes = sorted(
+            self.ledger.price_changes, key=lambda c: c.changed_on, reverse=True
+        )
+        if not changes:
+            self.price_notice.setVisible(False)
+            self.price_table.setVisible(False)
+            return
+
+        rises = [c for c in changes if c.direction == "increase"]
+        recent = [c for c in changes if c.is_recent()]
+        count = len(changes)
+        plural = "" if count == 1 else "s"
+        caret = "▾" if self._price_open else "▸"
+
+        if recent:
+            biggest = max(recent, key=lambda c: abs(c.annual_impact.minor))
+            arrow = "↑" if biggest.direction == "increase" else "↓"
+            others = len(recent) - 1
+            more = f" — and {others} other{'' if others == 1 else 's'} changed too"
+            headline = (
+                f"{arrow} {biggest.merchant} went from "
+                f"{abs(biggest.old_amount).format()} to "
+                f"{abs(biggest.new_amount).format()} on {biggest.changed_on}"
+                f"{more if others else ''}."
+            )
+        elif rises:
+            # Nothing lately, so this no longer leads with a merchant and a
+            # date as though it had just happened. What a past rise still
+            # costs every year is the part that stays true.
+            extra = total([abs(c.annual_impact) for c in rises])
+            headline = f"Past price rises are costing you {extra.format()}/year more."
+        else:
+            headline = f"{count} price change{plural} on record."
+
+        self.price_notice.setText(f"{headline}  {caret} price history")
+        self.price_notice.setVisible(True)
+        self.price_table.setVisible(self._price_open)
+
+        self.price_table.setRowCount(len(changes))
+        for row, change in enumerate(changes):
+            per_year = change.annual_impact
+            cells = [
+                SortableItem(change.merchant, change.merchant.lower()),
+                SortableItem(abs(change.old_amount).format(), abs(change.old_amount).minor),
+                SortableItem(abs(change.new_amount).format(), abs(change.new_amount).minor),
+                SortableItem(change.changed_on.isoformat(), change.changed_on.toordinal()),
+                SortableItem(change.cadence, change.cadence),
+                SortableItem(
+                    ("+" if per_year.minor < 0 else "-") + abs(per_year).format(),
+                    -per_year.minor,
+                ),
+            ]
+            for column, cell in enumerate(cells):
+                if column:
+                    cell.setTextAlignment(
+                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+                    )
+            # Red for a rise, green for a cut, on the two columns that carry
+            # the direction.
+            tone = theme.ACTIVE.danger if change.direction == "increase" else theme.ACTIVE.accent
+            cells[2].setForeground(QColor(tone))
+            cells[5].setForeground(QColor(tone))
+            if not change.is_recent():
+                cells[3].setForeground(QColor(theme.ACTIVE.muted))
+            for column, cell in enumerate(cells):
+                self.price_table.setItem(row, column, cell)
 
     # -- classification --------------------------------------------------
 

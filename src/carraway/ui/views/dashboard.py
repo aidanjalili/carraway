@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
 from ...analysis import overview
 from ...core.money import Money
 from ..data import Ledger
-from ..widgets import Card, StatCard, StatRow
+from ..widgets import Card, StatCard, StatRow, dress_calendar
 
 CUSTOM = "Custom…"
 
@@ -158,6 +158,7 @@ class DashboardView(QWidget):
         self.to_date = QDateEdit()
         for field in (self.from_date, self.to_date):
             field.setCalendarPopup(True)
+            dress_calendar(field)
             field.setDisplayFormat("yyyy-MM-dd")
             field.dateChanged.connect(lambda _: self._dates_changed())
 

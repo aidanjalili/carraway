@@ -259,6 +259,47 @@ def stylesheet(p: Palette) -> str:
         background: {p.hover};
         color: {p.text};
     }}
+    /* The date picker's popup.
+       Its day grid is a QTableView, so without these rules it inherits the
+       ones above -- which are written for a wide statement table and are
+       wrong at 45 pixels a column. The day names are not a header: both
+       headers are hidden and the names live in row 0 as ordinary items. So
+       `QTableView::item {{ padding: 8px }}` left 29px of usable width for a
+       "Mon" that needs 30, and every weekday rendered as an ellipsis. */
+    QCalendarWidget QTableView {{
+        border: none;
+        border-radius: 0;
+        background: {p.surface};
+        alternate-background-color: {p.surface};
+        gridline-color: {p.border};
+        /* Loud on purpose. Qt paints Saturday and Sunday red, and a selected
+           cell takes the selection colour instead -- so with the muted
+           surface_alt used by the big tables, picking a weekend read as the
+           red having glitched off rather than the day having been chosen. */
+        selection-background-color: {p.accent};
+        selection-color: {p.bg};
+    }}
+    QCalendarWidget QTableView::item {{ padding: 0; }}
+    QCalendarWidget QWidget#qt_calendar_navigationbar {{
+        background: {p.surface_alt};
+        border-bottom: 1px solid {p.border};
+    }}
+    QCalendarWidget QToolButton {{
+        background: transparent;
+        color: {p.text};
+        border: none;
+        border-radius: 6px;
+        padding: 4px 10px;
+        font-weight: 600;
+    }}
+    QCalendarWidget QToolButton:hover {{ background: {p.hover}; }}
+    QCalendarWidget QSpinBox {{
+        background: {p.surface};
+        color: {p.text};
+        border: 1px solid {p.border};
+        border-radius: 6px;
+        padding: 2px 6px;
+    }}
     QScrollBar:vertical {{
         background: transparent; width: 10px; margin: 0;
     }}

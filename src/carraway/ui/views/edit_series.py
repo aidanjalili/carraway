@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 
 from ...core.models import RecurringSeries
 from ...core.money import Money
+from ..widgets import dress_calendar
 
 _CADENCES = ["weekly", "biweekly", "monthly", "quarterly", "yearly"]
 
@@ -92,6 +93,7 @@ class EditSeriesDialog(QDialog):
         self.date_on = QCheckBox()
         self.next_date = QDateEdit()
         self.next_date.setCalendarPopup(True)
+        dress_calendar(self.next_date)
         self.next_date.setDisplayFormat("yyyy-MM-dd")
         when = series.next_expected or date.today()
         self.next_date.setDate(QDate(when.year, when.month, when.day))

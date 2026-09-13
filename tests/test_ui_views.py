@@ -828,3 +828,48 @@ def test_one_day_away_reads_as_tomorrow(app, with_balance):
     entries = {e.description: e for e in with_balance.expected_money()}
     assert describe(entries["Cheque"]).endswith("tomorrow")
     assert describe(entries["Late one"]).endswith("1 day overdue")
+
+
+# -- tooltips that wrap instead of running off the screen ------------------
+
+
+def test_a_long_tooltip_becomes_wrapping_rich_text(app):
+    from carraway.ui.widgets import as_tooltip
+
+    out = as_tooltip("One sentence.\n\nA second paragraph.")
+    # Qt only wraps a tooltip when it is rich text; plain text is laid out on
+    # one line per paragraph however wide that ends up being.
+    assert out.startswith("<qt>")
+    assert "width:" in out
+    assert "<br><br>" in out
+    assert "One sentence." in out and "A second paragraph." in out
+
+
+def test_tooltip_text_is_escaped(app):
+    """An amount like "<$5" must not be swallowed as a tag."""
+    from carraway.ui.widgets import as_tooltip
+
+    out = as_tooltip("a < b & c > d")
+    assert "&lt;" in out and "&amp;" in out and "&gt;" in out
+
+
+# -- the calendar popup ----------------------------------------------------
+
+
+def test_today_is_marked_in_the_calendar(app):
+    from PySide6.QtCore import QDate
+    from PySide6.QtWidgets import QDateEdit
+
+    from carraway.ui.widgets import dress_calendar
+
+    picker = QDateEdit()
+    picker.setCalendarPopup(True)
+    dress_calendar(picker)
+    calendar = picker.calendarWidget()
+
+    marked = calendar.dateTextFormat(QDate.currentDate())
+    assert not marked.isEmpty(), "today carries no marking"
+    assert marked.fontWeight() > 50
+    # Every other day is left alone, or the mark would say nothing.
+    assert calendar.dateTextFormat(QDate.currentDate().addDays(5)).isEmpty()
+    assert calendar.isGridVisible()

@@ -106,6 +106,12 @@ MIN_SEPARATION = 3.0
 MIN_CONFIDENCE = 0.5
 
 
+# Two months, give or take: long enough to cover a monthly bill charging
+# twice at the new price, which is the point at which it has stopped being a
+# surprise and become the price.
+RECENT_DAYS = 62
+
+
 @dataclass(slots=True)
 class PriceChange:
     """One detected step in what a merchant charges.
@@ -127,6 +133,16 @@ class PriceChange:
     transactions_after: int
     annual_impact: Money
     confidence: float  # 0.0-1.0, how cleanly the step stands out from the noise
+
+    def is_recent(self, asof: date | None = None) -> bool:
+        """Has this change happened recently enough still to be news?
+
+        A price rise is worth flagging while it is still a change. After a
+        couple of billing cycles it is simply what the thing costs, and a
+        marker that never expires stops being read -- the row ends up wearing
+        an arrow for ever, saying nothing about today.
+        """
+        return (( asof or date.today()) - self.changed_on).days <= RECENT_DAYS
 
     @property
     def direction(self) -> str:

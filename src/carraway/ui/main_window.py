@@ -42,7 +42,7 @@ from .widgets import shorten
 _SCREENS = [
     ("Net worth", NetWorthView),
     ("Upcoming", UpcomingView),
-    ("Subscriptions", SubscriptionsView),
+    ("Recurring", SubscriptionsView),
     ("Create a budget", CreateBudgetView),
     ("Spending", SpendingView),
     ("Overview", DashboardView),

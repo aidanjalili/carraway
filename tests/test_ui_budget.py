@@ -30,7 +30,7 @@ from carraway.importers.csv_importer import import_csv  # noqa: E402
 from carraway.ui.data import Ledger  # noqa: E402
 from carraway.ui.views import create_budget  # noqa: E402
 from carraway.ui.views.create_budget import CreateBudgetView  # noqa: E402
-from carraway.ui.widgets import InfoDot  # noqa: E402
+from carraway.ui.widgets import InfoDot, as_tooltip  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -188,7 +188,11 @@ def test_every_info_dot_has_something_to_say(view):
     assert len(dots) >= 8
     for dot in dots:
         assert dot.explanation.strip(), "an info dot with no explanation"
-        assert dot.toolTip() == dot.explanation
+        # The tooltip is the same words, wrapped: Qt lays plain text out on
+        # one endless line and the end of a two-sentence explanation ran off
+        # the screen. Compared through as_tooltip so the two still cannot
+        # drift apart, which is what this line is really guarding.
+        assert dot.toolTip() == as_tooltip(dot.explanation)
 
 
 def test_an_info_dot_opens_a_popup_when_clicked(app, view):

@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..widgets import dress_calendar
 from .add_subscription import next_charge
 
 
@@ -56,6 +57,7 @@ class BillingDateDialog(QDialog):
         form = QFormLayout()
         self.field = QDateEdit()
         self.field.setCalendarPopup(True)
+        dress_calendar(self.field)
         self.field.setDisplayFormat("yyyy-MM-dd")
         # Prefer what is already set, then a charge in the statements that
         # looks like this entry, and only then today -- which is a placeholder

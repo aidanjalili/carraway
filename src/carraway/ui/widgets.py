@@ -7,7 +7,7 @@ numeric sorting, card chrome — are written once.
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPixmap
+from PySide6.QtGui import QColor, QFont, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -25,6 +25,23 @@ from PySide6.QtWidgets import (
 )
 
 from . import theme
+
+
+def as_tooltip(text: str, width: int = 380) -> str:
+    """Turn explanatory text into a tooltip that wraps instead of running off.
+
+    Qt lays a plain-text tooltip out on one line per paragraph and never
+    wraps it, so a two-sentence explanation becomes a strip wider than the
+    screen with its end unreadable. A *rich text* tooltip wraps, so the text
+    is escaped, blank lines become paragraph breaks, and the whole thing is
+    given a width to wrap inside.
+    """
+    escaped = (
+        text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    )
+    paragraphs = [p.strip() for p in escaped.split("\n\n") if p.strip()]
+    body = "<br><br>".join(par.replace("\n", " ") for par in paragraphs)
+    return f'<qt><div style="width: {width}px">{body}</div></qt>'
 
 
 class InfoDot(QPushButton):
@@ -48,7 +65,7 @@ class InfoDot(QPushButton):
         something the popup no longer does.
         """
         self.explanation = text
-        self.setToolTip(text)
+        self.setToolTip(as_tooltip(text))
 
     def __init__(self, text: str, parent: QWidget | None = None) -> None:
         super().__init__("i", parent)
@@ -60,12 +77,12 @@ class InfoDot(QPushButton):
         # Focusing it would put it in the tab order between a control and its
         # own input, which is not where anyone is trying to get to.
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.setToolTip(text)
+        self.setToolTip(as_tooltip(text))
         self.clicked.connect(self.explain)
 
     def setExplanation(self, text: str) -> None:  # noqa: N802 (Qt naming)
         self.explanation = text
-        self.setToolTip(text)
+        self.setToolTip(as_tooltip(text))
 
     def explain(self) -> None:
         """Show the popup under the dot."""
@@ -732,3 +749,43 @@ def refresh_everything(widget: QWidget) -> None:
     own = getattr(widget, "refresh", None)
     if callable(own):
         own()
+
+
+def dress_calendar(picker) -> None:
+    """Make a QDateEdit's popup calendar readable, and say which day is today.
+
+    Seven date pickers across the app were each setting some of this and none
+    of them all of it, so the popup looked slightly different depending on
+    which dialog opened it.
+
+    Marking today matters more than it sounds. The calendar opens on whatever
+    date the field holds, which is often months away from now, and with no
+    "you are here" the only way to tell where today sits is to read the
+    month title and do the arithmetic. That is exactly how a year gets picked
+    wrong by one.
+
+    The mark is set once, when the picker is built. A dialog is short-lived so
+    that is always current; the long-lived pickers on Transactions would go a
+    day stale if the app were left open across midnight, which is a cosmetic
+    edge on a screen that reloads when the date changes anyway.
+    """
+    from PySide6.QtCore import QDate
+    from PySide6.QtGui import QTextCharFormat
+
+    calendar = picker.calendarWidget()
+    if calendar is None:
+        return
+    # The grid makes days easier to hit; the navigation bar is where the month
+    # menu and the year spinner live -- the two controls that turn "next
+    # month" into "pick any date".
+    calendar.setGridVisible(True)
+    calendar.setNavigationBarVisible(True)
+
+    today = QDate.currentDate()
+    mark = QTextCharFormat()
+    mark.setFontWeight(QFont.Weight.Bold)
+    mark.setForeground(QColor(theme.ACTIVE.accent))
+    # A filled cell rather than only coloured text, so it still reads as
+    # today at a glance on a grid of thirty other numbers.
+    mark.setBackground(QColor(theme.ACTIVE.surface_alt))
+    calendar.setDateTextFormat(today, mark)
