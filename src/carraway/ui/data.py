@@ -550,7 +550,26 @@ class Ledger:
                     }
                 )
 
-        return {"budgets": lines, "summaries": summaries}
+        return {
+            "budgets": lines,
+            "summaries": summaries,
+            # The user's own category rules, so the server files a merchant
+            # the same way this laptop does. Without them a row muted as
+            # "Dining" on the phone would arrive categorised by the built-in
+            # rules alone, land under something else, and the mute would look
+            # broken.
+            #
+            # These are merchant patterns, and they go in the clear. That is a
+            # smaller step than it looks: the server's fetcher already reads
+            # every transaction in plaintext for the moment it takes to seal
+            # them, so the merchants are not news to it. What is new is that
+            # these persist rather than passing through.
+            "rules": [
+                {"pattern": r["pattern"], "category": r["category"]}
+                for r in self.user_rules
+                if r.get("pattern") and r.get("category")
+            ],
+        }
 
     def pocket_digest(self) -> str:
         """A fingerprint of what would be published, without encrypting it.
