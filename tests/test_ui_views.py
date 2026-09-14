@@ -1489,3 +1489,43 @@ def test_favourites_only_is_disabled_with_nothing_starred(app, tmp_path):
     view._reload()
     assert view.favourites_only.isEnabled() is False
     assert "Settings" in view.favourites_only.toolTip()
+
+
+# -- the Recurring screen's table gets its height back ---------------------
+
+
+def test_the_recurring_chips_lie_in_a_row_not_a_column(app, ledger):
+    """Beside an addStretch, a wrapping strip was given its minimum width and
+    wrapped after every chip: eight stacked one per line, taking the height
+    the table under them needed."""
+    from PySide6.QtCore import QTimer
+
+    from carraway.ui.views.subscriptions import SubscriptionsView
+
+    view = SubscriptionsView(ledger)
+    view.resize(1700, 1100)
+    view.show()
+    QTimer.singleShot(50, app.quit)
+    app.exec()
+    assert view.tabs.width() > view.tabs.height() * 4
+
+
+def test_opening_price_history_gives_it_room(app, ledger):
+    """A splitter remembers a hidden panel at size zero, so showing it again
+    produced a table zero pixels tall."""
+    from PySide6.QtCore import QTimer
+
+    from carraway.ui.views.subscriptions import SubscriptionsView
+
+    view = SubscriptionsView(ledger)
+    view.resize(1700, 1100)
+    view.show()
+    QTimer.singleShot(50, app.quit)
+    app.exec()
+
+    # Visible by hand: this fixture has no price changes, so the screen would
+    # keep the history hidden and a hidden panel always reports zero.
+    view.price_table.setVisible(True)
+    view.panels.setSizes([0, 800])
+    view._give_price_history_room()
+    assert view.panels.sizes()[0] >= 160

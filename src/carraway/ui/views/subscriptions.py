@@ -32,6 +32,7 @@ from .. import theme
 from ..data import Ledger
 from ..widgets import (
     FilterStrip,
+    PanelSplitter,
     SortableItem,
     StatCard,
     StatRow,
@@ -156,7 +157,6 @@ class SubscriptionsView(QWidget):
         self.price_table.setAlternatingRowColors(True)
         self.price_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.price_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.price_table.setMaximumHeight(190)
         resizable_columns(self.price_table, ledger, "recurring.prices", stretch=0)
         # Held explicitly rather than read back off the widget. `isVisible()`
         # is False for any child whose parent has not been shown yet, so using
@@ -164,7 +164,6 @@ class SubscriptionsView(QWidget):
         # context where the view is built before it is displayed.
         self._price_open = bool(ledger.setting("price_history_open"))
         self.price_table.setVisible(self._price_open)
-        layout.addWidget(self.price_table)
 
         # Hidden whenever the table is. This history is collapsible, and
         # offering to export rows nobody can see is the opposite of what a
@@ -175,6 +174,10 @@ class SubscriptionsView(QWidget):
 
         # Bills, subscriptions and stopped things answer different questions,
         # so they get their own tabs rather than one list the user must scan.
+        main = QWidget()
+        main_layout = QVBoxLayout(main)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(12)
         tab_row = QHBoxLayout()
         self.tabs = FilterStrip()
         self.tabs.setReorderable(True)
@@ -182,8 +185,12 @@ class SubscriptionsView(QWidget):
             self.tabs.addTab(label)
         self.tabs.currentChanged.connect(lambda _: self.refresh())
         self.tabs.orderChanged.connect(self._save_tab_order)
-        tab_row.addWidget(self.tabs)
-        tab_row.addStretch(1)
+        # The strip takes the spare width itself. It used to sit beside an
+        # addStretch, which claimed all the room, and a wrapping strip given
+        # its minimum width wraps after every chip -- eight chips stacked one
+        # per line, 111 pixels wide and 282 tall, taking the height the table
+        # beneath it needed.
+        tab_row.addWidget(self.tabs, stretch=1)
 
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search merchant, kind or cadence…")
@@ -196,7 +203,7 @@ class SubscriptionsView(QWidget):
         add.setCursor(Qt.CursorShape.PointingHandCursor)
         add.clicked.connect(self._add_manual)
         tab_row.addWidget(add)
-        layout.addLayout(tab_row)
+        main_layout.addLayout(tab_row)
 
         self.table = QTableWidget(0, len(_HEADERS))
         self.table.setHorizontalHeaderLabels(_HEADERS)
@@ -218,7 +225,26 @@ class SubscriptionsView(QWidget):
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSortingEnabled(True)
         resizable_columns(self.table, ledger, "recurring", stretch=0)
-        layout.addWidget(self.table, stretch=1)
+        main_layout.addWidget(self.table, stretch=1)
+
+        # A splitter between the price history and the main table, so the two
+        # can share the height however the moment wants -- the same control
+        # Net worth has. The chips stay on the table's side of the divider,
+        # since they are what filter it.
+        #
+        # Added directly rather than through `add_panel`: the price notice
+        # above is already that panel's heading and its open/close control,
+        # and a second header with a title and a maximise button would be
+        # furniture on top of it. While the history is collapsed the price
+        # table is hidden, which hides its handle too, so the table below
+        # simply has the room.
+        self.panels = PanelSplitter("recurring", ledger, defaults=(1, 3))
+        self.panels.addWidget(self.price_table)
+        self.panels.addWidget(main)
+        self.panels.setStretchFactor(0, 1)
+        self.panels.setStretchFactor(1, 3)
+        self.panels.setCollapsible(1, False)
+        layout.addWidget(self.panels, stretch=1)
 
         # Into the tab row above, now that there is a table to point it at.
         # What comes out is what the chips and the search have left showing.
@@ -252,6 +278,7 @@ class SubscriptionsView(QWidget):
         self.table.customContextMenuRequested.connect(self._context_menu)
         self.table.doubleClicked.connect(lambda _: self._edit_selected())
 
+        self.panels.restore()
         self.refresh()
 
     def _apply_search(self) -> None:
@@ -464,6 +491,24 @@ class SubscriptionsView(QWidget):
         self._price_open = not self._price_open
         self.ledger.save_setting("price_history_open", self._price_open)
         self._refresh_price_history()
+        if self._price_open:
+            self._give_price_history_room()
+
+    def _give_price_history_room(self) -> None:
+        """Open the history at a usable height, not at the zero it closed at.
+
+        A splitter remembers a hidden panel's size as nothing, and showing
+        the panel again does not change that -- so opening the history
+        produced a heading, an open caret, and a table zero pixels tall. A
+        quarter of the space unless the user has already dragged it to
+        something else.
+        """
+        sizes = self.panels.sizes()
+        if len(sizes) == 2 and sizes[0] == 0:
+            total = sum(sizes) or 800
+            share = max(total // 4, 160)
+            self.panels.setSizes([share, max(total - share, 0)])
+            self.panels.save()
 
     def _refresh_price_history(self) -> None:
         changes = sorted(
