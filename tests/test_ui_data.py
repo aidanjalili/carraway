@@ -9,13 +9,30 @@ from carraway.importers.csv_importer import import_csv
 from carraway.ui.data import Ledger
 
 
+def _recent_months(count: int) -> list:
+    """The first of each of the last `count` months, oldest first.
+
+    Fixtures used to hardcode 2026-01 to 2026-08. Those age: the detector
+    treats a series as stale ten days after a missed charge, so a fixed set
+    of months quietly stops looking recurring, and tests that passed all
+    morning fail at a date boundary nobody touched. Relative dates do not rot.
+    """
+    first = date.today().replace(day=1)
+    months = [first]
+    for _ in range(count - 1):
+        first = (first - timedelta(days=1)).replace(day=1)
+        months.append(first)
+    return list(reversed(months))
+
+
 def _statement(price_after: str) -> str:
     rows = ["Date,Description,Amount"]
     # Eleven months at one price, then four at another: a real price rise.
-    for month in range(1, 12):
-        rows.append(f"2025-{month:02d}-16,NETFLIX.COM 866-579-7172 CA,-8.43")
-    for month in range(1, 5):
-        rows.append(f"2026-{month:02d}-16,NETFLIX.COM 866-579-7172 CA,{price_after}")
+    months = _recent_months(16)
+    for first in months[:11]:
+        rows.append(f"{first.replace(day=16)},NETFLIX.COM 866-579-7172 CA,-8.43")
+    for first in months[11:15]:
+        rows.append(f"{first.replace(day=16)},NETFLIX.COM 866-579-7172 CA,{price_after}")
     return "\n".join(rows) + "\n"
 
 
@@ -780,11 +797,15 @@ def _income_ledger(tmp_path) -> Ledger:
     import io
 
     rows = ["Date,Description,Amount"]
-    for month in range(1, 9):
-        rows.append(f"2026-{month:02d}-01,ACME CORP PAYROLL,4000.00")
-        rows.append(f"2026-{month:02d}-03,GREAT LANDLORD RENT,-1200.00")
+    months = _recent_months(9)
+    for first in months:
+        for day, label, amount in ((1, "ACME CORP PAYROLL", "4000.00"),
+                                   (3, "GREAT LANDLORD RENT", "-1200.00")):
+            when = first.replace(day=day)
+            if when <= date.today():
+                rows.append(f"{when},{label},{amount}")
     # A single large deposit, which must not be mistaken for monthly income.
-    rows.append("2026-05-20,SOLD THE CAR,9000.00")
+    rows.append(f"{months[4].replace(day=20)},SOLD THE CAR,9000.00")
 
     path = tmp_path / "income.db"
     conn = db.connect(path)
@@ -914,13 +935,15 @@ def test_a_subscription_that_stopped_charging_is_not_a_commitment(tmp_path):
 def _lapsed_statement() -> str:
     """A monthly subscription that charged for a year and then simply stopped."""
     rows = ["Date,Description,Amount"]
-    for month in range(1, 13):
-        rows.append(f"2025-{month:02d}-05,SPOTIFY USA,-11.99")
+    months = _recent_months(24)
+    # A year of Spotify, ending well over a year ago: long since lapsed.
+    for first in months[:12]:
+        rows.append(f"{first.replace(day=5)},SPOTIFY USA,-11.99")
     # A second, still-live subscription, so the ledger is not entirely stale.
-    for month in range(1, 13):
-        rows.append(f"2025-{month:02d}-16,NETFLIX.COM 866-579-7172 CA,-8.43")
-    for month in range(1, 9):
-        rows.append(f"2026-{month:02d}-16,NETFLIX.COM 866-579-7172 CA,-8.43")
+    for first in months:
+        when = first.replace(day=16)
+        if when <= date.today():
+            rows.append(f"{when},NETFLIX.COM 866-579-7172 CA,-8.43")
     return "\n".join(rows) + "\n"
 
 

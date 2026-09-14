@@ -39,16 +39,37 @@ def app():
 
 
 def _rows() -> str:
-    """Six complete months of pay, rent and discretionary spending."""
+    """Six complete months of pay, rent and discretionary spending.
+
+    Plus whatever has already happened this month. Without it these series go
+    *stale* partway through every month -- `recurring.stale` allows ten days
+    of grace, so on the 11th a charge dated the 3rd of last month reads as
+    abandoned, the detector drops the series, and tests that had passed all
+    morning start failing at a date boundary nobody changed.
+
+    Real life has this month's rent in it by the 3rd, so the fixture should
+    too. Days still in the future are left out, because they have not
+    happened.
+    """
     today = date.today()
     rows = ["Date,Description,Amount"]
+
+    def month_rows(first: date) -> None:
+        for day, label, amount in (
+            (2, "ACME CORP PAYROLL", "4000.00"),
+            (3, "GREAT LANDLORD RENT", "-1200.00"),
+            (8, "CORNER BISTRO", "-200.00"),
+            (9, "METRO TRANSIT", "-100.00"),
+        ):
+            when = first.replace(day=day)
+            if when <= today:
+                rows.append(f"{when},{label},{amount}")
+
     month = today.replace(day=1)
+    month_rows(month)
     for _ in range(7):
         month = (month - timedelta(days=1)).replace(day=1)
-        rows.append(f"{month.replace(day=2)},ACME CORP PAYROLL,4000.00")
-        rows.append(f"{month.replace(day=3)},GREAT LANDLORD RENT,-1200.00")
-        rows.append(f"{month.replace(day=8)},CORNER BISTRO,-200.00")
-        rows.append(f"{month.replace(day=9)},METRO TRANSIT,-100.00")
+        month_rows(month)
     return "\n".join(rows) + "\n"
 
 

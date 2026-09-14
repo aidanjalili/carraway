@@ -17,7 +17,7 @@ import pytest
 
 pytest.importorskip("PySide6", reason="GUI tests need the [gui] extra")
 
-from datetime import date  # noqa: E402
+from datetime import date, timedelta  # noqa: E402
 
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
@@ -43,17 +43,27 @@ def ledger(tmp_path) -> Ledger:
     path = tmp_path / "views.db"
     conn = db.connect(path)
     db.upsert_account(conn, Account(id="a1", name="Card", type=AccountType.CREDIT_CARD))
+    # Relative, not 2026-01 to 2026-08. A fixed set of months ages: the
+    # detector calls a series stale ten days after a missed charge, so
+    # hardcoded dates quietly stop looking recurring and the fixture rots.
+    first = date.today().replace(day=1)
+    months = [first]
+    for _ in range(8):
+        first = (first - timedelta(days=1)).replace(day=1)
+        months.append(first)
     db.insert_transactions(
         conn,
         [
             Transaction(
-                id=f"n{month}",
+                id=f"n{n}",
                 account_id="a1",
-                date=date(2026, month, 16),
+                date=when,
                 amount=Money.parse("-8.43"),
                 description="NETFLIX.COM",
             )
-            for month in range(1, 9)
+            for n, when in enumerate(
+                w for w in (m.replace(day=16) for m in months) if w <= date.today()
+            )
         ],
     )
     conn.close()
@@ -1241,23 +1251,27 @@ def test_the_column_lines_are_visible(app, with_balance):
     assert view.table.showGrid() is True
 
 
-def test_the_table_gets_most_of_its_panel(app, with_balance):
-    """A height cap meant the leftover space pooled above the table as a dead
+def test_the_table_gets_the_slack_in_its_panel(app, with_balance):
+    """A height cap meant leftover space pooled above the table as a dead
     strip instead of showing more rows -- the taller the panel, the emptier
-    it looked."""
-    from PySide6.QtCore import QTimer
+    it looked.
 
-    for n in range(6):
-        with_balance.add_expected_money(f"Thing {n}", Money.parse("10.00"))
-
+    Asserted on the layout rather than on measured heights: the offscreen
+    platform does not re-lay-out on a resize after show, so growing the
+    window and measuring proves nothing here.
+    """
     from carraway.ui.views.networth import NetWorthView
 
     view = NetWorthView(with_balance)
-    view.resize(1700, 1100)
-    view.show()
-    QTimer.singleShot(60, app.quit)
-    app.exec()
+    layout = view.expected_table.parentWidget().layout()
 
-    panel = view.panels.widget(2)
-    assert panel.height() > 0
-    assert view.expected_table.height() / panel.height() > 0.6
+    index = next(
+        i
+        for i in range(layout.count())
+        if layout.itemAt(i).widget() is view.expected_table
+    )
+    assert layout.stretch(index) == 1, "the table does not take the slack"
+    # And nothing above it competes for the extra height.
+    others = [layout.stretch(i) for i in range(layout.count()) if i != index]
+    assert all(stretch == 0 for stretch in others)
+    assert view.expected_table.maximumHeight() > 10_000, "a height cap is back"
