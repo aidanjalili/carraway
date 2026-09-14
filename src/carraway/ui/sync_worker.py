@@ -99,12 +99,25 @@ _LIVE: set = set()
 _SHUTDOWN_ARMED = False
 
 
-def stop_all() -> None:
-    """Quit and wait on every sync thread. Bounded, never a hang."""
+def stop_all(timeout_ms: int = 5000) -> None:
+    """Quit and wait on every sync thread. Bounded, never a hang.
+
+    A thread that outlasts the wait is kept in `_LIVE` rather than dropped. A
+    sync is several requests with a minute's timeout each, and clearing the
+    set let the closing window destroy one still running -- a fatal abort, and
+    a core dump -- where keeping the reference lets it finish on its own.
+    """
     for thread in list(_LIVE):
         thread.quit()
-        thread.wait(5000)
-    _LIVE.clear()
+        thread.wait(timeout_ms)
+    for thread in list(_LIVE):
+        if not thread.isRunning():
+            _LIVE.discard(thread)
+
+
+def any_running() -> bool:
+    """Whether a sync is still running after everything was asked to stop."""
+    return any(thread.isRunning() for thread in list(_LIVE))
 
 
 def _arm_shutdown() -> None:

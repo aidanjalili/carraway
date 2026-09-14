@@ -717,6 +717,59 @@ def test_a_request_in_flight_does_not_crash_the_app_on_the_way_out(app, paired):
     assert not view._IN_FLIGHT
 
 
+def test_a_request_slower_than_the_wait_is_kept_alive(app):
+    """The wait on the way out gave up after two seconds and emptied the set
+    anyway, dropping the last reference to a request that was merely slow.
+    The closing window then destroyed it mid-flight -- scripted on a copy of
+    the app, a 3.5 second request made closing end in SIGABRT."""
+    from PySide6.QtWidgets import QWidget
+
+    from carraway.ui.views import pocket as view
+
+    owner = QWidget()
+    release = threading.Event()
+    runner = view._Runner(owner)
+    runner.start(lambda: release.wait(5.0), lambda _: None, lambda _: None)
+    thread = runner._thread
+    try:
+        view._wait_for_in_flight(timeout_ms=50)
+        assert thread in view._IN_FLIGHT
+        assert view.any_in_flight()
+    finally:
+        # Released and joined whatever happened above, so a failure here is a
+        # failed assertion rather than a thread destroyed while it runs.
+        release.set()
+        thread.wait(5000)
+        _settle(app, runner)
+    view._wait_for_in_flight()
+    assert not view.any_in_flight()
+
+
+def test_a_sync_slower_than_the_wait_is_kept_alive(app):
+    from PySide6.QtCore import QThread
+
+    from carraway.ui import sync_worker
+
+    release = threading.Event()
+
+    class Slow(QThread):
+        def run(self):
+            release.wait(5.0)
+
+    thread = Slow()
+    sync_worker._LIVE.add(thread)
+    thread.start()
+    try:
+        sync_worker.stop_all(timeout_ms=50)
+        assert thread in sync_worker._LIVE
+        assert sync_worker.any_running()
+    finally:
+        release.set()
+        thread.wait(5000)
+    sync_worker.stop_all()
+    assert thread not in sync_worker._LIVE
+
+
 def test_shutdown_is_armed_the_first_time_something_is_sent(app, paired):
     from PySide6.QtWidgets import QApplication, QWidget
 

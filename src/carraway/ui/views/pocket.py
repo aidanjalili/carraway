@@ -42,20 +42,34 @@ from ..widgets import Card, QRCode
 _IN_FLIGHT: set = set()
 
 
-def _wait_for_in_flight() -> None:
+def _wait_for_in_flight(timeout_ms: int = 2000) -> None:
     """Let any outstanding request finish before the process goes away.
 
     Qt aborts if a QThread is destroyed while still running, so an app that
     quits during a publish takes a SIGABRT on the way out -- create a budget,
     close the window straight away, and the last thing Carraway does is crash.
     Holding the threads in `_IN_FLIGHT` kept them alive; nothing waited for
-    them. Two seconds each is generous for a request that has already been
-    given twenty, and it is a bounded wait rather than a hang.
+    them. Two seconds each is a bounded wait rather than a hang.
+
+    A thread still running when the wait runs out stays in `_IN_FLIGHT`. This
+    used to empty the set regardless, which dropped the last reference to a
+    request that was simply slow -- a phone on a train, a server taking its
+    twenty seconds -- and the window going away then destroyed it mid-flight:
+    exactly the abort the wait was there to prevent, only two seconds later.
+    It removes itself when it finishes, and `any_in_flight` lets the app end
+    without tearing it down if it never does.
     """
     for thread in list(_IN_FLIGHT):
         thread.quit()
-        thread.wait(2000)
-    _IN_FLIGHT.clear()
+        thread.wait(timeout_ms)
+    for thread in list(_IN_FLIGHT):
+        if not thread.isRunning():
+            _IN_FLIGHT.discard(thread)
+
+
+def any_in_flight() -> bool:
+    """Whether a round trip is still running after everything was asked to stop."""
+    return any(thread.isRunning() for thread in list(_IN_FLIGHT))
 
 
 def stop_all_runners() -> None:
