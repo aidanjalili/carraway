@@ -1562,6 +1562,14 @@ def test_a_share_after_taking_it_out_counts_the_share(app, tmp_path, monkeypatch
     assert row.budget_excluded_minor == 2000
 
 
+def test_taking_it_out_after_a_share_takes_all_of_it_out(app, tmp_path, monkeypatch):
+    row = _collect_in_order(
+        tmp_path, monkeypatch, _share_verdict("spend1", "10.00"), _verdict("spend1", "exclude")
+    )
+    assert row.budget_excluded is True
+    assert row.budget_excluded_minor == 3000
+
+
 def test_counting_it_again_after_a_share_counts_all_of_it(app, tmp_path, monkeypatch):
     row = _collect_in_order(
         tmp_path, monkeypatch, _share_verdict("spend1", "10.00"), _verdict("spend1", "include")
