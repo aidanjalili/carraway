@@ -15,7 +15,6 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QPushButton,
     QStackedWidget,
@@ -27,7 +26,7 @@ from PySide6.QtWidgets import (
 from ...analysis import spending
 from ...core.money import Money
 from ..data import Ledger
-from ..widgets import Card, SortableItem, StatCard, StatRow, enable_row_hover
+from ..widgets import Card, SortableItem, StatCard, StatRow, enable_row_hover, resizable_columns
 from .charts import BarChart, PieChart, Slice, TrendChart
 
 _HEADERS = ["Category", "Spent", "Share", "Transactions"]
@@ -129,10 +128,7 @@ class SpendingView(QWidget):
         self._hover = enable_row_hover(self.table)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSortingEnabled(True)
-        head = self.table.horizontalHeader()
-        head.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for column in range(1, len(_HEADERS)):
-            head.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        resizable_columns(self.table, ledger, "spending", stretch=0)
 
         self.stack = QStackedWidget()
         for widget in (self.pie, self.bars, self.table, self.trend):

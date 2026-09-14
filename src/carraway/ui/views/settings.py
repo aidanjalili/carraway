@@ -399,16 +399,17 @@ class SettingsView(QWidget):
         layout.addWidget(heading)
 
         panels_note = QLabel(
-            "Panels you have dragged or expanded keep their size between "
-            "sessions. This puts every screen back to the proportions it "
-            "ships with."
+            "Panels and table columns you have dragged keep their size "
+            "between sessions. This puts every screen back to the proportions "
+            "it ships with. Column widths take effect on the next restart; "
+            "panels change straight away."
         )
         panels_note.setObjectName("Muted")
         panels_note.setWordWrap(True)
         layout.addWidget(panels_note)
 
         panels_row = QHBoxLayout()
-        reset_panels = QPushButton("Reset panel sizes")
+        reset_panels = QPushButton("Reset panel and column sizes")
         reset_panels.setCursor(Qt.CursorShape.PointingHandCursor)
         reset_panels.clicked.connect(self._reset_panels)
         panels_row.addWidget(reset_panels)
@@ -526,9 +527,10 @@ class SettingsView(QWidget):
         rebuilt, so they are put back directly as well -- a reset that only
         takes effect after a restart is a reset that looks broken.
         """
-        from ..widgets import PanelSplitter, refresh_everything
+        from ..widgets import PanelSplitter, refresh_everything, reset_columns
 
         PanelSplitter.reset_all(self.ledger)
+        reset_columns(self.ledger)
         # The live screens are reset directly as well. Clearing the saved
         # state alone would leave every screen already built showing the
         # sizes it was dragged to until the app restarted, which is a reset

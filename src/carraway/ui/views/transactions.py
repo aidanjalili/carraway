@@ -24,7 +24,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDateEdit,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QLineEdit,
     QMenu,
@@ -46,6 +45,7 @@ from ..widgets import (
     dress_calendar,
     enable_row_hover,
     refresh_everything,
+    resizable_columns,
     shorten,
 )
 from . import cash
@@ -357,9 +357,7 @@ class TransactionsView(QWidget):
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._row_menu)
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        for column in (0, 2, 3, 4):
-            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        resizable_columns(self.table, ledger, "transactions", stretch=1)
         layout.addWidget(self.table, stretch=1)
 
         self.count = QLabel("")

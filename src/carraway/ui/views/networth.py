@@ -17,7 +17,6 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QMenu,
     QMessageBox,
@@ -38,6 +37,7 @@ from ..widgets import (
     SortableItem,
     StatCard,
     StatRow,
+    resizable_columns,
     shorten,
 )
 from . import expected_money
@@ -314,10 +314,7 @@ class NetWorthView(QWidget):
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         # No maximum height any more: the splitter decides how tall this is,
         # and a cap would quietly fight whatever the user dragged it to.
-        head = self.table.horizontalHeader()
-        head.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for column in range(1, len(_HEADERS)):
-            head.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        resizable_columns(self.table, ledger, "networth.history", stretch=0)
 
         # A splitter rather than three stacked widgets, so the three can be
         # given whatever share of the screen the question of the moment wants:
@@ -375,10 +372,7 @@ class NetWorthView(QWidget):
         self.expected_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.expected_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.expected_table.setMaximumHeight(160)
-        head_view = self.expected_table.horizontalHeader()
-        head_view.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        for column in (0, 2, 3, 4):
-            head_view.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        resizable_columns(self.expected_table, self.ledger, "networth.expected", stretch=1)
         self.expected_table.itemSelectionChanged.connect(self._expected_selection_changed)
         # Right-click to correct one. A mistyped date is the common mistake
         # here, and without this the only way to fix it is to delete the entry

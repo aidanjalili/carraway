@@ -950,3 +950,61 @@ def test_a_corrupt_saved_layout_falls_back_rather_than_failing(app, with_balance
     view.resize(1200, 900)
     assert view.panels.count() == 3
     assert sum(view.panels.sizes()) > 0
+
+
+# -- columns the user can drag --------------------------------------------
+
+
+def test_columns_are_draggable_except_the_one_that_absorbs_slack(app, with_balance):
+    from PySide6.QtWidgets import QHeaderView
+
+    from carraway.ui.views.networth import NetWorthView
+
+    view = NetWorthView(with_balance)
+    view.resize(1400, 900)
+    header = view.table.horizontalHeader()
+    modes = [header.sectionResizeMode(c) for c in range(view.table.columnCount())]
+
+    # Exactly one Stretch: something has to take the width left over, or
+    # narrowing a column leaves dead space at the right-hand edge.
+    assert modes.count(QHeaderView.ResizeMode.Stretch) == 1
+    assert all(
+        m == QHeaderView.ResizeMode.Interactive
+        for m in modes
+        if m != QHeaderView.ResizeMode.Stretch
+    )
+
+
+def test_a_dragged_column_width_comes_back(app, with_balance):
+    from carraway.ui.views.networth import NetWorthView
+
+    view = NetWorthView(with_balance)
+    view.resize(1400, 900)
+    header = view.table.horizontalHeader()
+    header.resizeSection(2, 240)
+    with_balance.save_setting(
+        "columns:networth.history",
+        header.saveState().toBase64().data().decode("ascii"),
+    )
+
+    reopened = NetWorthView(with_balance)
+    reopened.resize(1400, 900)
+    assert reopened.table.horizontalHeader().sectionSize(2) == 240
+
+
+def test_resetting_forgets_column_widths_too(app, with_balance):
+    from carraway.ui.widgets import reset_columns
+
+    with_balance.save_setting("columns:networth.history", "something")
+    with_balance.save_setting("columns:transactions", "something else")
+    assert reset_columns(with_balance) == 2
+    assert not with_balance.setting("columns:networth.history")
+
+
+def test_a_corrupt_saved_column_state_is_ignored(app, with_balance):
+    from carraway.ui.views.networth import NetWorthView
+
+    with_balance.save_setting("columns:networth.history", "not base64 at all!!")
+    view = NetWorthView(with_balance)
+    view.resize(1400, 900)
+    assert view.table.columnCount() == 5

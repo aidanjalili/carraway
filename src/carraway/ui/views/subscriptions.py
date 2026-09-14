@@ -17,7 +17,6 @@ from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QLineEdit,
     QMenu,
@@ -38,6 +37,7 @@ from ..widgets import (
     StatRow,
     enable_row_hover,
     refresh_everything,
+    resizable_columns,
 )
 from . import add_subscription, billing_date, edit_series, paid_with
 from .classify_dialog import ClassifyDialog
@@ -150,10 +150,7 @@ class SubscriptionsView(QWidget):
         self.price_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.price_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.price_table.setMaximumHeight(190)
-        price_head = self.price_table.horizontalHeader()
-        price_head.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for column in range(1, len(_PRICE_HEADERS)):
-            price_head.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        resizable_columns(self.price_table, ledger, "recurring.prices", stretch=0)
         # Held explicitly rather than read back off the widget. `isVisible()`
         # is False for any child whose parent has not been shown yet, so using
         # it as the source of truth makes the first toggle a no-op in any
@@ -206,10 +203,7 @@ class SubscriptionsView(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSortingEnabled(True)
-        header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for column in range(1, len(_HEADERS)):
-            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        resizable_columns(self.table, ledger, "recurring", stretch=0)
         layout.addWidget(self.table, stretch=1)
 
         self.filter_note = QLabel("")

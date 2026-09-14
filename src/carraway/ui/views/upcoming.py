@@ -31,7 +31,14 @@ from ...analysis import subscriptions
 from ...core.money import Money, total
 from .. import theme
 from ..data import Ledger
-from ..widgets import SortableItem, StatCard, StatRow, enable_row_hover, refresh_everything
+from ..widgets import (
+    SortableItem,
+    StatCard,
+    StatRow,
+    enable_row_hover,
+    refresh_everything,
+    resizable_columns,
+)
 from .classify_dialog import ClassifyDialog
 
 _HEADERS = ["When", "What", "Kind", "Amount", "Confidence", "Why we think so"]
@@ -98,6 +105,7 @@ class UpcomingView(QWidget):
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSortingEnabled(True)
         head = self.table.horizontalHeader()
+        resizable_columns(self.table, ledger, "upcoming", stretch=1)
         head.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         head.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         for column in (0, 2, 3, 4):

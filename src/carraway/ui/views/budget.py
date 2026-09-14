@@ -32,7 +32,7 @@ from ...analysis import budget as budget_mod
 from ...core.money import Money
 from .. import theme
 from ..data import Ledger
-from ..widgets import Card, SortableItem, StatCard, StatRow
+from ..widgets import Card, SortableItem, StatCard, StatRow, resizable_columns
 
 _HEADERS = ["Category", "Spending now", "Allowed", "Change"]
 
@@ -109,8 +109,8 @@ class BudgetView(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        resizable_columns(self.table, ledger, "budget", stretch=0)
         head = self.table.horizontalHeader()
-        head.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         for column in range(1, len(_HEADERS)):
             head.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         layout.addWidget(self.table, stretch=1)

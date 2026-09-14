@@ -6,6 +6,8 @@ numeric sorting, card chrome — are written once.
 
 from __future__ import annotations
 
+import contextlib
+
 from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPixmap
 from PySide6.QtWidgets import (
@@ -935,3 +937,94 @@ class PanelSplitter(QSplitter):
         for key in keys:
             ledger.save_setting(key, "")
         return len(keys)
+
+
+#: Saved column widths live under this prefix, and are cleared with the
+#: panel sizes by the one control in Settings.
+COLUMN_PREFIX = "columns:"
+
+
+def resizable_columns(table, ledger, name: str, *, stretch: int = 0) -> None:
+    """Let the user drag a table's column dividers, and remember where.
+
+    Columns were sized `Stretch` and `ResizeToContents`, which both compute a
+    width and refuse to be dragged -- the divider is simply inert under the
+    cursor. `Interactive` is the mode that can be dragged, so every column
+    gets it except one.
+
+    That one keeps `Stretch`, and it is the difference between this and a
+    table full of dead space: something has to absorb the width left over, or
+    dragging a column narrower leaves a gap at the right-hand edge rather
+    than giving the room to a neighbour. The text column is the one that
+    wants slack anyway.
+
+    Widths are saved under `columns:<name>` as the header's own state, which
+    already encodes order and hidden sections, so a column moved or hidden
+    comes back the way it was left.
+    """
+    from PySide6.QtCore import QByteArray
+    from PySide6.QtWidgets import QHeaderView
+
+    header = table.horizontalHeader()
+    key = f"{COLUMN_PREFIX}{name}"
+
+    # QTableWidget answers columnCount(); QTableView does not -- its columns
+    # belong to the model, and this app uses both kinds of table.
+    if hasattr(table, "columnCount"):
+        columns = table.columnCount()
+    else:
+        model = table.model()
+        columns = model.columnCount() if model is not None else 0
+
+    for column in range(columns):
+        if column == stretch:
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
+            continue
+        # Sized from the content first, so the starting widths are the ones
+        # the old ResizeToContents produced, then handed over to the user.
+        header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+        width = max(header.sectionSize(column), 60)
+        header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+        header.resizeSection(column, width)
+
+    saved = ledger.setting(key)
+    if isinstance(saved, str) and saved:
+        with contextlib.suppress(Exception):
+            header.restoreState(QByteArray.fromBase64(saved.encode("ascii")))
+
+    def remember(*_args) -> None:
+        ledger.save_setting(key, header.saveState().toBase64().data().decode("ascii"))
+
+    # Queued rather than immediate: sectionResized fires for every pixel of a
+    # drag, and each one is a database write.
+    header.sectionResized.connect(lambda *_: _debounce(header, remember))
+    header.sectionMoved.connect(remember)
+
+
+def _debounce(owner, fn, delay: int = 400) -> None:
+    """Run `fn` once the caller has stopped firing for `delay` ms.
+
+    One timer per owner, holding the latest callback rather than a growing
+    list of connections. Qt warns when you disconnect a signal that has
+    nothing attached -- and a warning is not an exception, so suppressing
+    exceptions around it does nothing -- hence the timer carries its own
+    callback and is connected exactly once.
+    """
+    from PySide6.QtCore import QTimer
+
+    timer = getattr(owner, "_carraway_debounce", None)
+    if timer is None:
+        timer = QTimer(owner)
+        timer.setSingleShot(True)
+        timer.timeout.connect(lambda: getattr(timer, "_carraway_fn", lambda: None)())
+        owner._carraway_debounce = timer
+    timer._carraway_fn = fn
+    timer.start(delay)
+
+
+def reset_columns(ledger) -> int:
+    """Forget every remembered column width. Returns how many were cleared."""
+    keys = [k for k in ledger.settings if str(k).startswith(COLUMN_PREFIX)]
+    for key in keys:
+        ledger.save_setting(key, "")
+    return len(keys)
