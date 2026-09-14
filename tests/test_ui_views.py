@@ -23,6 +23,7 @@ from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
     QApplication,
     QDialog,
+    QPushButton,
     QTableView,
 )
 
@@ -1366,3 +1367,125 @@ def test_clearing_the_share_puts_the_whole_thing_back(app, tmp_path):
     tx = ledger.transactions[0]
     assert tx.budget_excluded_minor == 0
     assert tx.budget_excluded is False
+
+
+# -- exporting the one table in front of you -------------------------------
+
+
+def _export_buttons(view):
+    """Every per-table export button on a view, found the way the eye does."""
+    return [b for b in view.findChildren(QPushButton) if b.text() == "⤓"]
+
+
+def test_each_table_gets_an_export_button_of_its_own(app, ledger):
+    """One per table rather than one per screen.
+
+    Recurring carries two of them -- the series, and the price history under
+    the notice -- and they write different files. A single button on that
+    screen would have to guess which table was meant.
+    """
+    from carraway.ui.views.spending import SpendingView
+    from carraway.ui.views.subscriptions import SubscriptionsView
+    from carraway.ui.views.upcoming import UpcomingView
+
+    assert len(_export_buttons(UpcomingView(ledger))) == 1
+    assert len(_export_buttons(SpendingView(ledger))) == 1
+    assert len(_export_buttons(SubscriptionsView(ledger))) == 2
+
+
+def test_the_export_reads_the_table_and_not_the_data_behind_it(app, ledger):
+    """A hidden column stays out of the file.
+
+    The button promises what is shown, and Transactions genuinely hides a
+    column as the account filter changes -- so an export that went to the
+    model instead would hand back a column the screen was deliberately
+    leaving out.
+    """
+    from carraway.ui.views.upcoming import _HEADERS, UpcomingView
+    from carraway.ui.widgets import table_rows
+
+    view = UpcomingView(ledger)
+    headers, rows = table_rows(view.table)
+    assert headers == _HEADERS
+    assert rows, "the fixture series should be due inside the default horizon"
+    assert len(rows) == view.table.rowCount()
+    assert all(len(row) == len(_HEADERS) for row in rows)
+
+    view.table.setColumnHidden(_HEADERS.index("Kind"), True)
+    headers, rows = table_rows(view.table)
+    assert "Kind" not in headers
+    assert all(len(row) == len(_HEADERS) - 1 for row in rows)
+
+
+def test_a_search_narrows_the_export_the_way_it_narrows_the_screen(app, ledger):
+    """Recurring filters by hiding rows, so the export has to honour that."""
+    from carraway.ui.views.subscriptions import SubscriptionsView
+    from carraway.ui.widgets import table_rows
+
+    view = SubscriptionsView(ledger)
+    assert table_rows(view.table)[1]
+
+    view.search.setText("no merchant is called this")
+    assert table_rows(view.table)[1] == []
+
+
+# -- showing only the categories you starred ------------------------------
+
+
+def _spending_ledger(tmp_path):
+    path = tmp_path / "spend.db"
+    conn = db.connect(path)
+    db.upsert_account(conn, Account(id="a1", name="Card", type=AccountType.CREDIT_CARD))
+    today = date.today()
+    db.insert_transactions(
+        conn,
+        [
+            Transaction(
+                id=f"t{n}",
+                account_id="a1",
+                date=today.replace(day=1),
+                amount=Money.parse(amount),
+                description=desc,
+                category=cat,
+            )
+            for n, (desc, amount, cat) in enumerate(
+                [
+                    ("CORNER BISTRO", "-40.00", "Dining"),
+                    ("GREAT LANDLORD RENT", "-900.00", "Rent/Mortgage"),
+                    ("GROCER", "-60.00", "Groceries"),
+                ]
+            )
+        ],
+    )
+    conn.close()
+    led = Ledger(path=path)
+    led.load()
+    return led
+
+
+def test_favourites_only_narrows_every_figure(app, tmp_path):
+    from carraway.ui.views.spending import SpendingView
+
+    ledger = _spending_ledger(tmp_path)
+    ledger.set_favourite_category("Dining", True)
+    ledger.set_favourite_category("Groceries", True)
+    view = SpendingView(ledger)
+    view._reload()
+
+    view.favourites_only.setChecked(True)
+    shown = {view.table.item(r, 0).text() for r in range(view.table.rowCount())}
+    assert "Rent/Mortgage" not in shown
+    assert {"Dining", "Groceries"} <= shown
+    assert view.total_card.value_label.text() == "$100.00"
+    # The footnote keeps the filtered figure anchored to the real one.
+    assert "of" in view.footnote.text()
+
+
+def test_favourites_only_is_disabled_with_nothing_starred(app, tmp_path):
+    """A ticked box with nothing to keep would read as "you spent nothing"."""
+    from carraway.ui.views.spending import SpendingView
+
+    view = SpendingView(_spending_ledger(tmp_path))
+    view._reload()
+    assert view.favourites_only.isEnabled() is False
+    assert "Settings" in view.favourites_only.toolTip()

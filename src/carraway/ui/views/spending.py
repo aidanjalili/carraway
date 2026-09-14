@@ -26,7 +26,17 @@ from PySide6.QtWidgets import (
 from ...analysis import spending
 from ...core.money import Money
 from ..data import Ledger
-from ..widgets import Card, SortableItem, StatCard, StatRow, enable_row_hover, resizable_columns
+from ..widgets import (
+    Card,
+    SortableItem,
+    StatCard,
+    StatRow,
+    enable_row_hover,
+    export_button,
+    mark_favourite,
+    plain_category,
+    resizable_columns,
+)
 from .charts import BarChart, PieChart, Slice, TrendChart
 
 _HEADERS = ["Category", "Spent", "Share", "Transactions"]
@@ -101,6 +111,16 @@ class SpendingView(QWidget):
         )
         self.include_guesses.toggled.connect(self._toggle_guesses)
         guess_row.addWidget(self.include_guesses)
+
+        # The categories someone starred are the ones they are watching, and
+        # the question this answers is "how am I doing on the things I care
+        # about" -- which a pie with Rent/Mortgage and Uncategorized taking
+        # half of it does not.
+        self.favourites_only = QCheckBox("Favourites only")
+        self.favourites_only.setChecked(bool(ledger.setting("spending_favourites_only")))
+        self.favourites_only.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.favourites_only.toggled.connect(self._toggle_favourites)
+        guess_row.addWidget(self.favourites_only)
         layout.addLayout(guess_row)
 
         self.total_card = StatCard("Spent this period", "-")
@@ -130,6 +150,12 @@ class SpendingView(QWidget):
         self.table.setSortingEnabled(True)
         resizable_columns(self.table, ledger, "spending", stretch=0)
 
+        # Goes in the controls row at the top, but is built here because it
+        # needs the table and the table is made last. It stays put under Pie
+        # and Bars as well: those draw the same rows this table holds, so the
+        # figures behind whichever chart is up are the ones that come out.
+        controls.addWidget(export_button(self.table, self, "spending"))
+
         self.stack = QStackedWidget()
         for widget in (self.pie, self.bars, self.table, self.trend):
             self.stack.addWidget(widget)
@@ -144,6 +170,30 @@ class SpendingView(QWidget):
         self._reload()
 
     # -- data ------------------------------------------------------------
+
+    def _toggle_favourites(self, only: bool) -> None:
+        self.ledger.save_setting("spending_favourites_only", only)
+        self.refresh()
+
+    def _scope(self) -> set[str] | None:
+        """The categories this screen is limited to, or None for all of them.
+
+        None rather than an empty set when there are no favourites, so the
+        filter can never silently empty the screen: a box that is ticked but
+        has nothing to keep reads as "you spent nothing", which is a lie.
+        """
+        favourites = self.ledger.favourite_categories
+        if not favourites or not self.favourites_only.isChecked():
+            return None
+        return favourites
+
+    def _scoped(self, bucket):
+        """(by_category, total) for one period, with the filter applied."""
+        scope = self._scope()
+        if scope is None:
+            return dict(bucket.by_category), bucket.total
+        kept = {k: v for k, v in bucket.by_category.items() if k in scope}
+        return kept, Money(sum(v.minor for v in kept.values()), bucket.total.currency)
 
     def _toggle_guesses(self, included: bool) -> None:
         self.ledger.save_setting("include_guesses_in_totals", included)
@@ -176,17 +226,31 @@ class SpendingView(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
+        favourites = self.ledger.favourite_categories
+        # Disabled, not hidden, when nothing is starred: the control is worth
+        # discovering, and the tooltip says where the stars come from.
+        self.favourites_only.setEnabled(bool(favourites))
+        self.favourites_only.setToolTip(
+            "Show only the categories you starred."
+            if favourites
+            else "Star categories in Settings -> Categories to use this."
+        )
+
         if not self.buckets:
             self.period_label.setText("no data")
             self.footnote.setText("Import or sync some transactions to see this.")
             return
 
+        scope = self._scope()
         bucket = self.buckets[self.index]
-        rows = sorted(bucket.by_category.items(), key=lambda kv: -kv[1].minor)
-        total = bucket.total
+        by_category, total = self._scoped(bucket)
+        rows = sorted(by_category.items(), key=lambda kv: -kv[1].minor)
         slices = [
             Slice(
-                label=name,
+                # Starred ones marked while everything is showing. With the
+                # filter on every slice is a favourite, and a star on all of
+                # them says nothing.
+                label=name if scope is not None else mark_favourite(name, favourites),
                 amount=amount,
                 fraction=(amount.minor / total.minor) if total.minor else 0.0,
             )
@@ -198,7 +262,10 @@ class SpendingView(QWidget):
         # The trend chart ignores the selected period and shows every one, so
         # it answers "is this month unusual?" rather than "what was in it?".
         self.trend.set_slices(
-            [Slice(label=b.label, amount=b.total, fraction=0.0) for b in self.buckets[-60:]]
+            [
+                Slice(label=b.label, amount=self._scoped(b)[1], fraction=0.0)
+                for b in self.buckets[-60:]
+            ]
         )
         self._fill_table(slices, total)
 
@@ -207,7 +274,7 @@ class SpendingView(QWidget):
         self.next.setEnabled(self.index < len(self.buckets) - 1)
 
         self.total_card.set_value(total.format())
-        spent = [b.total for b in self.buckets if b.total.minor]
+        spent = [t for t in (self._scoped(b)[1] for b in self.buckets) if t.minor]
         average = (
             Money(round(sum(b.minor for b in spent) / len(spent)), total.currency)
             if spent
@@ -215,29 +282,42 @@ class SpendingView(QWidget):
         )
         self.average_card.set_value(average.format())
         self.biggest_card.set_value(rows[0][0] if rows else "-")
-        self.count_card.set_value(str(self._transaction_count(bucket)))
+        self.count_card.set_value(str(self._transaction_count(bucket, scope)))
 
         change = ""
         if self.index > 0:
             previous = self.buckets[self.index - 1]
-            delta = total.minor - previous.total.minor
-            if previous.total.minor:
-                pct = 100 * delta / previous.total.minor
+            before = self._scoped(previous)[1]
+            delta = total.minor - before.minor
+            if before.minor:
+                pct = 100 * delta / before.minor
                 direction = "more" if delta > 0 else "less"
                 change = (
                     f"{Money(abs(delta), total.currency).format()} {direction} "
                     f"than {previous.label} ({pct:+.0f}%)"
                 )
         parts = [f"{len(self.buckets)} periods on record"]
+        if scope is not None:
+            # Scoped figures with nothing to anchor them read as the whole
+            # month. Saying what share of it they are keeps the filter honest.
+            parts.insert(
+                0,
+                f"your {len(scope)} starred categories: {total.format()} "
+                f"of {bucket.total.format()} spent",
+            )
         if change:
             parts.append(change)
         self.footnote.setText("   ·   ".join(parts))
 
-    def _transaction_count(self, bucket) -> int:
+    def _transaction_count(self, bucket, scope: set[str] | None = None) -> int:
+        include = bool(self.ledger.setting("include_guesses_in_totals"))
         return sum(
             1
             for t in self.ledger.transactions
-            if bucket.start <= t.date < bucket.end and t.is_outflow and not t.is_transfer
+            if bucket.start <= t.date < bucket.end
+            and t.is_outflow
+            and not t.is_transfer
+            and (scope is None or self.ledger.category_of(t, include_guessed=include) in scope)
         )
 
     def _fill_table(self, slices: list[Slice], total: Money) -> None:
@@ -257,11 +337,12 @@ class SpendingView(QWidget):
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(slices))
         for row, item in enumerate(slices):
+            name = plain_category(item.label)
             cells = [
-                SortableItem(item.label, item.label.lower()),
+                SortableItem(item.label, name.lower()),
                 SortableItem(item.amount.format(), item.amount.minor),
                 SortableItem(f"{item.fraction:.1%}", item.fraction),
-                SortableItem(str(counts.get(item.label, 0)), counts.get(item.label, 0)),
+                SortableItem(str(counts.get(name, 0)), counts.get(name, 0)),
             ]
             for column, cell in enumerate(cells):
                 if column:

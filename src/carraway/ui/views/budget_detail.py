@@ -38,6 +38,7 @@ from ..widgets import (
     SortableItem,
     StatCard,
     StatRow,
+    export_button,
     mark_favourite,
     refresh_everything,
 )
@@ -115,6 +116,11 @@ class BudgetDetailView(QWidget):
             ) | Qt.AlignmentFlag.AlignVCenter
             self.table.horizontalHeaderItem(column).setTextAlignment(align)
         layout.addWidget(self.table, stretch=1)
+
+        # Into the header row, before the delete button so the destructive one
+        # keeps the corner it already has. Built here rather than there
+        # because it needs the table, which does not exist until now.
+        header.insertWidget(header.count() - 1, export_button(self.table, self, "budget"))
 
         self.footnote = QLabel("")
         self.footnote.setObjectName("Muted")

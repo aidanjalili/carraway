@@ -847,6 +847,10 @@ class PanelSplitter(QSplitter):
         bar.addWidget(label)
         bar.addStretch(1)
 
+        # Only a table can be exported; a chart has no rows to write.
+        if hasattr(body, "horizontalHeader"):
+            bar.addWidget(export_button(body, self, title.lower()))
+
         button = QPushButton("⤢")
         button.setObjectName("InfoDot")
         button.setFlat(True)
@@ -1286,3 +1290,115 @@ def mark_favourite(name: str, favourites) -> str:
 def plain_category(text: str) -> str:
     """The category behind a possibly-starred label."""
     return text[len(FAVOURITE_MARK) :] if text.startswith(FAVOURITE_MARK) else text
+
+
+def export_button(table, parent, name: str) -> QPushButton:
+    """A small button that writes whatever `table` is showing to a file.
+
+    Sits beside the table it exports rather than in one menu somewhere, so
+    "give me this" is answered where the question is asked. The sidebar's
+    "Export to Calc" still writes the whole ledger; this writes the one
+    thing in front of you.
+    """
+    button = QPushButton("⤓")
+    button.setObjectName("InfoDot")
+    button.setFlat(True)
+    button.setCursor(Qt.CursorShape.PointingHandCursor)
+    button.setFixedSize(22, 22)
+    button.setToolTip(f"Export {name} as it is shown, to a spreadsheet")
+    button.clicked.connect(lambda: export_table(table, parent, name))
+    return button
+
+
+def table_rows(table) -> tuple[list[str], list[list[str]]]:
+    """(headers, rows) exactly as a table is showing them.
+
+    What is on screen, not what is behind it: sorted the way the user sorted
+    it, filtered the way they filtered it, hidden columns left out. An export
+    that quietly returns the underlying data is a different answer to the
+    question "give me this".
+
+    Headings carry the real category name rather than the starred label, so a
+    spreadsheet column reads "Dining" and not "★ Dining".
+    """
+    header = table.horizontalHeader()
+    model = table.model()
+    columns = [
+        c
+        for c in range(model.columnCount() if model is not None else table.columnCount())
+        if not table.isColumnHidden(c)
+    ]
+    order = sorted(columns, key=header.visualIndex)
+
+    headers = []
+    for column in order:
+        if model is not None:
+            label = model.headerData(column, Qt.Orientation.Horizontal)
+        else:
+            item = table.horizontalHeaderItem(column)
+            label = item.text() if item else ""
+        headers.append(plain_category(str(label or "")))
+
+    rows: list[list[str]] = []
+    count = model.rowCount() if model is not None else table.rowCount()
+    for row in range(count):
+        if table.isRowHidden(row):
+            continue
+        line = []
+        for column in order:
+            if model is not None:
+                value = model.index(row, column).data(Qt.ItemDataRole.DisplayRole)
+            else:
+                cell = table.item(row, column)
+                value = cell.text() if cell else ""
+            line.append(plain_category(str(value if value is not None else "")))
+        rows.append(line)
+    return headers, rows
+
+
+def export_table(table, parent, name: str) -> None:
+    """Write what a table is showing to a spreadsheet the user picks.
+
+    Offers .ods and .csv, like the full export does. The difference is scope:
+    this is the one table in front of you, with your sort and your filters
+    already applied, which is usually the thing somebody actually wants to
+    paste into something else.
+    """
+    from pathlib import Path
+
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+    headers, rows = table_rows(table)
+    if not rows:
+        QMessageBox.information(parent, "Nothing to export", "This table is empty.")
+        return
+
+    suggested = str(Path.home() / f"carraway-{name}.ods")
+    chosen, _ = QFileDialog.getSaveFileName(
+        parent, f"Export {name}", suggested, "Spreadsheet (*.ods);;CSV (*.csv)"
+    )
+    if not chosen:
+        return
+
+    target = Path(chosen)
+    if not target.suffix:
+        target = target.with_suffix(".ods")
+    try:
+        if target.suffix.lower() == ".csv":
+            import csv
+
+            with target.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(headers)
+                writer.writerows(rows)
+        else:
+            from ..exporters.ods import write_sheet
+
+            write_sheet(target, name.title(), headers, rows)
+    except Exception as exc:  # noqa: BLE001 - shown to the user, not swallowed
+        QMessageBox.warning(parent, "Export failed", str(exc))
+        return
+
+    QMessageBox.information(
+        parent, "Exported", f"{len(rows):,} rows written to\n{target}"
+    )

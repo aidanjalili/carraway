@@ -36,6 +36,7 @@ from ..widgets import (
     StatCard,
     StatRow,
     enable_row_hover,
+    export_button,
     refresh_everything,
     resizable_columns,
 )
@@ -111,6 +112,11 @@ class UpcomingView(QWidget):
         for column in (0, 2, 3, 4):
             head.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         layout.addWidget(self.table, stretch=1)
+
+        # Into the header row at the top, beside the horizon that decides how
+        # much of the future is on screen. Built here rather than up there
+        # because it needs the table, which does not exist until now.
+        header.addWidget(export_button(self.table, self, "upcoming"))
 
         self.footnote = QLabel("")
         self.footnote.setObjectName("Muted")

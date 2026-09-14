@@ -614,7 +614,6 @@ class MainWindow(QMainWindow):
     def _export(self) -> None:
         from PySide6.QtWidgets import QFileDialog, QMessageBox
 
-        from ..analysis import categorize as cat
         from ..exporters.ods import export_csv, export_ods
 
         default = str(Path.home() / "carraway.ods")
@@ -625,9 +624,13 @@ class MainWindow(QMainWindow):
             return
 
         target = Path(chosen)
-        # Categories are computed rather than stored, so an export reading only
-        # the saved column would file every row as Uncategorized.
-        categories = cat.categorize_all(self.ledger.transactions)
+        # The ledger's own categories, not a fresh pass over the built-in
+        # rules. `categorize_all` with no arguments knows nothing about the
+        # user's own rules or their accepted guesses, so the spreadsheet
+        # disagreed with the screen it was exported from -- 379 rows of 2,628
+        # on a real ledger, with "TIPSY COW" filed as Uncategorized in the
+        # export and Dining in the app.
+        categories = [self.ledger.category_of(tx) for tx in self.ledger.transactions]
         try:
             if target.suffix.lower() == ".csv":
                 written = export_csv(target, self.ledger.transactions, categories=categories)

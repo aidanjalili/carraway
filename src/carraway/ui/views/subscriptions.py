@@ -36,6 +36,7 @@ from ..widgets import (
     StatCard,
     StatRow,
     enable_row_hover,
+    export_button,
     refresh_everything,
     resizable_columns,
 )
@@ -141,7 +142,13 @@ class SubscriptionsView(QWidget):
         self.price_notice.setStyleSheet("text-align: left;")
         self.price_notice.setVisible(False)
         self.price_notice.clicked.connect(self._toggle_price_history)
-        layout.addWidget(self.price_notice)
+        # A row rather than the bare notice, so the export button can sit at
+        # the end of it. The notice keeps the full width it had: it is the
+        # click target that opens the table, and shrinking it to its own text
+        # would take most of that target away.
+        price_row = QHBoxLayout()
+        price_row.addWidget(self.price_notice, stretch=1)
+        layout.addLayout(price_row)
 
         self.price_table = QTableWidget(0, len(_PRICE_HEADERS))
         self.price_table.setHorizontalHeaderLabels(_PRICE_HEADERS)
@@ -158,6 +165,13 @@ class SubscriptionsView(QWidget):
         self._price_open = bool(ledger.setting("price_history_open"))
         self.price_table.setVisible(self._price_open)
         layout.addWidget(self.price_table)
+
+        # Hidden whenever the table is. This history is collapsible, and
+        # offering to export rows nobody can see is the opposite of what a
+        # button labelled "as it is shown" promises.
+        self.price_export = export_button(self.price_table, self, "price history")
+        self.price_export.setVisible(self._price_open)
+        price_row.addWidget(self.price_export)
 
         # Bills, subscriptions and stopped things answer different questions,
         # so they get their own tabs rather than one list the user must scan.
@@ -205,6 +219,10 @@ class SubscriptionsView(QWidget):
         self.table.setSortingEnabled(True)
         resizable_columns(self.table, ledger, "recurring", stretch=0)
         layout.addWidget(self.table, stretch=1)
+
+        # Into the tab row above, now that there is a table to point it at.
+        # What comes out is what the chips and the search have left showing.
+        tab_row.addWidget(export_button(self.table, self, "recurring"))
 
         self.filter_note = QLabel("")
         self.filter_note.setObjectName("Muted")
@@ -454,6 +472,7 @@ class SubscriptionsView(QWidget):
         if not changes:
             self.price_notice.setVisible(False)
             self.price_table.setVisible(False)
+            self.price_export.setVisible(False)
             return
 
         rises = [c for c in changes if c.direction == "increase"]
@@ -485,6 +504,7 @@ class SubscriptionsView(QWidget):
         self.price_notice.setText(f"{headline}  {caret} price history")
         self.price_notice.setVisible(True)
         self.price_table.setVisible(self._price_open)
+        self.price_export.setVisible(self._price_open)
 
         self.price_table.setRowCount(len(changes))
         for row, change in enumerate(changes):

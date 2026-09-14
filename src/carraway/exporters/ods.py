@@ -672,3 +672,50 @@ def export_csv(
                 ]
             )
     return target
+
+
+def write_sheet(
+    path: Path | str, name: str, headers: Sequence[str], rows: Sequence[Sequence[str]]
+) -> Path:
+    """One sheet of plain text, for exporting a single table from a screen.
+
+    Deliberately dumber than `export_ods`. That one knows what a transaction
+    is and formats money and dates as money and dates; this takes whatever a
+    table is displaying and writes it as text, because the point is to get
+    exactly what is on screen out of the app -- the user's sort, the user's
+    filters, the columns they left visible.
+
+    Everything lands as a string, including the amounts. A spreadsheet will
+    offer to convert a column of "$16.94" and the alternative is guessing
+    which columns are money and being wrong about one of them.
+    """
+    target = Path(path)
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as package:
+        # First and stored, so the ODF magic sits at a fixed offset. See
+        # export_ods: compress it and nothing will open the file.
+        mimetype = zipfile.ZipInfo("mimetype", date_time=_ZIP_TIMESTAMP)
+        mimetype.compress_type = zipfile.ZIP_STORED
+        package.writestr(mimetype, MIMETYPE)
+
+        for entry, body in (
+            ("META-INF/manifest.xml", _manifest_xml(["content.xml", "styles.xml", "meta.xml"])),
+            ("styles.xml", _styles_xml()),
+            ("meta.xml", _meta_xml()),
+        ):
+            info = zipfile.ZipInfo(entry, date_time=_ZIP_TIMESTAMP)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            package.writestr(info, body)
+
+        content = zipfile.ZipInfo("content.xml", date_time=_ZIP_TIMESTAMP)
+        content.compress_type = zipfile.ZIP_DEFLATED
+        with package.open(content, "w") as stream:
+            for chunk in (
+                '<?xml version="1.0" encoding="UTF-8"?>',
+                f'<office:document-content {_NAMESPACES} office:version="{_ODF_VERSION}">',
+                _automatic_styles({2}),
+                "<office:body><office:spreadsheet>",
+                *_table(name or "Sheet", list(headers), [list(r) for r in rows]),
+                "</office:spreadsheet></office:body></office:document-content>",
+            ):
+                stream.write(chunk.encode("utf-8"))
+    return target
