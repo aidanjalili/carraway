@@ -33,7 +33,13 @@ from ...analysis import networth
 from ...core.money import Money
 from .. import theme
 from ..data import Ledger
-from ..widgets import Card, SortableItem, StatCard, StatRow, shorten
+from ..widgets import (
+    PanelSplitter,
+    SortableItem,
+    StatCard,
+    StatRow,
+    shorten,
+)
 from . import expected_money
 
 
@@ -298,12 +304,7 @@ class NetWorthView(QWidget):
         self.owed_card = StatCard("Owed", "-")
         layout.addWidget(StatRow([self.net_card, self.assets_card, self.owed_card]))
 
-        chart_card = Card()
-        chart_layout = QVBoxLayout(chart_card)
-        chart_layout.setContentsMargins(10, 10, 10, 10)
         self.chart = NetWorthChart()
-        chart_layout.addWidget(self.chart)
-        layout.addWidget(chart_card, stretch=1)
 
         self.table = QTableWidget(0, len(_HEADERS))
         self.table.setHorizontalHeaderLabels(_HEADERS)
@@ -311,14 +312,21 @@ class NetWorthView(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setMaximumHeight(230)
+        # No maximum height any more: the splitter decides how tall this is,
+        # and a cap would quietly fight whatever the user dragged it to.
         head = self.table.horizontalHeader()
         head.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         for column in range(1, len(_HEADERS)):
             head.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
-        layout.addWidget(self.table)
 
-        layout.addWidget(self._build_expected_panel())
+        # A splitter rather than three stacked widgets, so the three can be
+        # given whatever share of the screen the question of the moment wants:
+        # the chart while reading the shape, the table while reading figures.
+        self.panels = PanelSplitter("networth", ledger, defaults=(5, 3, 3))
+        self.panels.add_panel("Over time", self.chart)
+        self.panels.add_panel("Point by point", self.table)
+        self.panels.add_panel("On its way", self._build_expected_body())
+        layout.addWidget(self.panels, stretch=1)
 
         self.footnote = QLabel("")
         self.footnote.setObjectName("Muted")
@@ -326,11 +334,12 @@ class NetWorthView(QWidget):
         layout.addWidget(self.footnote)
 
         self._build_account_toggles()
+        self.panels.restore()
         self.refresh()
 
     # -- money that has not landed yet -------------------------------------
 
-    def _build_expected_panel(self) -> Card:
+    def _build_expected_body(self) -> QWidget:
         """Things the bank has not seen, listed under the real figures.
 
         Below the chart and the history rather than beside the headline,
@@ -338,15 +347,12 @@ class NetWorthView(QWidget):
         not. Keeping them in that order is the whole reason a projected net
         worth can be shown at all without muddying the real one.
         """
-        card = Card()
+        card = QWidget()
         inner = QVBoxLayout(card)
-        inner.setContentsMargins(16, 14, 16, 14)
+        inner.setContentsMargins(0, 0, 0, 0)
         inner.setSpacing(9)
 
         head = QHBoxLayout()
-        title = QLabel("On its way")
-        title.setObjectName("SectionHeading")
-        head.addWidget(title)
         head.addStretch(1)
         self.expected_add = QPushButton("Add")
         self.expected_add.clicked.connect(self._add_expected)

@@ -394,6 +394,30 @@ class SettingsView(QWidget):
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(10)
 
+        heading = QLabel("Appearance")
+        heading.setObjectName("SectionHeading")
+        layout.addWidget(heading)
+
+        panels_note = QLabel(
+            "Panels you have dragged or expanded keep their size between "
+            "sessions. This puts every screen back to the proportions it "
+            "ships with."
+        )
+        panels_note.setObjectName("Muted")
+        panels_note.setWordWrap(True)
+        layout.addWidget(panels_note)
+
+        panels_row = QHBoxLayout()
+        reset_panels = QPushButton("Reset panel sizes")
+        reset_panels.setCursor(Qt.CursorShape.PointingHandCursor)
+        reset_panels.clicked.connect(self._reset_panels)
+        panels_row.addWidget(reset_panels)
+        self.panels_result = QLabel("")
+        self.panels_result.setObjectName("Muted")
+        panels_row.addWidget(self.panels_result)
+        panels_row.addStretch(1)
+        layout.addLayout(panels_row)
+
         heading = QLabel("Your data")
         heading.setObjectName("SectionHeading")
         layout.addWidget(heading)
@@ -494,6 +518,25 @@ class SettingsView(QWidget):
         self.excluded_total.setText(
             f"{len(excluded)} account(s) left out, holding {left_out.format()}."
         )
+
+    def _reset_panels(self) -> None:
+        """Forget every screen's saved layout.
+
+        The screens already built keep their current sizes until they are
+        rebuilt, so they are put back directly as well -- a reset that only
+        takes effect after a restart is a reset that looks broken.
+        """
+        from ..widgets import PanelSplitter, refresh_everything
+
+        PanelSplitter.reset_all(self.ledger)
+        # The live screens are reset directly as well. Clearing the saved
+        # state alone would leave every screen already built showing the
+        # sizes it was dragged to until the app restarted, which is a reset
+        # that looks broken.
+        for splitter in self.window().findChildren(PanelSplitter):
+            splitter.reset()
+        self.panels_result.setText("Back to default.")
+        refresh_everything(self)
 
     def _backup(self) -> None:
         from ...core import backup

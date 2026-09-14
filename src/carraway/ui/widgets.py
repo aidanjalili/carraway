@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QLayout,
     QLayoutItem,
     QPushButton,
+    QSplitter,
     QStyle,
     QStyledItemDelegate,
     QTableWidgetItem,
@@ -789,3 +790,148 @@ def dress_calendar(picker) -> None:
     # today at a glance on a grid of thirty other numbers.
     mark.setBackground(QColor(theme.ACTIVE.surface_alt))
     calendar.setDateTextFormat(today, mark)
+
+
+class PanelSplitter(QSplitter):
+    """Stacked panels the user can resize, maximise, and have remembered.
+
+    Every screen that stacks two or three things has the same problem: the
+    right split depends on the question being asked, not on what looked good
+    when the screen was written. A chart deserves the room while you are
+    reading a shape and almost none while you are reading figures off the
+    table beneath it.
+
+    So: drag the divider, or press a panel's button to give it everything.
+    Both are saved per screen under `panels:<name>`, which is also what
+    `reset_all` clears.
+
+    A button rather than a double-click, because most of these panels are
+    tables whose rows already answer to one -- and in at least one case
+    double-clicking a row opens an editor. The gesture was taken before this
+    wanted it.
+    """
+
+    #: Cleared together by Settings, so one control puts every screen back.
+    PREFIX = "panels:"
+
+    def __init__(self, name: str, ledger, defaults=None, parent=None) -> None:
+        super().__init__(Qt.Orientation.Vertical, parent)
+        self._name = name
+        self._ledger = ledger
+        self._defaults = list(defaults or ())
+        self._buttons: dict[int, QPushButton] = {}
+        self._before_full: list[int] | None = None
+        self._restoring = False
+        self.setChildrenCollapsible(True)
+        self.setHandleWidth(8)
+        self.splitterMoved.connect(lambda *_: self.save())
+
+    @property
+    def setting_key(self) -> str:
+        return f"{self.PREFIX}{self._name}"
+
+    def add_panel(self, title: str, body: QWidget) -> QWidget:
+        """Wrap `body` in a card with a thin header, and add it."""
+        index = self.count()
+        card = Card()
+        inner = QVBoxLayout(card)
+        inner.setContentsMargins(10, 10, 10, 10)
+        inner.setSpacing(6)
+
+        bar = QHBoxLayout()
+        bar.setContentsMargins(4, 0, 0, 0)
+        label = QLabel(title)
+        label.setObjectName("StatLabel")
+        bar.addWidget(label)
+        bar.addStretch(1)
+
+        button = QPushButton("⤢")
+        button.setObjectName("InfoDot")
+        button.setFlat(True)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setFixedSize(22, 22)
+        button.setToolTip(f"Give {title.lower()} the whole screen")
+        button.clicked.connect(lambda _=False, i=index: self.toggle_full(i))
+        bar.addWidget(button)
+        self._buttons[index] = button
+
+        inner.addLayout(bar)
+        inner.addWidget(body)
+        self.addWidget(card)
+        # Stretch as well as sizes. `setSizes` is advisory until the splitter
+        # has actually been laid out, so on a screen built before it is shown
+        # the panels would come up sized by their content hints instead --
+        # which is how a 5:3:3 default arrived on screen as very nearly 1:1:1.
+        # Stretch factors survive that.
+        self.setStretchFactor(index, self._defaults[index] if index < len(self._defaults) else 1)
+        return card
+
+    def toggle_full(self, index: int) -> None:
+        sizes = self.sizes()
+        others = [n for n in range(len(sizes)) if n != index]
+        if others and all(sizes[n] == 0 for n in others):
+            self.setSizes(self._before_full or self._sensible_defaults())
+            self._before_full = None
+        else:
+            # Kept before collapsing, so leaving full screen returns to the
+            # arrangement the user had rather than to the shipped default.
+            self._before_full = sizes
+            total = sum(sizes) or sum(self._sensible_defaults())
+            self.setSizes([total if n == index else 0 for n in range(len(sizes))])
+        self._sync()
+        self.save()
+
+    def _sensible_defaults(self) -> list[int]:
+        if self._defaults and len(self._defaults) == self.count():
+            return list(self._defaults)
+        return [1] * max(1, self.count())
+
+    def _sync(self) -> None:
+        sizes = self.sizes()
+        for index, button in self._buttons.items():
+            others = [n for n in range(len(sizes)) if n != index]
+            full = bool(others) and all(sizes[n] == 0 for n in others)
+            button.setText("⤡" if full else "⤢")
+            button.setToolTip("Back to the other panels" if full else button.toolTip())
+
+    def save(self) -> None:
+        if self._restoring:
+            return
+        state = self.saveState().toBase64().data().decode("ascii")
+        self._ledger.save_setting(self.setting_key, state)
+
+    def restore(self) -> None:
+        """Put back what was saved, or fall back to the shipped proportions."""
+        from PySide6.QtCore import QByteArray
+
+        saved = self._ledger.setting(self.setting_key)
+        self._restoring = True
+        try:
+            restored = False
+            if isinstance(saved, str) and saved:
+                restored = self.restoreState(QByteArray.fromBase64(saved.encode("ascii")))
+            if not restored:
+                self.setSizes(self._sensible_defaults())
+        finally:
+            self._restoring = False
+        self._sync()
+
+    def reset(self) -> None:
+        self._before_full = None
+        self.setSizes(self._sensible_defaults())
+        self._sync()
+        self.save()
+
+    @classmethod
+    def reset_all(cls, ledger) -> int:
+        """Forget every screen's layout. Returns how many were cleared.
+
+        Cleared rather than deleted: the settings table is a key/value store
+        the app reads with `.setting()`, and an empty string already means
+        "nothing saved" to `restore`. Adding a delete path for one caller
+        would be a second way to say the same thing.
+        """
+        keys = [k for k in ledger.settings if str(k).startswith(cls.PREFIX)]
+        for key in keys:
+            ledger.save_setting(key, "")
+        return len(keys)

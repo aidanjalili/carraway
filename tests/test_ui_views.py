@@ -873,3 +873,80 @@ def test_today_is_marked_in_the_calendar(app):
     # Every other day is left alone, or the mark would say nothing.
     assert calendar.dateTextFormat(QDate.currentDate().addDays(5)).isEmpty()
     assert calendar.isGridVisible()
+
+
+# -- panels the user can resize and have remembered ------------------------
+
+
+def test_panels_remember_what_they_were_dragged_to(app, with_balance):
+    from carraway.ui.views.networth import NetWorthView
+
+    view = NetWorthView(with_balance)
+    view.resize(1200, 900)
+    view.show()
+    app.processEvents()
+    view.panels.setSizes([700, 100, 100])
+    view.panels.save()
+
+    reopened = NetWorthView(with_balance)
+    reopened.resize(1200, 900)
+    reopened.show()
+    app.processEvents()
+    # Proportions rather than exact pixels: a splitter scales what it
+    # restores to the space it actually has.
+    sizes = reopened.panels.sizes()
+    assert sizes[0] > sizes[1] + sizes[2]
+
+
+def test_one_panel_can_take_the_whole_screen_and_come_back(app, with_balance):
+    from carraway.ui.views.networth import NetWorthView
+
+    view = NetWorthView(with_balance)
+    view.resize(1200, 900)
+    view.panels.setSizes([300, 200, 200])
+    before = view.panels.sizes()
+
+    view.panels.toggle_full(0)
+    sizes = view.panels.sizes()
+    assert sizes[1] == 0 and sizes[2] == 0 and sizes[0] > 0
+
+    view.panels.toggle_full(0)
+    # Back to what the user had, not to the shipped default.
+    assert view.panels.sizes() == before
+
+
+def test_resetting_puts_every_screen_back(app, with_balance):
+    from carraway.ui.views.networth import NetWorthView
+    from carraway.ui.widgets import PanelSplitter
+
+    view = NetWorthView(with_balance)
+    view.resize(1200, 900)
+    view.panels.setSizes([700, 100, 100])
+    view.panels.save()
+    assert with_balance.setting(view.panels.setting_key)
+
+    PanelSplitter.reset_all(with_balance)
+    assert not with_balance.setting(view.panels.setting_key)
+
+
+def test_a_screen_with_nothing_saved_uses_its_defaults(app, with_balance):
+    from carraway.ui.views.networth import NetWorthView
+
+    view = NetWorthView(with_balance)
+    view.resize(1200, 900)
+    view.show()
+    app.processEvents()
+    view.panels.restore()
+    sizes = view.panels.sizes()
+    # 5:3:3 -- the chart is what people come to look at.
+    assert sizes[0] > sizes[1] and sizes[0] > sizes[2]
+
+
+def test_a_corrupt_saved_layout_falls_back_rather_than_failing(app, with_balance):
+    from carraway.ui.views.networth import NetWorthView
+
+    with_balance.save_setting("panels:networth", "not base64 at all!!")
+    view = NetWorthView(with_balance)
+    view.resize(1200, 900)
+    assert view.panels.count() == 3
+    assert sum(view.panels.sizes()) > 0
