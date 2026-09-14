@@ -927,6 +927,23 @@ def test_today_is_marked_in_the_calendar(app):
     assert calendar.isGridVisible()
 
 
+def test_every_date_picker_marks_today(app):
+    """Two dialogs built their pickers without it, so the calendar that
+    records a cash spend or a subscription's billing date was the one with
+    no grid and no "you are here"."""
+    from PySide6.QtCore import QDate
+    from PySide6.QtWidgets import QDateEdit
+
+    from carraway.ui.views.add_subscription import AddSubscriptionDialog
+    from carraway.ui.views.cash import AddCashTransactionDialog
+
+    for dialog in (AddCashTransactionDialog("Cash"), AddSubscriptionDialog([])):
+        for picker in dialog.findChildren(QDateEdit):
+            calendar = picker.calendarWidget()
+            assert calendar.isGridVisible(), type(dialog).__name__
+            assert not calendar.dateTextFormat(QDate.currentDate()).isEmpty()
+
+
 # -- panels the user can resize and have remembered ------------------------
 
 

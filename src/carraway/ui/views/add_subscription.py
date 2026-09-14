@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from ...core.models import Account
 from ...core.money import Money
+from ..widgets import dress_calendar
 from .paid_with import PaidWithPicker
 
 _CADENCES = ["monthly", "yearly", "weekly", "biweekly", "quarterly"]
@@ -95,6 +96,7 @@ class AddSubscriptionDialog(QDialog):
         self.started.setCalendarPopup(True)
         self.started.setDisplayFormat("yyyy-MM-dd")
         self.started.setDate(QDate.currentDate())
+        dress_calendar(self.started)
         self.started.setToolTip(
             "The date it last billed, or the date it starts. Carraway counts "
             "forward from here to work out when the next charge is due."

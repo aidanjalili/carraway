@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...core.money import Money
+from ..widgets import dress_calendar
 
 
 def _parse(text: str) -> Money | None:
@@ -197,6 +198,7 @@ class AddCashTransactionDialog(QDialog):
         self.when.setCalendarPopup(True)
         self.when.setDisplayFormat("yyyy-MM-dd")
         self.when.setDate(QDate.currentDate())
+        dress_calendar(self.when)
         form.addRow("Date", self.when)
 
         self.description = QLineEdit()
