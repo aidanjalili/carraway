@@ -496,6 +496,9 @@ class Ledger:
                 "amount": f"{tx.amount.decimal:.2f}",
                 "category": self.category_of(tx),
                 "account": names.get(tx.account_id, ""),
+                # Set by hand rather than by a rule, so the phone can offer to
+                # hand it back. Omitted otherwise, which is nearly every row.
+                **({"filed": True} if tx.id in self.category_overrides else {}),
                 "excluded": bool(getattr(tx, "budget_excluded", False)),
                 # How much of this is held back, when only part of it counts.
                 # Omitted when zero, which is nearly every row.
