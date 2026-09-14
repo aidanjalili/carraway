@@ -1254,3 +1254,29 @@ def test_renaming_a_hidden_built_in_keeps_it_hidden(tmp_path):
     ledger.set_category_hidden("Dining", True)
     ledger.rename_category("Dining", "Eating out")
     assert "Eating out" not in ledger.categories_available
+
+
+def test_a_bill_on_the_30th_is_expected_on_the_30th_after_february(tmp_path):
+    """Stepped from the previous date, February clamped the 30th to the 28th
+    and every later month stayed there, so the budget's pace stepped two
+    days before the Upcoming screen said the charge would land."""
+    from types import SimpleNamespace
+
+    ledger = Ledger(path=tmp_path / "empty.db")
+    ledger.load()
+    bill = SimpleNamespace(next_expected=date(2027, 1, 30), cadence="monthly")
+    found = ledger.occurrences(bill, date(2027, 1, 1), date(2027, 5, 31))
+    assert found == [
+        date(2027, 1, 30),
+        date(2027, 2, 28),
+        date(2027, 3, 30),
+        date(2027, 4, 30),
+        date(2027, 5, 30),
+    ]
+
+    quarterly = SimpleNamespace(next_expected=date(2026, 11, 30), cadence="quarterly")
+    assert ledger.occurrences(quarterly, date(2026, 11, 1), date(2027, 6, 30)) == [
+        date(2026, 11, 30),
+        date(2027, 2, 28),
+        date(2027, 5, 30),
+    ]

@@ -1107,9 +1107,10 @@ class Ledger:
         cadence = getattr(series, "cadence", "")
 
         found: list[date] = []
+        anchor = when
         # A prediction can sit in the past; roll it forward rather than
         # dropping it, exactly as the Upcoming screen does.
-        for _ in range(400):  # a hard stop: never spin on a bad cadence
+        for step in range(1, 401):  # a hard stop: never spin on a bad cadence
             if when > end:
                 break
             if when >= start:
@@ -1117,7 +1118,12 @@ class Ledger:
             if cadence in step_days:
                 when = when + timedelta(days=step_days[cadence])
             elif cadence in step_months:
-                when = _add_months(when, step_months[cadence])
+                # Counted from the first date every time, not from the last
+                # one. Stepping from the last, a bill on the 30th was clamped
+                # to the 28th by February and stayed there for good, so from
+                # March on the budget's pace stepped two days before the
+                # Upcoming screen said the charge would land.
+                when = _add_months(anchor, step_months[cadence] * step)
             else:
                 break  # an unknown cadence charges once, as far as we know
         return found

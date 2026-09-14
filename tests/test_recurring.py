@@ -336,3 +336,12 @@ def test_days_of_the_month_read_the_way_people_write_them():
     # And nothing in a month is ever left saying "th" after a 1, 2 or 3.
     for day in range(1, 32):
         assert not ordinal(day).endswith(("1th", "2th", "3th")) or day in (11, 12, 13)
+
+
+def test_a_quarterly_charge_keeps_its_day_through_february():
+    from carraway.analysis.recurring import advance, project_from
+
+    assert advance(date(2027, 2, 28), "quarterly", 30) == date(2027, 5, 30)
+    assert project_from(date(2026, 11, 30), "quarterly", today=date(2027, 3, 1)) == date(
+        2027, 5, 30
+    )

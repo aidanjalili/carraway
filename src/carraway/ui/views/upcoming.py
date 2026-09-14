@@ -202,7 +202,7 @@ class UpcomingView(QWidget):
             # real occurrence rather than disappearing. Calendar arithmetic
             # rather than a fixed number of days, or a charge on the 30th
             # walks backwards through the year.
-            day_of_month = when.day if series.cadence == "monthly" else None
+            day_of_month = when.day if series.cadence in ("monthly", "quarterly") else None
             guard = 0
             while when < today and guard < 600:
                 when = advance(when, series.cadence, day_of_month)

@@ -228,7 +228,11 @@ def advance(last: date, cadence: str, day_of_month: int | None = None) -> date:
         month, year = last.month + 3, last.year
         if month > 12:
             month, year = month - 12, year + 1
-        return date(year, month, min(last.day, _days_in_month(year, month)))
+        # The same clamp as monthly, and the same reason to carry the day: a
+        # quarterly charge on the 30th fell to the 28th after February and
+        # never came back.
+        target = day_of_month or last.day
+        return date(year, month, min(target, _days_in_month(year, month)))
     # yearly
     try:
         return last.replace(year=last.year + 1)
@@ -403,7 +407,9 @@ def project_from(started: date, cadence: str, today: date | None = None) -> date
     for _ in range(600):
         if when >= today:
             return when
-        following = advance(when, cadence, started.day if cadence == "monthly" else None)
+        following = advance(
+            when, cadence, started.day if cadence in ("monthly", "quarterly") else None
+        )
         if following <= when:
             return when
         when = following
