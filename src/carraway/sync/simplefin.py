@@ -300,6 +300,7 @@ def _to_transaction(node: dict[str, Any], account_id: str, currency: str) -> Tra
         description=description,
         merchant=normalise_merchant(description),
         pending=bool(node.get("pending", False)),
+        external_id=str(node.get("id") or ""),
     )
 
 

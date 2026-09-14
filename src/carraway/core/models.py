@@ -87,6 +87,11 @@ class Transaction:
     # a share -- a utility bill split with a flatmate, a group dinner where
     # only your half was yours.
     budget_excluded_minor: int = 0
+    # The bank's own id for this transaction, when the provider gives one.
+    # Not stored and not used for dedupe -- the fingerprint does that -- but
+    # it is the only thing that can tell "this charge changed" from "this is a
+    # different charge", which is what noticing a bank's edits depends on.
+    external_id: str = ""
     tags: list[str] = field(default_factory=list)
 
     @property
