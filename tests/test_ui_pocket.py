@@ -791,6 +791,35 @@ def test_a_timer_publish_goes_when_something_has_moved(app, paired, monkeypatch)
     assert len(client.published) == 2
 
 
+def test_a_timer_publish_that_failed_is_tried_again(app, paired):
+    """The digest was remembered before the publish ran, so a server that
+    was down for one cycle counted as sent, and every later cycle skipped
+    the same payload as unchanged. The phone stayed stale until something
+    unrelated moved in the ledger."""
+    from PySide6.QtWidgets import QWidget
+
+    from carraway.sync.pocket import PocketError
+    from carraway.ui.views import pocket as view
+
+    ledger, client = paired
+    owner = QWidget()
+    working = client.publish
+
+    def down(snapshot):
+        raise PocketError("Could not reach the inbox")
+
+    # Swapped on the instance by hand rather than with monkeypatch.undo(),
+    # which would also undo the fixtures keeping this test off the keyring.
+    client.publish = down
+    assert view.publish_in_background(owner, ledger, only_if_changed=True) is True
+    _settle(app, owner._pocket_publisher)
+
+    client.publish = working
+    assert view.publish_in_background(owner, ledger, only_if_changed=True) is True
+    _settle(app, owner._pocket_publisher)
+    assert len(client.published) == 1
+
+
 def test_an_unforced_publish_always_goes(app, paired):
     """A budget being saved is not a maybe."""
     from PySide6.QtWidgets import QWidget
@@ -1048,6 +1077,16 @@ def test_budgeting_changes_from_the_phone_are_reported(app):
 
     assert "2 taken out of budgeting" in describe_collection({"excluded": 2})
     assert "1 put back into budgeting" in describe_collection({"included": 1})
+
+
+def test_a_category_or_a_share_from_the_phone_is_reported(app):
+    """Saying something is also what makes the window reload after a timed
+    collection. A collection that only filed rows under categories said
+    nothing, so the ledger changed and no screen showed it."""
+    from carraway.ui.views.pocket import describe_collection
+
+    assert "2 filed under a category" in describe_collection({"categorised": 2})
+    assert "1 counted in part" in describe_collection({"shared": 1})
 
 
 def test_collecting_is_skipped_when_pocket_is_not_set_up(app, tmp_path):

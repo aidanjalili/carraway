@@ -546,6 +546,12 @@ class PocketCard(Card):
                 parts.append(f"{excluded} taken out of budgeting from your phone.")
             if included:
                 parts.append(f"{included} put back into budgeting from your phone.")
+            shared = result.get("shared", 0)
+            if shared:
+                parts.append(f"{shared} counted only in part, from your phone.")
+            categorised = result.get("categorised", 0)
+            if categorised:
+                parts.append(f"{categorised} filed under a category from your phone.")
             missing = result.get("unknown_verdicts", 0)
             if missing:
                 changes = "change" if missing == 1 else "changes"
@@ -668,6 +674,16 @@ def describe_collection(result: dict) -> str:
     included = result.get("included", 0)
     if included:
         parts.append(f"{included} put back into budgeting")
+    # Both change what the screens show, and the header saying something is
+    # also what makes the window reload. Left out, a category chosen on the
+    # phone was applied to the ledger and then not drawn anywhere until some
+    # unrelated change happened to refresh the screens.
+    shared = result.get("shared", 0)
+    if shared:
+        parts.append(f"{shared} counted in part")
+    categorised = result.get("categorised", 0)
+    if categorised:
+        parts.append(f"{categorised} filed under a category")
     return " · ".join(parts)
 
 
@@ -707,15 +723,26 @@ def publish_in_background(owner: QWidget, ledger: Ledger, *, only_if_changed: bo
     # On a timer, skip when nothing has moved. Sealing is 600,000 PBKDF2
     # rounds and a round trip; doing that every half hour to send a byte-for-
     # byte identical payload is work for its own sake.
+    digest = None
     if only_if_changed:
         digest = ledger.pocket_digest()
         if digest == getattr(owner, "_pocket_digest", None):
             return False
-        owner._pocket_digest = digest
     # Cached on the owner so repeated syncs do not pile up thread wrappers,
     # and so the runner outlives this function.
     runner = getattr(owner, "_pocket_publisher", None)
     if runner is None:
         runner = _Runner(owner)
         owner._pocket_publisher = runner
-    return runner.start(ledger.publish_to_pocket, lambda _: None, lambda _: None)
+
+    def sent(_) -> None:
+        # Remembered once the server has it, not when the attempt starts. It
+        # used to be stored first, so a publish that failed -- the server
+        # down, the laptop offline -- or one refused because another was
+        # still in flight counted as sent, and every later timer skipped it
+        # as unchanged. The phone then stayed on the old figures until
+        # something else in the ledger happened to move.
+        if digest is not None:
+            owner._pocket_digest = digest
+
+    return runner.start(ledger.publish_to_pocket, sent, lambda _: None)
