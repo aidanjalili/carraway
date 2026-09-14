@@ -237,7 +237,11 @@ def stylesheet(p: Palette) -> str:
         alternate-background-color: {p.surface_alt};
         border: 1px solid {p.border};
         border-radius: 12px;
-        gridline-color: transparent;
+        /* Visible, so the eye can tell where one column ends and the next
+           begins -- and so the boundary you can drag looks like a boundary.
+           Dim enough that a wall of figures still reads as rows rather than
+           as a grid. */
+        gridline-color: {p.border};
         selection-background-color: {p.surface_alt};
         selection-color: {p.text};
     }}
@@ -246,6 +250,9 @@ def stylesheet(p: Palette) -> str:
         color: {p.muted};
         border: none;
         border-bottom: 1px solid {p.border};
+        /* Continues the column line up through the header, so the divider
+           reads as one edge from the title to the last row. */
+        border-right: 1px solid {p.border};
         padding: 10px 8px;
         font-size: 12px;
         font-weight: 600;

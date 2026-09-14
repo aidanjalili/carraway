@@ -1134,3 +1134,108 @@ def test_a_long_text_column_can_still_be_squeezed(app, three_accounts):
     from carraway.ui.widgets import _ColumnFit
 
     assert _ColumnFit.FLOOR_CAP <= 260
+
+
+# -- dragging a column boundary from the table body -----------------------
+
+
+def _drag(app, table, column, by, at_y=300):
+    """Drag `column`'s right-hand edge by `by` pixels, `at_y` down the body."""
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    header = table.horizontalHeader()
+    viewport = table.viewport()
+    edge = header.sectionPosition(column) + header.sectionSize(column)
+
+    def send(kind, x, buttons=Qt.MouseButton.LeftButton):
+        app.sendEvent(
+            viewport,
+            QMouseEvent(
+                kind,
+                QPointF(x, at_y),
+                QPointF(x, at_y),
+                Qt.MouseButton.LeftButton,
+                buttons,
+                Qt.KeyboardModifier.NoModifier,
+            ),
+        )
+
+    send(QEvent.Type.MouseButtonPress, edge)
+    send(QEvent.Type.MouseMove, edge + by)
+    send(QEvent.Type.MouseButtonRelease, edge + by)
+
+
+def _settled(app, view):
+    from PySide6.QtCore import QTimer
+
+    view.resize(1700, 1000)
+    view.show()
+    QTimer.singleShot(50, app.quit)
+    app.exec()
+    return view
+
+
+def test_a_column_can_be_dragged_from_the_middle_of_the_table(app, with_balance):
+    """Qt puts resize handles in the header alone, which is a thin strip to
+    aim at -- and the row you want to line a column up against is nowhere
+    near it."""
+    from carraway.ui.views.networth import NetWorthView
+
+    view = _settled(app, NetWorthView(with_balance))
+    header = view.table.horizontalHeader()
+    before = header.sectionSize(0)
+
+    _drag(app, view.table, 0, -40, at_y=400)
+    assert header.sectionSize(0) == before - 40
+
+
+def test_a_measured_floor_does_not_overrule_a_deliberate_drag(app, with_balance):
+    """Floors stop *automatic* fitting truncating anything. Narrowing a
+    column by hand is exactly what this was asked for."""
+    from carraway.ui.views.networth import NetWorthView
+
+    view = _settled(app, NetWorthView(with_balance))
+    header = view.table.horizontalHeader()
+
+    _drag(app, view.table, 0, -1000)
+    assert header.sectionSize(0) < 80
+
+
+def test_clicking_away_from_a_boundary_does_not_resize(app, with_balance):
+    """Everything not near an edge has to pass straight through, or
+    selecting a row would drag a column instead."""
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    from carraway.ui.views.networth import NetWorthView
+
+    view = _settled(app, NetWorthView(with_balance))
+    header = view.table.horizontalHeader()
+    before = [header.sectionSize(c) for c in range(view.table.columnCount())]
+
+    middle = header.sectionPosition(1) + header.sectionSize(1) // 2
+    for kind in (
+        QEvent.Type.MouseButtonPress,
+        QEvent.Type.MouseMove,
+        QEvent.Type.MouseButtonRelease,
+    ):
+        app.sendEvent(
+            view.table.viewport(),
+            QMouseEvent(
+                kind,
+                QPointF(middle, 300),
+                QPointF(middle, 300),
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            ),
+        )
+    assert [header.sectionSize(c) for c in range(view.table.columnCount())] == before
+
+
+def test_the_column_lines_are_visible(app, with_balance):
+    from carraway.ui.views.networth import NetWorthView
+
+    view = NetWorthView(with_balance)
+    assert view.table.showGrid() is True

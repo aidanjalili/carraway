@@ -1033,6 +1033,20 @@ class _ColumnFit(QObject):
             self._busy = False
         self._sized = True
 
+    def fit_one(self, column: int) -> None:
+        """Size one column to its own content, as a double-click should."""
+        from PySide6.QtWidgets import QHeaderView
+
+        header = self._table.horizontalHeader()
+        self._busy = True
+        try:
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+            width = header.sectionSize(column)
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+            header.resizeSection(column, max(width + 22, 80))
+        finally:
+            self._busy = False
+
     def fit(self) -> None:
         if self._busy:
             return
@@ -1072,6 +1086,94 @@ class _ColumnFit(QObject):
             self._busy = False
 
 
+class _ColumnDragger(QObject):
+    """Lets a column boundary be dragged anywhere down the table, not just in
+    the header.
+
+    Qt puts resize handles in the header alone, which is a thin strip to aim
+    at -- and the row you actually want to line the column up against is
+    somewhere in the middle of the table, nowhere near it. So the whole
+    vertical boundary becomes the handle, which is what a spreadsheet does.
+
+    Everything not within a few pixels of a boundary is passed straight
+    through, so clicking a row, selecting, and the context menu all behave
+    exactly as before.
+    """
+
+    #: How close to a boundary counts as aiming at it.
+    GRAB = 4
+
+    #: The narrowest a column may be dragged. Deliberately far below the
+    #: measured floors: those exist to stop *automatic* fitting truncating
+    #: anything, and have no business overruling someone who is deliberately
+    #: dragging a column narrower -- which was the whole reason this was
+    #: asked for. Text ellipsises, which is what it is meant to do.
+    MIN = 36
+
+    def __init__(self, table, fit) -> None:
+        super().__init__(table)
+        self._table = table
+        self._fit = fit
+        self._column: int | None = None
+        self._from_x = 0
+        self._from_width = 0
+        table.viewport().setMouseTracking(True)
+        table.viewport().installEventFilter(self)
+
+    def _boundary_at(self, x: int) -> int | None:
+        """The column whose right-hand edge is under `x`, if any."""
+        header = self._table.horizontalHeader()
+        offset = self._table.horizontalScrollBar().value()
+        for index in range(header.count()):
+            column = header.logicalIndex(index)
+            if self._table.isColumnHidden(column):
+                continue
+            edge = header.sectionPosition(column) + header.sectionSize(column) - offset
+            if abs(x - edge) <= self.GRAB:
+                return column
+        return None
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        kind = event.type()
+
+        if kind == QEvent.Type.MouseMove and self._column is not None:
+            delta = event.position().toPoint().x() - self._from_x
+            self._table.horizontalHeader().resizeSection(
+                self._column, max(self.MIN, self._from_width + delta)
+            )
+            return True
+
+        if kind == QEvent.Type.MouseMove:
+            near = self._boundary_at(event.position().toPoint().x())
+            self._table.viewport().setCursor(
+                Qt.CursorShape.SplitHCursor if near is not None else Qt.CursorShape.ArrowCursor
+            )
+            return False
+
+        if kind == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+            column = self._boundary_at(event.position().toPoint().x())
+            if column is None:
+                return False
+            self._column = column
+            self._from_x = event.position().toPoint().x()
+            self._from_width = self._table.horizontalHeader().sectionSize(column)
+            return True
+
+        if kind == QEvent.Type.MouseButtonRelease and self._column is not None:
+            self._column = None
+            return True
+
+        # A double-click on a boundary means "fit this column to its content",
+        # the same as it does in the header and in every spreadsheet.
+        if kind == QEvent.Type.MouseButtonDblClick:
+            column = self._boundary_at(event.position().toPoint().x())
+            if column is not None:
+                self._fit.fit_one(column)
+                return True
+
+        return False
+
+
 def resizable_columns(table, ledger, name: str, *, stretch: int = 0) -> None:
     """Size a table's columns sensibly, let them be dragged, remember them.
 
@@ -1102,6 +1204,9 @@ def resizable_columns(table, ledger, name: str, *, stretch: int = 0) -> None:
 
     for column in range(columns):
         header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+    # Otherwise Qt refuses to let a section go below its size hint, so the
+    # header handle and the body handle would stop at different widths.
+    header.setMinimumSectionSize(_ColumnDragger.MIN)
 
     saved = ledger.setting(key)
     restored = False
@@ -1115,7 +1220,13 @@ def resizable_columns(table, ledger, name: str, *, stretch: int = 0) -> None:
 
     # Sized against real rows the first time there are any; a remembered
     # layout is already the right answer and is left alone.
-    table._carraway_fit = _ColumnFit(table, stretch, sized=bool(restored))
+    # Column lines on. Without them the draggable boundary is invisible
+    # until the cursor happens to change shape over it.
+    table.setShowGrid(True)
+
+    fit = _ColumnFit(table, stretch, sized=bool(restored))
+    table._carraway_fit = fit
+    table._carraway_dragger = _ColumnDragger(table, fit)
 
     def remember(*_args) -> None:
         ledger.save_setting(key, header.saveState().toBase64().data().decode("ascii"))
