@@ -1000,6 +1000,30 @@ def set_setting(conn: sqlite3.Connection, key: str, value: object) -> None:
     conn.commit()
 
 
+#: Setting holding what the bank itself calls each synced account.
+BANK_NAMES_SETTING = "account_bank_names"
+
+
+def remember_bank_names(conn: sqlite3.Connection, accounts) -> None:
+    """Keep the provider's own name for each account, whatever the user renames.
+
+    A sync keeps the user's name for an account they already had, so the
+    bank's was simply thrown away -- and it is the one thing the Pocket server
+    can see, since it fetches the same feed with no idea what anyone renamed
+    anything to. Anything that has to agree with the server about an account
+    has to use this name, not the one on screen.
+    """
+    saved = get_setting(conn, BANK_NAMES_SETTING)
+    names = {str(k): str(v) for k, v in saved.items()} if isinstance(saved, dict) else {}
+    changed = False
+    for account in accounts:
+        if account.external_id and names.get(account.id) != account.name:
+            names[account.id] = account.name
+            changed = True
+    if changed:
+        set_setting(conn, BANK_NAMES_SETTING, names)
+
+
 def all_settings(conn: sqlite3.Connection) -> dict[str, object]:
     """Every setting, with defaults filled in for anything never written."""
     stored = dict(DEFAULT_SETTINGS)

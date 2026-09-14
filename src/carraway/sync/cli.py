@@ -29,6 +29,8 @@ def _persist(conn, result, label: str, database) -> int:
     # Keep whatever the user called an account they already had. The provider's
     # name is more literal, but renaming something a person named themselves is
     # a surprise, and they can always rename it deliberately.
+    # Before the user's names replace them. See db.remember_bank_names.
+    db.remember_bank_names(conn, result.accounts)
     named = {a.id: a.name for a in db.list_accounts(conn)}
     for account in result.accounts:
         if account.id in named:

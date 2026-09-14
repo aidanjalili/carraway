@@ -69,6 +69,8 @@ class SyncWorker(QObject):
             result = provider.fetch()
             budget.record_usage(conn, provider.requests_made)
 
+            # Before the user's names replace them. See db.remember_bank_names.
+            db.remember_bank_names(conn, result.accounts)
             # Accounts are only linked automatically here when they already
             # match something known. A genuinely new account is left for the
             # CLI, which can ask before merging two accounts together.

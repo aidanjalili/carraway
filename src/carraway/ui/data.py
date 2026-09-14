@@ -547,10 +547,21 @@ class Ledger:
         months, and every row is a row that has to be encrypted, sent, and
         stored on a box that does not need it.
         """
+        import hashlib
         from datetime import timedelta
 
         cutoff = date.today() - timedelta(days=days)
         names = {a.id: a.name for a in self.accounts}
+        # The server's handle for a synced account: a hash of the bank's own
+        # account id, which is what it attaches to every row it fetches. The
+        # name shown on the phone is the user's and can be renamed; this does
+        # not change, so it is what anything matching phone and server rows
+        # by account -- muting one, say -- can rely on.
+        refs = {
+            a.id: hashlib.sha256(a.external_id.encode("utf-8")).hexdigest()[:32]
+            for a in self.accounts
+            if a.external_id
+        }
         rows = [
             {
                 # The ledger's own id, so a row read on the phone can be
@@ -565,6 +576,7 @@ class Ledger:
                 "amount": f"{tx.amount.decimal:.2f}",
                 "category": self.category_of(tx),
                 "account": names.get(tx.account_id, ""),
+                **({"account_ref": ref} if (ref := refs.get(tx.account_id)) else {}),
                 # Set by hand rather than by a rule, so the phone can offer to
                 # hand it back. Omitted otherwise, which is nearly every row.
                 **({"filed": True} if tx.id in self.category_overrides else {}),
@@ -751,7 +763,13 @@ class Ledger:
         from datetime import timedelta
 
         cutoff = date.today() - timedelta(days=days)
+        # The bank's name for the account, not the user's. The server builds
+        # the same fingerprint from the feed it fetches, which has never heard
+        # of a rename -- hashed with "Wells Fargo Card" where the server has
+        # the bank's own name, no charge on a renamed account ever matched,
+        # and every category filed for one was invisible to the server.
         names = {a.id: a.name for a in self.accounts}
+        names.update(self.bank_account_names)
         out: dict[str, str] = {}
         for tx in self.transactions:
             if tx.date < cutoff:
@@ -769,6 +787,13 @@ class Ledger:
             )
             out[hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]] = category
         return out
+
+    @property
+    def bank_account_names(self) -> dict[str, str]:
+        """{account id: the name the bank reports}, for every account synced since
+        this was recorded. See db.remember_bank_names."""
+        saved = self.setting(db.BANK_NAMES_SETTING)
+        return {str(k): str(v) for k, v in saved.items()} if isinstance(saved, dict) else {}
 
     def pocket_digest(self) -> str:
         """A fingerprint of what would be published, without encrypting it.

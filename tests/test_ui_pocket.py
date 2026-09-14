@@ -1669,3 +1669,96 @@ def test_no_balance_means_no_net_worth_rather_than_zero(app, tmp_path):
     ledger = Ledger(path=tmp_path / "empty.db")
     ledger.load()
     assert ledger.networth_summary() is None
+
+
+# -- an account the user renamed, as the server sees it -------------------
+
+
+def _server_fingerprint(when, amount: str, description: str, account: str) -> str:
+    """What carraway-pocket's `push.fingerprint` computes for a fetched row:
+    sha256 of "date|amount|description|account", with the bank's account name,
+    truncated to 32 hex characters."""
+    import hashlib
+
+    raw = "|".join((when.isoformat(), amount, description, account))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
+def _synced_then_renamed(tmp_path):
+    """A SimpleFIN sync through the CLI's own path, then a rename by hand."""
+    from datetime import date
+    from unittest.mock import patch
+
+    from carraway.core import db
+    from carraway.sync.cli import _persist
+    from carraway.sync.simplefin import SimpleFinProvider
+
+    payload = {
+        "accounts": [
+            {
+                "id": "ACT-9f2",
+                "name": "WELLS FARGO ACTIVE CASH (1234)",
+                "currency": "USD",
+                "balance": "-50.00",
+                "transactions": [
+                    {
+                        "id": "tx-1",
+                        "posted": int(
+                            __import__("datetime").datetime(
+                                date.today().year, date.today().month, date.today().day, 12
+                            ).timestamp()
+                        ),
+                        "amount": "-12.50",
+                        "description": "CORNER BISTRO",
+                    }
+                ],
+            }
+        ]
+    }
+    path = tmp_path / "synced.db"
+    conn = db.connect(path)
+    with patch("carraway.sync.simplefin._get", return_value=payload):
+        result = SimpleFinProvider("https://u:p@example.org/simplefin").fetch()
+    _persist(conn, result, "SimpleFIN", path)
+    conn.close()
+
+    ledger = Ledger(path)
+    ledger.load()
+    account = ledger.accounts[0]
+    ledger.rename_account(account.id, "Wells Fargo Card")
+    ledger.add_rule("CORNER BISTRO", "Dining")
+    # A later sync keeps the user's name, and must still remember the bank's.
+    conn = db.connect(path)
+    with patch("carraway.sync.simplefin._get", return_value=payload):
+        again = SimpleFinProvider(
+            "https://u:p@example.org/simplefin", account_ids={"ACT-9f2": account.id}
+        ).fetch()
+    _persist(conn, again, "SimpleFIN", path)
+    conn.close()
+    ledger.load()
+    return ledger
+
+
+def test_a_renamed_account_still_fingerprints_the_way_the_server_does(app, tmp_path):
+    """Hashed with the user's name for the account, a charge on a renamed
+    account could never match the fingerprint the server builds from the
+    bank's name, so no category filed on the laptop reached the server."""
+    ledger = _synced_then_renamed(tmp_path)
+    assert ledger.accounts[0].name == "Wells Fargo Card"
+    tx = ledger.transactions[0]
+
+    expected = _server_fingerprint(
+        tx.date, "-12.50", "CORNER BISTRO", "WELLS FARGO ACTIVE CASH (1234)"
+    )
+    assert ledger.fingerprint_categories() == {expected: "Dining"}
+
+
+def test_the_history_carries_the_servers_handle_for_the_account(app, tmp_path):
+    """The phone shows the user's name, which the server has never seen. The
+    hashed bank account id is the server's own `account_ref` for the row."""
+    import hashlib
+
+    ledger = _synced_then_renamed(tmp_path)
+    row = ledger.pocket_history()["transactions"][0]
+    assert row["account"] == "Wells Fargo Card"
+    assert row["account_ref"] == hashlib.sha256(b"ACT-9f2").hexdigest()[:32]
