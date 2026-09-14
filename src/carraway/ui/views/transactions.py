@@ -44,6 +44,7 @@ from ..widgets import (
     FilterStrip,
     dress_calendar,
     enable_row_hover,
+    mark_favourite,
     refresh_everything,
     resizable_columns,
     shorten,
@@ -860,6 +861,32 @@ class TransactionsView(QWidget):
             return
 
         menu = QMenu(self)
+
+        # Filing a row by hand, for the one-offs a rule would get wrong: a
+        # Venmo that was dinner, an Amazon order that was a gift. Works on the
+        # whole selection, because a run of rows from one trip is the case
+        # that makes doing it one at a time a chore nobody finishes.
+        file_under = menu.addMenu("Set category")
+        favourites = self.ledger.favourite_categories
+        names = sorted(
+            self.ledger.categories_available or (),
+            key=lambda n: (n not in favourites, n),
+        )
+        for name in names:
+            action = QAction(mark_favourite(name, favourites), self)
+            action.triggered.connect(
+                lambda _=False, n=name: self._set_category([tx.id for tx in chosen], n)
+            )
+            file_under.addAction(action)
+        if any(tx.id in self.ledger.category_overrides for tx in chosen):
+            file_under.addSeparator()
+            back = QAction("Back to automatic", self)
+            back.triggered.connect(
+                lambda: self._set_category([tx.id for tx in chosen], None)
+            )
+            file_under.addAction(back)
+        menu.addSeparator()
+
         # If any are still counted, the useful action is to exclude them all.
         # Only when every one is already out does the menu offer to put them
         # back, so a mixed selection has one obvious meaning.
@@ -919,6 +946,15 @@ class TransactionsView(QWidget):
         menu.addSeparator()
         menu.addAction(note)
         menu.exec(self.table.viewport().mapToGlobal(position))
+
+    def _set_category(self, transaction_ids: list, category: str | None) -> None:
+        """File these rows under `category`, or return them to the rules."""
+        conn = db.connect(self.ledger.path)
+        for tx_id in transaction_ids:
+            db.set_category_override(conn, tx_id, category)
+        conn.close()
+        self.ledger.load()
+        refresh_everything(self)
 
     def _set_share(self, tx) -> None:
         """Ask how much of one transaction counts, and store the rest."""

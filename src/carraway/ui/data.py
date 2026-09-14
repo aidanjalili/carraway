@@ -60,6 +60,8 @@ class Ledger:
     balance_dates: dict = field(default_factory=dict)  # account id -> when last observed
     manual: list = field(default_factory=list)
     expected: list = field(default_factory=list)  # money owed that has not landed
+    # transaction id -> category chosen for that one row by hand
+    category_overrides: dict = field(default_factory=dict)
     # budget id -> transaction ids taken out of that budget alone
     exclusions: dict = field(default_factory=dict)
     settings: dict = field(default_factory=dict)
@@ -113,6 +115,7 @@ class Ledger:
             tx.id: name for tx, name in zip(self.transactions, assigned, strict=True)
         }
 
+
         # Guessing is opt-in, and every guess stays marked as one. A guess the
         # user cannot tell apart from a rule match is worse than no guess.
         self.guesses = {}
@@ -120,6 +123,19 @@ class Ledger:
             self.guesses = guess_mod.guess_all(self.transactions, assigned)
             for tx_id, found in self.guesses.items():
                 self.categories[tx_id] = found.category
+
+        # A category chosen for one row outranks everything else -- the rules,
+        # the user's own rules, and the guesser. Applied last for that reason:
+        # applied before the guesses, a hand-filed row with no matching rule
+        # still read as Uncategorized to the guesser, which then overwrote the
+        # user's answer with its own. A rule is a guess about a merchant; this
+        # is a decision about a transaction.
+        self.category_overrides = db.category_overrides(conn)
+        for tx_id, name in self.category_overrides.items():
+            if tx_id in self.categories:
+                self.categories[tx_id] = name
+                # No longer a guess, so it must not be marked or filtered as one.
+                self.guesses.pop(tx_id, None)
         conn.close()
 
     # -- derived views the screens ask for --------------------------------
@@ -251,6 +267,7 @@ class Ledger:
 
         corrections = self._apply_counts(entries, by_name, unmatched)
         verdicts = self._apply_verdicts(entries)
+        filed = self._apply_categorisations(entries)
 
         # Only claim what was actually stored. An entry naming an account
         # this ledger does not have stays on the server, so it is not lost
@@ -266,7 +283,36 @@ class Ledger:
             "skipped": skipped,
             "unmatched": [e.description for e in unmatched],
             **verdicts,
+            "categorised": filed,
         }
+
+    def _apply_categorisations(self, entries) -> int:
+        """File transactions under the categories chosen on the phone.
+
+        Oldest first, so a row changed twice on the way to the shops ends
+        where it was left. A category for a transaction this ledger no longer
+        has is dropped rather than retried, for the same reason as a budget
+        verdict: nothing the user could do would make it apply later.
+        """
+        chosen = sorted(
+            (e for e in entries if getattr(e, "is_categorisation", False)),
+            key=lambda e: e.occurred_on,
+        )
+        if not chosen:
+            return 0
+        known = {tx.id for tx in self.transactions}
+        latest: dict[str, str] = {}
+        for entry in chosen:
+            if entry.subject in known:
+                latest[entry.subject] = entry.category
+        if not latest:
+            return 0
+        conn = db.connect(self.path)
+        for tx_id, category in latest.items():
+            db.set_category_override(conn, tx_id, category or None)
+        conn.close()
+        self.load()
+        return len(latest)
 
     def _apply_verdicts(self, entries) -> dict:
         """Apply "stop counting this" / "count it again" from the phone.
@@ -604,6 +650,15 @@ class Ledger:
             #
             # Only the recent window, because that is all the fetcher sees.
             "filing": self.fingerprint_categories(days=45),
+            # What the phone may file a transaction under, starred first, so
+            # its picker offers the same list as the laptop's rather than a
+            # hardcoded one that drifts from categories the user has added or
+            # hidden. Travels inside the sealed part like the rest.
+            "categories": sorted(
+                self.categories_available,
+                key=lambda name: (name not in self.favourite_categories, name),
+            ),
+            "favourites": sorted(self.favourite_categories),
         }
 
     def fingerprint_categories(self, days: int = 45) -> dict:
@@ -728,6 +783,13 @@ class Ledger:
         )
 
     # -- taking a row out of one budget rather than all of them -------------
+
+    def set_transaction_category(self, transaction_id: str, category: str | None) -> None:
+        """File one transaction by hand, or put it back under the rules."""
+        conn = db.connect(self.path)
+        db.set_category_override(conn, transaction_id, category)
+        conn.close()
+        self.load()
 
     def budget_exclusions(self, budget_id: str) -> set[str]:
         return set(self.exclusions.get(budget_id) or ())

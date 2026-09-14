@@ -1288,3 +1288,62 @@ def test_the_history_tells_the_phone_what_is_held_back(app, tmp_path):
 
     row = next(r for r in ledger.pocket_history()["transactions"] if r["id"] == "spend1")
     assert row["held"] == "20.00"
+
+
+# -- filing one transaction by hand ---------------------------------------
+
+
+def _categorisation(subject: str, category: str):
+    import dataclasses
+
+    return dataclasses.replace(
+        _verdict(subject, "exclude"), kind="categorize", category=category
+    )
+
+
+def test_a_category_chosen_on_the_phone_files_the_transaction(app, tmp_path, monkeypatch):
+    ledger = _cash_ledger(tmp_path)
+    client = FakeClient()
+    client.entries = [_categorisation("spend1", "Gifts/Charity")]
+    monkeypatch.setattr(Ledger, "pocket_client", lambda self: client)
+    ledger.save_setting("pocket_url", "https://money.example.com")
+
+    result = ledger.collect_from_pocket()
+    assert result["categorised"] == 1
+    assert ledger.categories["spend1"] == "Gifts/Charity"
+    # Not a transaction of its own, and not a budget verdict either.
+    assert result["added"] == 0
+    assert result.get("excluded", 0) == 0
+
+
+def test_an_empty_category_puts_the_row_back_under_the_rules(app, tmp_path, monkeypatch):
+    ledger = _cash_ledger(tmp_path)
+    ledger.set_transaction_category("spend1", "Gifts/Charity")
+    assert ledger.categories["spend1"] == "Gifts/Charity"
+
+    client = FakeClient()
+    client.entries = [_categorisation("spend1", "")]
+    monkeypatch.setattr(Ledger, "pocket_client", lambda self: client)
+    ledger.save_setting("pocket_url", "https://money.example.com")
+
+    ledger.collect_from_pocket()
+    assert "spend1" not in ledger.category_overrides
+
+
+def test_a_hand_set_category_beats_the_guesser(app, tmp_path):
+    """Applied before the guesses, a hand-filed row with no matching rule
+    still read as Uncategorized to the guesser, which then overwrote it."""
+    ledger = _cash_ledger(tmp_path)
+    ledger.save_setting("auto_categorize", True)
+    ledger.set_transaction_category("spend1", "Hobbies")
+    ledger.load()
+    assert ledger.categories["spend1"] == "Hobbies"
+    assert not ledger.is_guessed("spend1")
+
+
+def test_the_phone_is_sent_the_category_list_favourites_first(app, tmp_path):
+    ledger = _cash_ledger(tmp_path)
+    ledger.set_favourite_category("Travel", True)
+    snapshot = ledger.pocket_snapshot()
+    assert snapshot["categories"][0] == "Travel"
+    assert snapshot["favourites"] == ["Travel"]

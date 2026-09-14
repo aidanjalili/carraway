@@ -79,6 +79,15 @@ class InboxEntry:
     def excludes(self) -> bool:
         return self.kind == "exclude"
 
+    @property
+    def is_categorisation(self) -> bool:
+        """A category chosen on the phone for one transaction.
+
+        `subject` names the transaction and `category` carries the answer;
+        an empty category puts the row back under the rules.
+        """
+        return self.kind == "categorize"
+
     @classmethod
     def from_json(cls, payload: dict) -> InboxEntry:
         return cls(
@@ -247,7 +256,7 @@ def to_transactions(
         # caller reconciles it against the ledger and writes the difference.
         # A verdict is not a movement either -- it is an edit to a row that
         # already exists, applied by the caller for the same reason.
-        if entry.is_count or entry.is_verdict:
+        if entry.is_count or entry.is_verdict or entry.is_categorisation:
             continue
         account_id = lowered.get(entry.account.lower())
         if account_id is None:

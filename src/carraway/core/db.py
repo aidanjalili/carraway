@@ -303,6 +303,25 @@ MIGRATIONS: list[str] = [
        SET budget_excluded_minor = ABS(amount_minor)
      WHERE budget_excluded = 1;
     """,
+    # v20 - a category chosen for one transaction by hand.
+    #
+    # Everything else is a rule: "anything containing CROOKED PINT is
+    # Dining". That is right for merchants and wrong for the one-off -- a
+    # Venmo from a friend that was dinner, an Amazon order that was a gift --
+    # where writing a rule would file every future row from that merchant
+    # under the same answer. This is the answer for one row and no other.
+    #
+    # Its own table rather than `transactions.category`, which the importers
+    # already write and which categorisation has long ignored in favour of
+    # the rules. A column that sometimes means "the bank's guess" and
+    # sometimes "the user's decision" cannot be trusted to mean either.
+    """
+    CREATE TABLE category_overrides (
+        transaction_id TEXT PRIMARY KEY,
+        category       TEXT NOT NULL,
+        set_on         TEXT NOT NULL
+    );
+    """,
 ]
 
 
@@ -1195,6 +1214,36 @@ def delete_transactions(conn: sqlite3.Connection, ids: list[str]) -> int:
         removed += conn.execute("DELETE FROM transactions WHERE id = ?", (tx_id,)).rowcount
     conn.commit()
     return removed
+
+
+def category_overrides(conn: sqlite3.Connection) -> dict[str, str]:
+    """{transaction id: category} for every row categorised by hand."""
+    return {
+        r["transaction_id"]: r["category"]
+        for r in conn.execute("SELECT transaction_id, category FROM category_overrides")
+    }
+
+
+def set_category_override(
+    conn: sqlite3.Connection, transaction_id: str, category: str | None
+) -> int:
+    """File one transaction under `category`, or clear it with None/empty."""
+    if not category:
+        cur = conn.execute(
+            "DELETE FROM category_overrides WHERE transaction_id = ?", (transaction_id,)
+        )
+    else:
+        cur = conn.execute(
+            """
+            INSERT INTO category_overrides (transaction_id, category, set_on)
+            VALUES (?, ?, ?)
+            ON CONFLICT(transaction_id) DO UPDATE SET
+                category = excluded.category, set_on = excluded.set_on
+            """,
+            (transaction_id, category.strip(), date.today().isoformat()),
+        )
+    conn.commit()
+    return cur.rowcount
 
 
 def update_categories(
