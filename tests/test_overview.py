@@ -127,6 +127,23 @@ def test_transfers_are_left_out_of_both_totals():
     assert got.count == 1
 
 
+def test_an_unpaired_transfer_is_left_out_of_the_totals_as_well():
+    """Filed as Transfer with no partner row, it was kept out of the
+    categories and left in the totals above them, so "spent" disagreed with
+    its own breakdown by the size of every brokerage move."""
+    txs = [
+        _tx("2026-09-05", "-10.00", "coffee"),
+        _tx("2026-09-06", "-500.00", "to-brokerage"),
+        _tx("2026-09-07", "200.00", "from-brokerage"),
+    ]
+    categories = {"to-brokerage": "Transfer", "from-brokerage": "Transfer"}
+    got = summarise(txs, categories, Period(date(2026, 9, 1), date(2026, 9, 30)))
+    assert abs(got.spent) == Money.parse("10.00")
+    assert got.earned == Money.parse("0.00")
+    assert got.count == 1
+    assert sum(amount.minor for _, amount, _ in got.categories) == got.spent.minor
+
+
 def test_net_is_what_came_in_less_what_went_out():
     txs = [_tx("2026-09-05", "-40.00"), _tx("2026-09-06", "100.00")]
     got = summarise(txs, {}, Period(date(2026, 9, 1), date(2026, 9, 30)))

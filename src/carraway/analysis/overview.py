@@ -230,15 +230,19 @@ def _totals(
     for tx in transactions:
         if not period.contains(tx.date) or tx.is_transfer:
             continue
+        name = categories.get(tx.id, "Uncategorized")
+        # Money moved between the user's own accounts is still theirs, whether
+        # or not its other half was imported. Filed as Transfer with no partner
+        # row, it used to be left out of the categories but kept in the totals
+        # above them, so the headline "spent" ran $700-$1,000 a month ahead of
+        # the breakdown beneath it and of the Spending screen.
+        if name == transfer_label:
+            continue
         seen += 1
         if tx.is_outflow:
             spent.append(tx.amount)
-            name = categories.get(tx.id, "Uncategorized")
-            # Money moved between the user's own accounts is still theirs;
-            # counting it as spending buries the categories that are not.
-            if name != transfer_label:
-                by_category.setdefault(name, []).append(tx.amount)
-                counts[name] = counts.get(name, 0) + 1
+            by_category.setdefault(name, []).append(tx.amount)
+            counts[name] = counts.get(name, 0) + 1
         else:
             earned.append(tx.amount)
 
