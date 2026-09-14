@@ -495,7 +495,9 @@ class Ledger:
                 # nobody else reports. Left on the server rather than guessed.
                 unmatched.append(entry)
                 continue
-            gap = self.set_cash_balance(account_id, entry.amount, correction=True)
+            gap = self.set_cash_balance(
+                account_id, entry.amount, correction=True, on=entry.occurred_on
+            )
             made.append(
                 {
                     "account": self.account_name(account_id),
@@ -1340,7 +1342,7 @@ class Ledger:
             return False
         return any(a.id == account_id and a.type is AccountType.CASH for a in self.accounts)
 
-    def implied_balance(self, account_id: str) -> Money | None:
+    def implied_balance(self, account_id: str, asof: date | None = None) -> Money | None:
         """What the records say the account holds now, or None if they say nothing.
 
         The last observed balance rolled forward by everything since it, not
@@ -1354,10 +1356,15 @@ class Ledger:
         transactions on top of it double-counts them: on real data two
         transfers landing on the reading date would have inflated the balance
         by $137.
+
+        `asof` asks the same question about the end of an earlier day, from
+        the nearest reading either side of it.
         """
+        moves = [t for t in self.transactions if t.account_id == account_id]
+        if asof is not None and asof < date.today():
+            return self._balance_on(account_id, asof, moves)
         observed = self.balance_dates.get(account_id)
         base = self.balances.get(account_id)
-        moves = [t for t in self.transactions if t.account_id == account_id]
         if base is None or observed is None:
             # Never observed. The transactions are all there is, and treating
             # the opening balance as zero is the only assumption available —
@@ -1365,6 +1372,25 @@ class Ledger:
             return total([t.amount for t in moves]) if moves else None
         since = [t for t in moves if t.date > observed]
         return Money(base.minor + sum(t.amount.minor for t in since), base.currency)
+
+    def _balance_on(self, account_id: str, day: date, moves: list) -> Money | None:
+        """What the records say an account held at the end of `day`."""
+        conn = db.connect(self.path)
+        readings = db.balance_history(conn, account_id)
+        conn.close()
+        before = [(when, amount) for when, amount in readings if when <= day]
+        if before:
+            when, base = before[-1]
+            moved = sum(t.amount.minor for t in moves if when < t.date <= day)
+            return Money(base.minor + moved, base.currency)
+        after = [(when, amount) for when, amount in readings if when > day]
+        if after:
+            # Only a later reading: walk back from it, the way net worth does.
+            when, base = after[0]
+            moved = sum(t.amount.minor for t in moves if day < t.date <= when)
+            return Money(base.minor - moved, base.currency)
+        upto = [t.amount for t in moves if t.date <= day]
+        return total(upto) if upto else None
 
     @property
     def current_balances(self) -> dict[str, Money]:
@@ -1391,7 +1417,13 @@ class Ledger:
                     out[account_id] = rolled
         return out
 
-    def set_cash_balance(self, account_id: str, amount: Money, correction: bool = False) -> Money:
+    def set_cash_balance(
+        self,
+        account_id: str,
+        amount: Money,
+        correction: bool = False,
+        on: date | None = None,
+    ) -> Money:
         """Record what the user says an account holds. Returns the correction made.
 
         The balance is always recorded, so net worth is right either way. The
@@ -1399,31 +1431,57 @@ class Ledger:
         adds up to the same figure, which is what Spending and the category
         totals read. Declining it leaves a knowingly incomplete history rather
         than inventing a transaction the user did not agree to.
+
+        `on` is the day the count was made, when that was not today. A count
+        typed on the phone reaches this computer whenever it is next open,
+        often a day or more later, and spends logged since then arrive in the
+        same collection. Reconciled against today, those spends were read as
+        already inside the count: the correction shrank by exactly what had
+        been spent since, and the balance recorded as today's was the
+        wallet as it stood before that spending.
         """
-        implied = self.implied_balance(account_id)
+        when = min(on, date.today()) if on is not None else date.today()
+        implied = self.implied_balance(account_id, asof=when)
         gap = Money(amount.minor - implied.minor, amount.currency) if implied else amount
 
         conn = db.connect(self.path)
         if correction and gap.minor:
-            db.insert_transactions(conn, [self._correction(account_id, gap)])
-        db.record_balance(conn, account_id, amount, date.today())
+            db.insert_transactions(conn, [self._correction(account_id, gap, when)])
+        db.record_balance(conn, account_id, amount, when)
         conn.close()
         self.load()
         return gap
 
-    def _correction(self, account_id: str, gap: Money) -> Transaction:
+    def _correction(self, account_id: str, gap: Money, when: date | None = None) -> Transaction:
         """A transaction standing in for movements that were never recorded."""
         import uuid
 
+        when = when or date.today()
+        # Numbered past any adjustment of the same size already on that day.
+        # Two alike would share a fingerprint, and the second -- a real
+        # correction the user agreed to -- was silently dropped on insert
+        # while the balance beside it was recorded, leaving history short.
+        alike = 1 + max(
+            (
+                t.occurrence
+                for t in self.transactions
+                if t.account_id == account_id
+                and t.date == when
+                and t.amount == gap
+                and t.description == "Cash adjustment"
+            ),
+            default=-1,
+        )
         return Transaction(
             id=uuid.uuid4().hex,
             account_id=account_id,
-            date=date.today(),
+            date=when,
             amount=gap,
             # Named so it is obvious in the ledger that a person adjusted this
             # rather than a bank reporting it.
             description="Cash adjustment",
             merchant="Cash adjustment",
+            occurrence=alike,
         )
 
     def add_cash_transaction(

@@ -626,6 +626,56 @@ def test_spends_land_before_the_count_is_reconciled(app, tmp_path, monkeypatch):
     assert result["corrections"][0]["correction"] == Money.parse("-5.00")
 
 
+def test_a_count_collected_late_is_reconciled_as_of_the_day_it_was_made(
+    app, tmp_path, monkeypatch
+):
+    """The laptop is often shut when the wallet is counted. Reconciled against
+    the day it was collected, a spend logged between the count and the
+    collection was read as already inside the count: the correction shrank by
+    that spend and the balance recorded was the wallet before it."""
+    import dataclasses
+    from datetime import date, timedelta
+
+    from carraway.core.money import Money
+    from carraway.sync.pocket import InboxEntry
+
+    ledger = _cash_ledger(tmp_path)  # $100 counted ten days ago, $30 spent since
+    counted_on = date.today() - timedelta(days=2)
+    client = FakeClient()
+    client.entries = [
+        dataclasses.replace(_count_entry("55.00"), occurred_on=counted_on),
+        InboxEntry(
+            id="later",
+            occurred_on=date.today() - timedelta(days=1),
+            amount=Money.parse("-10.00"),
+            description="BUS FARE",
+            category="",
+            account="Cash",
+        ),
+    ]
+    monkeypatch.setattr(Ledger, "pocket_client", lambda self: client)
+    ledger.save_setting("pocket_url", "https://money.example.com")
+
+    result = ledger.collect_from_pocket()
+    # $70 when counted, $55 in the wallet: $15 went unrecorded. The bus fare
+    # came after and is not part of it.
+    assert result["corrections"][0]["correction"] == Money.parse("-15.00")
+    assert ledger.balance_dates["cash"] == counted_on
+    assert ledger.current_balances["cash"] == Money.parse("45.00")
+
+
+def test_a_second_identical_correction_on_one_day_is_kept(app, tmp_path):
+    """Two adjustments of the same size on the same day shared a fingerprint,
+    and the second was dropped on insert while its balance was recorded."""
+    from carraway.core.money import Money
+
+    ledger = _cash_ledger(tmp_path)  # $70 by the records
+    ledger.set_cash_balance("cash", Money.parse("60.00"), correction=True)
+    ledger.set_cash_balance("cash", Money.parse("50.00"), correction=True)
+    adjustments = [t for t in ledger.transactions if t.description == "Cash adjustment"]
+    assert [a.amount for a in adjustments] == [Money.parse("-10.00")] * 2
+
+
 def _phone_spend(entry_id: str, description: str, category: str):
     from datetime import date
 
