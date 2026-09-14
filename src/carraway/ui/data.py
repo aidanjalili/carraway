@@ -889,9 +889,18 @@ class Ledger:
         # The alias, for built-in names that come from the code on every load.
         # Earlier renames that ended at `old` are pointed straight at `new`,
         # so renaming twice leaves one hop rather than a chain.
+        #
+        # Only a built-in name gets an alias of its own. Every other name lives
+        # in the stored references just rewritten, so an alias adds nothing
+        # but a trap: it went on translating the old name for ever, so a new
+        # category later given that name had every row filed under it
+        # redirected somewhere else. And the alias used to follow only the
+        # first name that ended at `old` -- merge Coffee into Dining, rename
+        # Dining to Food, and the built-in Dining rows stayed behind while
+        # everything stored moved on.
         renames = {k: (new if v == old else v) for k, v in self.category_renames.items()}
-        original = next((k for k, v in self.category_renames.items() if v == old), old)
-        renames[original] = new
+        if old in cat.CATEGORIES:
+            renames[old] = new
         renames.pop(new, None)
         self.save_setting("category_renames", renames)
 

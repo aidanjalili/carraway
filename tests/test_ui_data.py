@@ -1382,3 +1382,31 @@ def test_a_tracked_entry_counts_back_no_further_than_it_started(tmp_path):
         date(2026, 9, 28),
         date(2026, 10, 5),
     ]
+
+
+def test_a_renamed_category_of_your_own_leaves_its_old_name_free(tmp_path):
+    """Its name lives only in stored references, which the rename rewrites.
+    The alias it was given anyway kept translating the old name, so a new
+    category later called that had its rows redirected."""
+    ledger = _dining_ledger(tmp_path)
+    ledger.add_category("Coffee")
+    ledger.rename_category("Coffee", "Cafe")
+    assert "Coffee" not in ledger.category_renames
+
+    ledger.add_category("Coffee")
+    row = ledger.transactions[0]
+    ledger.set_transaction_category(row.id, "Coffee")
+    assert ledger.category_of(row) == "Coffee"
+
+
+def test_renaming_a_built_in_after_merging_into_it_moves_both(tmp_path):
+    """The alias followed only the first name that ended at the old one, so
+    merging Coffee into Dining and then renaming Dining left the built-in
+    Dining rows behind."""
+    ledger = _dining_ledger(tmp_path)
+    ledger.add_category("Coffee")
+    ledger.rename_category("Coffee", "Dining")
+    ledger.rename_category("Dining", "Food")
+    assert "Dining" not in ledger.categories.values()
+    assert "Food" in ledger.categories.values()
+    assert ledger.category_renames.get("Dining") == "Food"
