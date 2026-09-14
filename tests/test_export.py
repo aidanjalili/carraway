@@ -398,3 +398,37 @@ def test_libreoffice_opens_the_file(tmp_path):
     )
     assert result.returncode == 0, result.stderr.decode()
     assert (tmp_path / "ledger.csv").exists()
+
+
+def test_a_single_table_export_writes_real_cells(tmp_path):
+    """`write_sheet` handed bare strings to a helper that expects rendered
+    cells, so every row came out with no cells in it -- headers over empty
+    rows in Calc -- and nothing was escaped, so one "AT&T" made the file
+    unreadable."""
+    from carraway.exporters.ods import write_sheet
+
+    path = write_sheet(
+        tmp_path / "upcoming.ods",
+        "Upcoming",
+        ["Merchant", "Amount"],
+        [["AT&T <wireless>", "$16.94"], ["Netflix", "$8.43"]],
+    )
+    table = sheets(read_content(path))["Upcoming"]
+    assert [[cell_text(cell) for cell in row] for row in rows(table)] == [
+        ["Merchant", "Amount"],
+        ["AT&T <wireless>", "$16.94"],
+        ["Netflix", "$8.43"],
+    ]
+
+
+def test_an_unpaired_transfer_is_not_spending_in_the_categories_sheet(tmp_path):
+    """A move to a brokerage with no matching row on the other side is still
+    filed as Transfer, and the app leaves it out of spending. The By Month
+    sheet did too; the Categories sheet counted it."""
+    ledger = [
+        tx("t1", date(2026, 1, 14), "-500.00", "TO BROKERAGE", category="Transfer"),
+        tx("t2", date(2026, 1, 14), "-4.75", "BLUE BOTTLE", category="Dining"),
+    ]
+    path = export_ods(tmp_path / "ledger.ods", ledger)
+    body = rows(sheets(read_content(path))["Categories"])[1:]
+    assert [cell_text(row[0]) for row in body] == ["Dining"]

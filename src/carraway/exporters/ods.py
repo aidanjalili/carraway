@@ -25,7 +25,7 @@ from datetime import date
 from pathlib import Path
 from xml.sax.saxutils import escape, quoteattr
 
-from ..analysis.categorize import UNCATEGORIZED
+from ..analysis.categorize import TRANSFER, UNCATEGORIZED
 from ..core.models import Account, RecurringSeries, Transaction
 from ..core.money import Money, exponent_for
 
@@ -222,7 +222,11 @@ def _category_rows(
     """
     totals: dict[tuple[str, str], list[int]] = {}
     for tx, category in zip(transactions, categories, strict=True):
-        if tx.is_transfer or not tx.is_outflow:
+        # By category as well as by pairing. A move to a brokerage whose other
+        # half was never imported has no partner row, but it is still filed as
+        # Transfer, and the app and the By Month sheet both leave it out of
+        # spending -- this sheet was the one place it counted.
+        if tx.is_transfer or category == TRANSFER or not tx.is_outflow:
             continue
         bucket = totals.setdefault((category, tx.amount.currency), [0, 0])
         bucket[0] += -tx.amount.minor
@@ -714,7 +718,16 @@ def write_sheet(
                 f'<office:document-content {_NAMESPACES} office:version="{_ODF_VERSION}">',
                 _automatic_styles({2}),
                 "<office:body><office:spreadsheet>",
-                *_table(name or "Sheet", list(headers), [list(r) for r in rows]),
+                # Each value made into a cell. `_table` takes rows of cells
+                # already rendered, and handed the bare strings it wrote them
+                # straight into the row: no cells, so Calc opened a sheet of
+                # headers over empty rows, and nothing escaped, so a single
+                # "AT&T" made the whole file unreadable.
+                *_table(
+                    name or "Sheet",
+                    list(headers),
+                    ([_string_cell(str(value)) for value in row] for row in rows),
+                ),
                 "</office:spreadsheet></office:body></office:document-content>",
             ):
                 stream.write(chunk.encode("utf-8"))
