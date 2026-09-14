@@ -224,6 +224,11 @@ class CreateBudgetView(QWidget):
         self.ledger = ledger
         self._account_boxes: dict[str, QCheckBox] = {}
         self._filling = False
+        # Allowances the user typed in. Kept across a refill, because the
+        # alternative is what this screen used to do: set a total, work down
+        # thirteen categories deciding each one, adjust the total by fifty
+        # dollars, and watch every decision be thrown away.
+        self._pinned: dict[str, Money] = {}
         self._has_totals = False
         self._warning = ""
         # A note about something the user just did, shown when nothing is
@@ -765,17 +770,33 @@ class CreateBudgetView(QWidget):
                 "nothing changes."
             )
         else:
-            weights = self.ledger.spending_weights(accounts)
+            # Weighted by what this window will actually cost, not by a
+            # monthly median. Splitting on the median handed Rent/Mortgage
+            # $81 of a $400 budget for a window whose rent was paid twelve
+            # days before it opened -- money reserved for a charge that
+            # cannot arrive, taken from categories that will see spending.
+            weights = {
+                category: amount for category, amount in suggested.items() if amount.minor > 0
+            } or self.ledger.spending_weights(accounts)
             if self.by_total.isChecked():
                 total = _parse(self.total_input.text())
                 if total is None or total.minor <= 0:
                     self._show([], "Type a total to split across your categories.", suggested)
                     return
-                lines = budgets_mod.split(total, weights)
-                self.method_note.setText(
-                    f"{total.format()} split across {len(lines)} categories in "
-                    "proportion to what you normally spend on each."
-                )
+                lines = self._split_keeping_pinned(total, weights)
+                held = self._pinned_total(weights)
+                if held.minor:
+                    self.method_note.setText(
+                        f"{total.format()} across {len(lines)} categories. "
+                        f"{held.format()} of it you set by hand and it stays "
+                        "put; the rest is split in proportion to what you "
+                        "normally spend."
+                    )
+                else:
+                    self.method_note.setText(
+                        f"{total.format()} split across {len(lines)} categories in "
+                        "proportion to what you normally spend on each."
+                    )
             else:
                 income = _parse(self.income_input.text())
                 saving = _parse(self.saving_input.text()) or Money.zero()
@@ -955,6 +976,153 @@ class CreateBudgetView(QWidget):
         self.table.setItem(row, 0, item)
         self.table.setSpan(row, 0, 1, len(_HEADERS))
 
+    def _usual_tip(self, category: str, usual) -> str:
+        """What this median is made of, and how much of it is on a fixed date.
+
+        A median treats every category as though it trickled out day by day.
+        That is true of groceries and nonsense for rent, which is one charge
+        on the 2nd -- so the figure is split here into the part that really is
+        scheduled and the part that is loose, and the scheduled part says
+        whether it falls inside this window at all.
+        """
+        if not usual:
+            return (
+                f"Nothing spent on {category} in the months this is drawn "
+                "from, so there is no usual figure to compare against."
+            )
+
+        parts = [_HELP["usual"]]
+        start, end = self.date_range()
+        days = (end - start).days + 1
+        monthly = self.ledger.committed_by_category().get(category)
+        landing = self.ledger.committed_by_category(start, end).get(category)
+
+        if monthly is not None and monthly.minor:
+            scheduled = budgets_mod.scale_to_window(abs(monthly), days)
+            loose = Money(max(usual.minor - scheduled.minor, 0), usual.currency)
+            due = self.ledger.commitments_in(category, start, end)
+            names = ", ".join(
+                str(item.get("merchant") or item.get("name") or "").strip()
+                for item in due
+            )
+            parts.append(
+                f"About {scheduled.format()} of that is scheduled -- "
+                f"{abs(monthly).format()} a month of bills or subscriptions -- "
+                f"and roughly {loose.format()} is loose spending."
+            )
+            if landing is not None and landing.minor:
+                parts.append(
+                    f"{abs(landing).format()} of it actually falls inside this "
+                    f"window{f': {names}' if names else ''}. A scheduled charge "
+                    "lands on its own date rather than spreading across the "
+                    "days, which is why the allowance beside this can differ "
+                    "from the median."
+                )
+            else:
+                parts.append(
+                    "None of it falls inside this window, so the allowance "
+                    "beside this is not reserving anything for it -- the "
+                    "charge has either already gone or is not due until after "
+                    "this budget ends."
+                )
+        return "\n\n".join(parts)
+
+    def _pinned_total(self, weights) -> Money:
+        """What the hand-set allowances add up to, among categories on screen."""
+        live = set(weights) | set(self._pinned)
+        return Money(
+            sum(amount.minor for name, amount in self._pinned.items() if name in live)
+        )
+
+    def _split_keeping_pinned(self, total: Money, weights) -> list:
+        """Split `total`, leaving anything the user typed exactly as typed.
+
+        Changing the total should move the figures the user has not decided
+        yet and leave alone the ones they have. Rebuilding the whole table
+        from the new total -- which is what this did -- threw away every
+        decision made since the last edit to that box.
+
+        An over-commitment is not corrected here: if the pinned figures alone
+        exceed the total, the remainder is nothing and the header reports the
+        overspend. Silently scaling someone's own numbers down would be worse
+        than showing them that they do not fit.
+        """
+        pinned = {name: amount for name, amount in self._pinned.items() if amount.minor >= 0}
+        loose = {
+            name: amount
+            for name, amount in weights.items()
+            if name not in pinned and amount.minor > 0
+        }
+        held = Money(sum(a.minor for n, a in pinned.items() if n in weights or n in pinned))
+        remainder = Money(max(total.minor - held.minor, 0))
+
+        shares = {e.category: e.allowance for e in budgets_mod.split(remainder, loose)}
+        lines = [
+            budgets_mod.Envelope(name, pinned.get(name) or shares.get(name, Money.zero()))
+            for name in sorted(
+                set(weights) | set(pinned),
+                key=lambda n: (-(pinned.get(n) or shares.get(n, Money.zero())).minor, n),
+            )
+        ]
+        return [line for line in lines if line.allowance.minor > 0 or line.category in pinned]
+
+    def _allowance_tip(self, category: str, committed, *, locked: bool) -> str:
+        """Why this row's figure is what it is.
+
+        The "usually spend" column has explained itself since the screen was
+        written and this one never did, which left the more important of the
+        two -- the number actually being decided -- as the unexplained one.
+
+        What it says depends on where the figure came from, because the three
+        methods answer genuinely different questions: one reports a habit, one
+        divides a number you chose, and one divides what is left after the
+        money that is already spoken for.
+        """
+        days = (self.date_range()[1] - self.date_range()[0]).days + 1
+        if locked:
+            return (
+                f"All of {category} is already committed for this window, so "
+                "there is nothing here to decide. Change it on the Recurring "
+                "screen if the commitment itself is wrong."
+            )
+
+        if self.by_total.isChecked():
+            # "What X gets", not "X's share": a possessive on a category name
+            # produces "Utilities's" for every plural one.
+            lead = (
+                f"What {category} gets out of the total you typed, split in "
+                "proportion to what you normally spend on each category -- so "
+                "finding $50 in a grocery bill and $50 in a coffee habit are "
+                "treated as the different requests they are."
+            )
+        elif self.by_backwards.isChecked():
+            lead = (
+                f"What {category} gets out of what is left once income, "
+                "saving and fixed costs are taken out, split in proportion to "
+                "what you normally spend on each category."
+            )
+        else:
+            lead = (
+                f"What {category} would cost over these {days} days at your "
+                "usual rate. Not a recommendation -- it is what happens if "
+                "nothing changes."
+            )
+
+        parts = [lead]
+        if committed is not None and committed.minor > 0:
+            parts.append(
+                f"{committed.format()} of this is already committed -- bills "
+                "and subscriptions falling inside the window -- so that much "
+                "is not yours to reduce. A scheduled charge is counted in the "
+                "window it actually lands in, not spread across every day."
+            )
+        parts.append(
+            "Type over it. A figure you chose beats one the app worked out, "
+            "and nothing here is recalculated behind you once you have edited "
+            "it."
+        )
+        return "\n\n".join(parts)
+
     def _write_row(
         self,
         row: int,
@@ -992,26 +1160,15 @@ class CreateBudgetView(QWidget):
         typical = QTableWidgetItem(usual.format() if usual else "—")
         typical.setFlags(typical.flags() & ~Qt.ItemFlag.ItemIsEditable)
         typical.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        typical.setToolTip(
-            as_tooltip(
-                _HELP["usual"]
-                if usual
-                else "Nothing spent here in the months this is drawn from, so there "
-                "is no usual figure to compare against."
-            )
-        )
+        typical.setToolTip(as_tooltip(self._usual_tip(category, usual)))
 
         allowance_item = QTableWidgetItem(allowance.format())
         allowance_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         if not editable:
             allowance_item.setFlags(allowance_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        if committed is not None and committed.minor > 0 and not locked:
-            allowance_item.setToolTip(
-                as_tooltip(
-                    f"Includes {committed.format()} already committed, which is not "
-                    "yours to reduce this month."
-                )
-            )
+        allowance_item.setToolTip(
+            as_tooltip(self._allowance_tip(category, committed, locked=locked))
+        )
 
         if locked:
             text = "locked"
@@ -1054,6 +1211,11 @@ class CreateBudgetView(QWidget):
         """
         if self._filling or item.column() != 2:
             return
+        name = self.table.item(item.row(), 0)
+        typed = _parse(item.text())
+        if name is not None and typed is not None:
+            category = name.data(Qt.ItemDataRole.UserRole + 1) or name.text()
+            self._pinned[str(category)] = typed
         self._recalculate()
         self._update_total()
 
@@ -1077,6 +1239,14 @@ class CreateBudgetView(QWidget):
                 allowance = _parse(cell.text()) if cell else None
                 if allowance is None:
                     continue
+                # Put the typed figure back in the column's own format. A
+                # hand-edited cell kept whatever was typed -- "250" sitting in
+                # a column of "$524.83" -- so the one number the user chose
+                # was the one that looked least like money. Safe under
+                # `_filling`, which is already held here.
+                formatted = allowance.format()
+                if cell.text() != formatted:
+                    cell.setText(formatted)
                 currency = allowance.currency
                 allowance_total += allowance.minor
                 if usual is None:

@@ -540,3 +540,138 @@ def test_right_clicking_a_heading_opens_nothing(view, monkeypatch):
     )
     view._row_menu(view.table.visualItemRect(view.table.item(band, 0)).center())
     assert not opened, "a heading band offered a menu"
+
+
+# -- the two columns answer two different questions -----------------------
+
+
+def test_the_usual_column_is_about_this_window_not_the_month(view):
+    """"You usually spend" is scoped to the days being budgeted. Over the back
+    half of a month you genuinely spend nothing on rent, so a dash there is
+    the truth -- showing the whole month's rent would be the lie.
+
+    It is also read-only: the allowance is the figure you decide, and letting
+    someone edit their own history would make the comparison meaningless."""
+    row = next(
+        r
+        for r in range(view.table.rowCount())
+        if view.table.item(r, 0) and view.table.item(r, 0).data(Qt.ItemDataRole.UserRole)
+    )
+    assert not (view.table.item(row, 1).flags() & Qt.ItemFlag.ItemIsEditable)
+    assert view.table.item(row, 2).flags() & Qt.ItemFlag.ItemIsEditable
+
+
+def test_a_typed_allowance_is_shown_as_money(view):
+    """A hand-edited cell kept whatever was typed -- "250" in a column of
+    "$524.83" -- so the one number the user chose looked least like money."""
+    row = next(
+        r
+        for r in range(view.table.rowCount())
+        if view.table.item(r, 0) and view.table.item(r, 0).data(Qt.ItemDataRole.UserRole)
+    )
+    view.table.item(row, 2).setText("250")
+    assert view.table.item(row, 2).text() == "$250.00"
+
+
+def test_the_usual_tooltip_separates_scheduled_from_loose(view):
+    """A median treats every category as though it trickled out day by day.
+    True of groceries, nonsense for rent."""
+    said = view._usual_tip("Rent/Mortgage", Money.parse("529.48"))
+    assert "scheduled" in said
+    assert "loose spending" in said
+
+
+def test_the_allowance_tooltip_explains_where_the_figure_came_from(view):
+    view.by_total.setChecked(True)
+    from_total = view._allowance_tip("Dining", None, locked=False)
+    assert "out of the total you typed" in from_total
+    # No possessive on a category name, or plurals read as "Utilities's".
+    assert "'s share" not in from_total
+
+    view.by_history.setChecked(True)
+    from_history = view._allowance_tip("Dining", None, locked=False)
+    assert "usual rate" in from_history
+
+    locked = view._allowance_tip("Rent/Mortgage", None, locked=True)
+    assert "nothing here to decide" in locked
+
+
+# -- decisions the user has already made survive a change of total --------
+
+
+def _allowances(view) -> dict:
+    out = {}
+    for row in range(view.table.rowCount()):
+        name = view.table.item(row, 0)
+        if name is not None and name.data(Qt.ItemDataRole.UserRole):
+            key = name.data(Qt.ItemDataRole.UserRole + 1) or name.text()
+            out[str(key)] = view.table.item(row, 2).text()
+    return out
+
+
+def _set(view, category: str, text: str) -> None:
+    row = next(
+        r
+        for r in range(view.table.rowCount())
+        if view.table.item(r, 0)
+        and str(view.table.item(r, 0).data(Qt.ItemDataRole.UserRole + 1)) == category
+    )
+    view.table.item(row, 2).setText(text)
+
+
+def test_changing_the_total_keeps_what_you_set_by_hand(view):
+    """Set a total, work down thirteen categories deciding each one, adjust
+    the total by fifty dollars, and watch every decision be thrown away."""
+    view.by_total.setChecked(True)
+    view.total_input.setText("400")
+    view._fill()
+
+    first = next(iter(_allowances(view)))
+    _set(view, first, "150")
+    assert _allowances(view)[first] == "$150.00"
+
+    view.total_input.setText("500")
+    view._fill()
+    assert _allowances(view)[first] == "$150.00", "a hand-set allowance was thrown away"
+
+
+def test_the_rest_still_adds_up_to_the_new_total(view):
+    view.by_total.setChecked(True)
+    view.total_input.setText("400")
+    view._fill()
+    first = next(iter(_allowances(view)))
+    _set(view, first, "150")
+
+    view.total_input.setText("500")
+    view._fill()
+    total = sum(
+        Money.parse(text.replace("$", "").replace(",", "")).minor
+        for text in _allowances(view).values()
+    )
+    assert total == Money.parse("500.00").minor
+
+
+def test_the_note_says_how_much_is_held(view):
+    view.by_total.setChecked(True)
+    view.total_input.setText("400")
+    view._fill()
+    _set(view, next(iter(_allowances(view))), "150")
+    view.total_input.setText("500")
+    view._fill()
+
+    said = view.method_note.text()
+    assert "$150.00" in said and "by hand" in said
+
+
+def test_pinned_figures_over_the_total_are_shown_not_scaled_away(view):
+    """Silently shrinking someone's own numbers to fit would be worse than
+    showing them that they do not."""
+    view.by_total.setChecked(True)
+    view.total_input.setText("400")
+    view._fill()
+    first = next(iter(_allowances(view)))
+    _set(view, first, "900")
+
+    view.total_input.setText("500")
+    view._fill()
+    assert _allowances(view)[first] == "$900.00"
