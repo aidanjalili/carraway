@@ -1280,3 +1280,105 @@ def test_a_bill_on_the_30th_is_expected_on_the_30th_after_february(tmp_path):
         date(2027, 2, 28),
         date(2027, 5, 30),
     ]
+
+
+# -- a bill that has already been paid inside the window ------------------
+
+
+def _rent_ledger(tmp_path) -> Ledger:
+    """Rent on the 1st of this month and the six before, plus groceries."""
+    from carraway.ui.data import _add_months
+
+    path = tmp_path / "rent.db"
+    conn = db.connect(path)
+    db.upsert_account(conn, Account(id="chk", name="Checking", type=AccountType.CHECKING))
+    first = date.today().replace(day=1)
+    rows = [
+        Transaction(
+            id=f"rent{k}",
+            account_id="chk",
+            date=_add_months(first, -k),
+            amount=Money.parse("-948.00"),
+            description="PROPERTY MGMT RENT",
+        )
+        for k in range(7)
+    ]
+    rows += [
+        Transaction(
+            id=f"food{k}",
+            account_id="chk",
+            date=_add_months(first, -k) + timedelta(days=3),
+            amount=Money.parse("-50.00"),
+            description="SAFEWAY",
+        )
+        for k in range(1, 7)
+    ]
+    db.insert_transactions(conn, rows)
+    conn.close()
+    ledger = Ledger(path=path)
+    ledger.load()
+    rent = next(s for s in ledger.series if "RENT" in s.merchant.upper())
+    ledger.set_kind(rent, "bill")
+    return ledger
+
+
+def _this_month():
+    from carraway.ui.data import _add_months
+
+    first = date.today().replace(day=1)
+    return first, _add_months(first, 1) - timedelta(days=1)
+
+
+def test_rent_already_paid_this_month_is_still_expected_this_month(tmp_path):
+    """Counting only forward from the next expected date lost a bill the
+    moment it was paid, so the pace for this month forgot the rent that left
+    on the 1st and the month read as behind for paying rent on time."""
+    from carraway.analysis.budgets import Budget, Envelope
+
+    ledger = _rent_ledger(tmp_path)
+    start, end = _this_month()
+    rent = next(s for s in ledger.series if "RENT" in s.merchant.upper())
+    assert ledger.occurrences(rent, start, end) == [start]
+
+    budget = Budget(
+        id="m",
+        name="This month",
+        starts_on=start,
+        ends_on=end,
+        envelopes=(Envelope(ledger.series_category(rent), Money.parse("948.00")),),
+    )
+    state = ledger.budget_status(budget)
+    assert state.scheduled_so_far == Money.parse("948.00")
+    assert state.on_track
+
+
+def test_a_budget_for_this_month_suggests_the_rent_it_already_paid(tmp_path):
+    ledger = _rent_ledger(tmp_path)
+    rent = next(s for s in ledger.series if "RENT" in s.merchant.upper())
+    suggested = {e.category: e.allowance for e in ledger.suggest_envelopes(*_this_month())}
+    assert suggested.get(ledger.series_category(rent)) == Money.parse("948.00")
+
+
+def test_a_window_starting_after_the_rent_does_not_expect_it(tmp_path):
+    ledger = _rent_ledger(tmp_path)
+    start, end = _this_month()
+    rent = next(s for s in ledger.series if "RENT" in s.merchant.upper())
+    assert ledger.occurrences(rent, start + timedelta(days=1), end) == []
+
+
+def test_a_tracked_entry_counts_back_no_further_than_it_started(tmp_path):
+    from types import SimpleNamespace
+
+    ledger = Ledger(path=tmp_path / "empty.db")
+    ledger.load()
+    entry = SimpleNamespace(
+        next_expected=date(2026, 10, 5),
+        cadence="weekly",
+        first_seen=date(2026, 9, 21),
+        transaction_ids=[],
+    )
+    assert ledger.occurrences(entry, date(2026, 9, 1), date(2026, 10, 10)) == [
+        date(2026, 9, 21),
+        date(2026, 9, 28),
+        date(2026, 10, 5),
+    ]

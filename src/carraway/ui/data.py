@@ -1106,7 +1106,14 @@ class Ledger:
             return []
         cadence = getattr(series, "cadence", "")
 
-        found: list[date] = []
+        # The charges that already happened inside the window count too. The
+        # next expected date is always after the latest charge, so counting
+        # only forward from it lost a bill the moment it was paid: a budget
+        # for this month stopped expecting the rent that left on the 1st, its
+        # pace went back to a straight line for that line, and on the 14th
+        # the month read as $400 behind for nothing but paying rent on time.
+        # Suggestions for "This month" left the rent out altogether.
+        found = self._charged_before(series, when, start, end)
         anchor = when
         # A prediction can sit in the past; roll it forward rather than
         # dropping it, exactly as the Upcoming screen does.
@@ -1127,6 +1134,41 @@ class Ledger:
             else:
                 break  # an unknown cadence charges once, as far as we know
         return found
+
+    def _charged_before(self, series, upcoming: date, start: date, end: date) -> list[date]:
+        """When this series charged inside the window, before `upcoming`.
+
+        A detected series has the real charges, so those dates are used as
+        they are: a bill that landed on the 31st of last month belongs to last
+        month, whatever its usual day. A tracked entry has none, so its dates
+        are counted back from the next one, no further than when it started.
+        """
+        ids = getattr(series, "transaction_ids", None) or ()
+        if ids:
+            wanted = set(ids)
+            return sorted(
+                tx.date
+                for tx in self.transactions
+                if tx.id in wanted and start <= tx.date <= end and tx.date < upcoming
+            )
+
+        step_days = {"weekly": 7, "biweekly": 14}
+        step_months = {"monthly": 1, "quarterly": 3, "yearly": 12}
+        cadence = getattr(series, "cadence", "")
+        began = getattr(series, "first_seen", None) or start
+        earlier: list[date] = []
+        for step in range(1, 401):
+            if cadence in step_days:
+                when = upcoming - timedelta(days=step_days[cadence] * step)
+            elif cadence in step_months:
+                when = _add_months(upcoming, -step_months[cadence] * step)
+            else:
+                break
+            if when < start or when < began:
+                break
+            if when <= end:
+                earlier.append(when)
+        return sorted(earlier)
 
     def tracked_category(self, series) -> str:
         """What a manually tracked entry says it buys, or "" if it says nothing.
