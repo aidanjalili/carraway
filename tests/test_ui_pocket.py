@@ -288,7 +288,8 @@ def test_publishing_sends_the_snapshot(app, paired):
     owner = QWidget()
     assert view.publish_in_background(owner, ledger) is True
     _settle(app, owner._pocket_publisher)
-    assert client.published == [ledger.pocket_snapshot()]
+    unsealed = {k: v for k, v in ledger.pocket_snapshot().items() if k != "networth"}
+    assert client.published == [unsealed]
 
 
 def test_a_failing_publish_stays_quiet(app, paired, monkeypatch):
@@ -311,6 +312,32 @@ def test_the_snapshot_carries_no_merchants_or_accounts(app, paired):
     flat = repr(snapshot).lower()
     for forbidden in ("cash", "account", "balance", "transaction"):
         assert forbidden not in flat.replace("'category'", ""), forbidden
+
+
+def test_net_worth_never_leaves_unsealed(app, paired):
+    """Net worth, and the names of the accounts left out of it, were added to
+    the summary on the understanding it is sealed. With no vault key it is
+    not, so they went to the server readable."""
+    from datetime import date
+
+    from carraway.core import db
+    from carraway.core.models import Account, AccountType
+    from carraway.core.money import Money
+
+    ledger, client = paired
+    conn = db.connect(ledger.path)
+    db.upsert_account(conn, Account(id="ira", name="ROTH IRA", type=AccountType.INVESTMENT))
+    db.record_balance(conn, "cash", Money.parse("100.00"), date.today())
+    db.record_balance(conn, "ira", Money.parse("26000.00"), date.today())
+    conn.close()
+    ledger.load()
+    ledger.save_setting("networth_excluded_accounts", ["ira"])
+    assert ledger.pocket_snapshot()["networth"] is not None
+
+    ledger.publish_to_pocket()
+    flat = repr(client.published[-1])
+    assert "networth" not in flat
+    assert "ROTH IRA" not in flat and "100.00" not in flat
 
 
 # -- renaming an account ------------------------------------------------

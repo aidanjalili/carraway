@@ -814,7 +814,14 @@ class Ledger:
             filing = snapshot.pop("filing", {})
             payload = {"sealed": seal(snapshot, key).as_json(), "filing": filing}
         else:
-            payload = snapshot
+            # Without a key nothing can be sealed, and net worth is the one
+            # part of the summary that must never travel readable: the figure
+            # itself, what it is made of, and the names of the accounts left
+            # out of it. It was added to the summary on the understanding that
+            # the summary is sealed -- which is only true once there is a key --
+            # so a laptop that had never set one up sent it to the server in
+            # the clear. The phone learns it once history is encrypted.
+            payload = {k: v for k, v in snapshot.items() if k != "networth"}
 
         sealed = self.sealed_history()
         if sealed is not None:
