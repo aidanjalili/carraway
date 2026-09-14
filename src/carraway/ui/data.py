@@ -296,12 +296,22 @@ class Ledger:
         # and left in the trip budget in one collection, and the two must not
         # overwrite each other.
         wanted: dict[tuple[str, str], bool] = {}
+        # Transaction id -> the minor units that still count toward budgets.
+        shares: dict[str, int] = {}
         unknown = 0
         for entry in verdicts:
             scope = getattr(entry, "scope", "") or ""
             if entry.subject not in known:
                 unknown += 1
                 continue
+            # A verdict may carry the part that still counts. Zero means none
+            # of it, which is what every verdict meant before shares existed,
+            # so an older phone keeps saying exactly what it used to.
+            if entry.excludes and getattr(entry, "amount", None) is not None:
+                counted = abs(entry.amount.minor)
+                if counted:
+                    shares[entry.subject] = counted
+                    continue
             if scope and scope not in budgets:
                 # Named a budget this ledger no longer has. Same reasoning as
                 # an unknown transaction: nothing the user could do would make
@@ -309,6 +319,20 @@ class Ledger:
                 unknown += 1
                 continue
             wanted[(scope, entry.subject)] = entry.excludes
+
+        if shares:
+            by_id = {tx.id: tx for tx in self.transactions}
+            conn = db.connect(self.path)
+            for tx_id, counted in shares.items():
+                tx = by_id.get(tx_id)
+                if tx is None:
+                    continue
+                whole = abs(tx.amount.minor)
+                db.set_budget_share(
+                    conn, tx_id, Money(max(whole - counted, 0), tx.amount.currency)
+                )
+            conn.close()
+            self.load()
 
         if wanted:
             conn = db.connect(self.path)
@@ -331,6 +355,7 @@ class Ledger:
         return {
             "excluded": sum(1 for flag in wanted.values() if flag),
             "included": sum(1 for flag in wanted.values() if not flag),
+            "shared": len(shares),
             "unknown_verdicts": unknown,
         }
 
@@ -426,6 +451,19 @@ class Ledger:
                 "category": self.category_of(tx),
                 "account": names.get(tx.account_id, ""),
                 "excluded": bool(getattr(tx, "budget_excluded", False)),
+                # How much of this is held back, when only part of it counts.
+                # Omitted when zero, which is nearly every row.
+                **(
+                    {"held": f"{Money(held).decimal:.2f}"}
+                    if (
+                        held := min(
+                            abs(getattr(tx, "budget_excluded_minor", 0) or 0),
+                            abs(tx.amount.minor),
+                        )
+                    )
+                    and not getattr(tx, "budget_excluded", False)
+                    else {}
+                ),
                 # Which budgets this row has been taken out of individually.
                 # Omitted when empty, which is nearly every row -- ninety days
                 # of statements would otherwise carry several hundred empty

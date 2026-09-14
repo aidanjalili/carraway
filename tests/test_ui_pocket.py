@@ -1215,3 +1215,76 @@ def test_the_history_says_which_budgets_a_row_is_out_of(app, tmp_path):
     # payload that gets encrypted and sent on every publish for nothing.
     others = [r for r in rows.values() if r["id"] != "spend1"]
     assert all("excluded_from" not in r for r in others)
+
+
+def _share_verdict(subject: str, counts: str):
+    """A verdict carrying the part that still counts."""
+    import dataclasses
+
+    from carraway.core.money import Money
+
+    return dataclasses.replace(
+        _verdict(subject, "exclude"), amount=Money.parse(counts)
+    )
+
+
+def test_the_phone_can_say_only_part_of_a_transaction_counts(app, tmp_path, monkeypatch):
+    """Splitting a utility bill with a flatmate, from the shop rather than
+    from the laptop."""
+    from carraway.core.money import Money
+
+    ledger = _cash_ledger(tmp_path)
+    tx = ledger.transactions[0]
+    whole = abs(tx.amount)
+
+    client = FakeClient()
+    client.entries = [_share_verdict(tx.id, "10.00")]
+    monkeypatch.setattr(Ledger, "pocket_client", lambda self: client)
+    ledger.save_setting("pocket_url", "https://money.example.com")
+
+    result = ledger.collect_from_pocket()
+    assert result["shared"] == 1
+
+    again = ledger.transactions[0]
+    assert again.budget_excluded_minor == whole.minor - Money.parse("10.00").minor
+    # Not the blunt flag: part of it still counts.
+    assert again.budget_excluded is False
+
+
+def test_a_verdict_counting_nothing_still_means_exclude_it_all(app, tmp_path, monkeypatch):
+    """Zero has always meant "none of it", so a phone that predates shares
+    keeps saying exactly what it used to."""
+    ledger = _cash_ledger(tmp_path)
+    client = FakeClient()
+    client.entries = [_verdict("spend1")]  # amount 0.00
+    monkeypatch.setattr(Ledger, "pocket_client", lambda self: client)
+    ledger.save_setting("pocket_url", "https://money.example.com")
+
+    ledger.collect_from_pocket()
+    assert ledger.transactions[0].budget_excluded is True
+
+
+def test_a_share_larger_than_the_transaction_counts_all_of_it(app, tmp_path, monkeypatch):
+    ledger = _cash_ledger(tmp_path)
+    client = FakeClient()
+    client.entries = [_share_verdict("spend1", "9999.00")]
+    monkeypatch.setattr(Ledger, "pocket_client", lambda self: client)
+    ledger.save_setting("pocket_url", "https://money.example.com")
+
+    ledger.collect_from_pocket()
+    assert ledger.transactions[0].budget_excluded_minor == 0
+    assert ledger.transactions[0].budget_excluded is False
+
+
+def test_the_history_tells_the_phone_what_is_held_back(app, tmp_path):
+    from carraway.core import db
+    from carraway.core.money import Money
+
+    ledger = _cash_ledger(tmp_path)
+    conn = db.connect(ledger.path)
+    db.set_budget_share(conn, "spend1", Money.parse("20.00"))
+    conn.close()
+    ledger.load()
+
+    row = next(r for r in ledger.pocket_history()["transactions"] if r["id"] == "spend1")
+    assert row["held"] == "20.00"
