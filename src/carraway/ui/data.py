@@ -1669,9 +1669,21 @@ class Ledger:
         inflow = series.typical_amount.minor > 0
         kind = subscriptions.resolve(series.merchant, self.verdicts, is_inflow=inflow)
         when = self.decided.get(series.merchant.upper())
-        if kind == subscriptions.CANCELLED and when and series.last_seen > when:
-            return subscriptions.UNKNOWN
-        return kind
+        charged_since = (
+            kind == subscriptions.CANCELLED
+            and when is not None
+            and series.last_seen > when
+            # Only a series with real charges behind it. A tracked entry the
+            # user typed has no observations, so `as_series` fills last_seen
+            # with its start date -- or, when there is none, with *today*,
+            # recomputed on every load. Against a decision made yesterday
+            # that date is always newer, so a cancelled entry with no start
+            # date came back to the unclassified pile every single day, and
+            # answering it again changed nothing. Five of them had been
+            # answered at least three times.
+            and not subscriptions.is_manual(series)
+        )
+        return subscriptions.UNKNOWN if charged_since else kind
 
     def series_by_kind(self, kind: str) -> list[RecurringSeries]:
         return [s for s in self.series if self.kind_of(s) == kind]

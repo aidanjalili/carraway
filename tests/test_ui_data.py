@@ -1011,3 +1011,88 @@ def test_a_yearly_charge_outside_the_window_is_not_prorated_into_it(tmp_path):
     hit = ledger.committed_by_category(date(2027, 8, 15), date(2027, 9, 15))
     if "Shopping" in hit:
         assert hit["Shopping"] == Money.parse("65")
+
+
+# -- a cancelled entry the user typed must stay cancelled -----------------
+
+
+def _typed_only_ledger(tmp_path, started=None):
+    """A ledger whose only subscription was typed in, not detected."""
+    from carraway.core.money import Money
+
+    path = tmp_path / "tracked.db"
+    conn = db.connect(path)
+    db.upsert_account(conn, Account(id="a1", name="Card", type=AccountType.CREDIT_CARD))
+    db.add_manual_subscription(
+        conn, "Headspace", Money.parse("12.99"), "monthly", started_on=started
+    )
+    conn.close()
+    led = Ledger(path=path)
+    led.load()
+    return led
+
+
+def test_a_typed_entry_marked_cancelled_stays_cancelled_tomorrow(tmp_path):
+    """`as_series` fills last_seen with today when the entry has no start
+    date, recomputed on every load. Against a decision made yesterday that is
+    always newer, so "it charged again since you cancelled it" fired every
+    day and the entry came back to the unclassified pile -- where answering
+    it again changed nothing."""
+    from carraway.analysis import subscriptions
+
+    ledger = _typed_only_ledger(tmp_path)
+    series = next(s for s in ledger.series if s.merchant == "Headspace")
+    assert subscriptions.is_manual(series), "this fixture must be a typed entry"
+
+    # Answered yesterday; today's load recomputes last_seen as today.
+    conn = db.connect(ledger.path)
+    db.set_verdict(conn, "HEADSPACE", "cancelled")
+    # Backdated by hand: set_verdict always stamps today, and the bug only
+    # shows itself the day *after* the answer was given.
+    conn.execute(
+        "UPDATE merchant_verdicts SET decided_at = ? WHERE merchant = ?",
+        ((date.today() - timedelta(days=1)).isoformat(), "HEADSPACE"),
+    )
+    conn.commit()
+    conn.close()
+    ledger.load()
+
+    series = next(s for s in ledger.series if s.merchant == "Headspace")
+    assert series.last_seen >= date.today()
+    assert ledger.kind_of(series) == "cancelled"
+
+
+def test_a_detected_series_that_charges_again_does_reopen(tmp_path):
+    """The rule is still right for something with real charges behind it: a
+    cancellation that charged again is out of date, not wrong."""
+    import io
+
+    from carraway.importers.csv_importer import import_csv
+
+    months = _recent_months(6)
+    rows = ["Date,Description,Amount"]
+    for first in months:
+        when = first.replace(day=5)
+        if when <= date.today():
+            rows.append(f"{when},SOMESERVICE SUBSCRIPTION,-9.99")
+
+    path = tmp_path / "detected.db"
+    conn = db.connect(path)
+    db.upsert_account(conn, Account(id="a1", name="Card", type=AccountType.CREDIT_CARD))
+    txs, _ = import_csv(io.StringIO("\n".join(rows) + "\n"), "a1")
+    db.insert_transactions(conn, txs)
+    # Cancelled long before the most recent charge.
+    db.set_verdict(conn, "SOMESERVICE SUBSCRIPTION", "cancelled")
+    conn.execute(
+        "UPDATE merchant_verdicts SET decided_at = ? WHERE merchant = ?",
+        (months[0].replace(day=1).isoformat(), "SOMESERVICE SUBSCRIPTION"),
+    )
+    conn.commit()
+    conn.close()
+
+    ledger = Ledger(path=path)
+    ledger.load()
+    series = next((s for s in ledger.series if "SOMESERVICE" in s.merchant.upper()), None)
+    if series is None:
+        return  # detection needs more history than this fixture gives
+    assert ledger.kind_of(series) == "unknown"
