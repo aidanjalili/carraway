@@ -371,7 +371,10 @@ class NetWorthView(QWidget):
         self.expected_table.setAlternatingRowColors(True)
         self.expected_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.expected_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.expected_table.setMaximumHeight(160)
+        # No height cap. The splitter decides how tall this panel is, and a
+        # cap meant the leftover space pooled above the table as a dead strip
+        # instead of showing more rows -- the taller the panel, the emptier
+        # it looked.
         resizable_columns(self.expected_table, self.ledger, "networth.expected", stretch=1)
         self.expected_table.itemSelectionChanged.connect(self._expected_selection_changed)
         # Right-click to correct one. A mistyped date is the common mistake
@@ -382,7 +385,9 @@ class NetWorthView(QWidget):
         # Double-click does the same, because that is what a row in a table
         # that can be edited is expected to do.
         self.expected_table.doubleClicked.connect(lambda _: self._edit_expected())
-        inner.addWidget(self.expected_table)
+        # The table takes the slack; the heading and the summary line above it
+        # want exactly the height they need and no more.
+        inner.addWidget(self.expected_table, stretch=1)
         return card
 
     def _expected_menu(self, position) -> None:

@@ -1239,3 +1239,25 @@ def test_the_column_lines_are_visible(app, with_balance):
 
     view = NetWorthView(with_balance)
     assert view.table.showGrid() is True
+
+
+def test_the_table_gets_most_of_its_panel(app, with_balance):
+    """A height cap meant the leftover space pooled above the table as a dead
+    strip instead of showing more rows -- the taller the panel, the emptier
+    it looked."""
+    from PySide6.QtCore import QTimer
+
+    for n in range(6):
+        with_balance.add_expected_money(f"Thing {n}", Money.parse("10.00"))
+
+    from carraway.ui.views.networth import NetWorthView
+
+    view = NetWorthView(with_balance)
+    view.resize(1700, 1100)
+    view.show()
+    QTimer.singleShot(60, app.quit)
+    app.exec()
+
+    panel = view.panels.widget(2)
+    assert panel.height() > 0
+    assert view.expected_table.height() / panel.height() > 0.6
