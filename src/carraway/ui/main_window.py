@@ -406,9 +406,18 @@ class MainWindow(QMainWindow):
         # Shown only when it starts to matter, so the normal case stays quiet.
         if left < 12:
             note += f" · {left} bank requests left today"
+        tooltip = ""
         if warnings:
-            note += f" · {warnings[0][:50]}"
+            # Cut at a word, not at character fifty. "SimpleFIN data is only"
+            # stopped mid-sentence and read like the start of a fault rather
+            # than SimpleFIN saying its data updates once a day. The whole
+            # text is on hover for anyone who wants it.
+            first = " ".join(str(warnings[0]).split())
+            short = first if len(first) <= 60 else first[:60].rsplit(" ", 1)[0] + "…"
+            note += f" · {short}"
+            tooltip = "\n\n".join(" ".join(str(w).split()) for w in warnings)
         self.sync_status.setText(note)
+        self.sync_status.setToolTip(tooltip)
 
         # Freshly synced numbers are the ones worth having on the phone.
         # Quiet on failure: see publish_in_background.
