@@ -675,3 +675,56 @@ def test_pinned_figures_over_the_total_are_shown_not_scaled_away(view):
     view.total_input.setText("500")
     view._fill()
     assert _allowances(view)[first] == "$900.00"
+
+
+def test_an_added_category_is_counted_and_saved(view, ledger):
+    """The added row was built without the marks `envelopes()` looks for, so
+    it was skipped like a heading: the allowance typed into it moved no total
+    and the budget was saved without it."""
+    view.by_history.setChecked(True)
+    view.add_category.setCurrentText("Pets")
+    view._add_category()
+    _set(view, "Pets", "300")
+    assert any(e.category == "Pets" for e in view.envelopes())
+
+    view._create()
+    ledger.load()
+    saved = {e.category: e.allowance for e in ledger.budgets[0].envelopes}
+    assert saved["Pets"] == Money.parse("300.00")
+
+
+def test_a_starred_category_cannot_be_added_twice(view, ledger):
+    """A starred row reads "★ Dining", which never equalled "Dining"."""
+    first = next(iter(_allowances(view)))
+    ledger.set_favourite_category(first, True)
+    view.refresh()
+    rows = view.table.rowCount()
+    view.add_category.setCurrentText(first)
+    view._add_category()
+    assert view.table.rowCount() == rows
+
+
+def test_a_refresh_keeps_what_you_set_by_hand_in_usual_spending_mode(view):
+    """The screen refills whenever the app refreshes -- after a sync, or a
+    collection from the phone -- and this mode put every decided allowance
+    back to the usual rate."""
+    view.by_history.setChecked(True)
+    first = next(iter(_allowances(view)))
+    _set(view, first, "12")
+    view.add_category.setCurrentText("Pets")
+    view._add_category()
+    _set(view, "Pets", "30")
+
+    view.refresh()
+    assert _allowances(view)[first] == "$12.00"
+    assert _allowances(view)["Pets"] == "$30.00"
+
+
+def test_hand_set_figures_do_not_follow_into_the_next_budget(view, ledger):
+    view.by_history.setChecked(True)
+    first = next(iter(_allowances(view)))
+    usual = _allowances(view)[first]
+    _set(view, first, "12")
+    view._create()
+    view.refresh()
+    assert _allowances(view)[first] == usual

@@ -764,7 +764,17 @@ class CreateBudgetView(QWidget):
             )
 
         if self.by_history.isChecked():
-            lines = [budgets_mod.Envelope(c, a) for c, a in suggested.items()]
+            # A figure typed over a suggestion stays as typed, and so does a
+            # category added by hand. This screen refills itself whenever the
+            # rest of the app refreshes -- after a sync, or a collection from
+            # the phone -- and in this mode every allowance already decided
+            # was quietly put back to the usual rate.
+            pinned = {name: amount for name, amount in self._pinned.items() if amount.minor >= 0}
+            lines = [
+                budgets_mod.Envelope(c, pinned.get(c, a)) for c, a in suggested.items()
+            ] + [
+                budgets_mod.Envelope(c, a) for c, a in pinned.items() if c not in suggested
+            ]
             self.method_note.setText(
                 f"What {len(lines)} categories would cost over these {days} days at "
                 "your usual rate — not a recommendation, just what happens if "
@@ -1465,7 +1475,14 @@ class CreateBudgetView(QWidget):
         name = self.add_category.currentText()
         if not name:
             return
-        existing = {self.table.item(r, 0).text() for r in range(self.table.rowCount())}
+        # By the category each row stands for, not the text it shows: a
+        # starred category reads "★ Dining", so comparing the text let Dining
+        # be added a second time.
+        existing = {
+            item.data(Qt.ItemDataRole.UserRole + 1)
+            for r in range(self.table.rowCount())
+            if (item := self.table.item(r, 0)) is not None
+        }
         if name in existing:
             self._hint = f"{name} is already in this budget."
             self._update_total()
@@ -1473,19 +1490,14 @@ class CreateBudgetView(QWidget):
         self._filling = True
         row = self.table.rowCount()
         self.table.insertRow(row)
-        label = QTableWidgetItem(name)
-        label.setFlags(label.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        typical = QTableWidgetItem("—")
-        typical.setFlags(typical.flags() & ~Qt.ItemFlag.ItemIsEditable)
-        typical.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        amount = QTableWidgetItem("0.00")
-        amount.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.table.setItem(row, 0, label)
-        self.table.setItem(row, 1, typical)
-        self.table.setItem(row, 2, amount)
+        # Written like every other row, so it carries the marks `envelopes()`
+        # reads. Built by hand without them, the added row was skipped as if
+        # it were a heading: the allowance typed into it never reached the
+        # total, and the budget was saved without it.
+        self._write_row(row, name, None, Money.zero(), change=None)
         self._filling = False
         self._hint = f"Added {name}. Type what you want to allow for it."
-        self.table.editItem(amount)
+        self.table.editItem(self.table.item(row, 2))
         self._update_total()
 
     # -- creating ---------------------------------------------------------
@@ -1540,6 +1552,9 @@ class CreateBudgetView(QWidget):
 
         self.name.clear()
         self._name_is_ours = True
+        # Those figures were decisions about the budget just saved. Carried
+        # into the next one, they would reappear in a form that looks fresh.
+        self._pinned = {}
         # Rebuilds the sidebar so the new budget appears under My budgets, and
         # every other screen alongside it.
         refresh_everything(self)
