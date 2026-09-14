@@ -677,6 +677,11 @@ class Ledger:
                 key=lambda name: (name not in self.favourite_categories, name),
             ),
             "favourites": sorted(self.favourite_categories),
+            # Net worth now, and what it becomes once everything on its way
+            # lands -- the two figures the Net worth screen leads with, kept
+            # apart the same way. Sealed with the rest: this is the single
+            # most sensitive number the app produces.
+            "networth": self.networth_summary(),
         }
 
     def fingerprint_categories(self, days: int = 45) -> dict:
@@ -1586,6 +1591,36 @@ class Ledger:
         return networth_mod.reconstruct(accounts, transactions, balances, granularity=granularity)
 
     # -- money that has not landed yet -------------------------------------
+
+    def networth_summary(self) -> dict | None:
+        """Net worth today and once expected money lands, for the phone.
+
+        None when there is no balance to work from, rather than zeros: a
+        phone showing "$0.00 net worth" would be stating something false.
+        """
+        points = self.networth_points("daily")
+        if not points:
+            return None
+        latest = points[-1]
+        counted = self.counted_expected_money()
+        arriving = sum(e.amount.minor for e in counted if e.amount.minor > 0)
+        leaving = sum(-e.amount.minor for e in counted if e.amount.minor < 0)
+        projected = latest.net.minor + arriving - leaving
+        currency = latest.net.currency
+        by_id = {a.id: a.name for a in self.accounts}
+        return {
+            "as_of": latest.date.isoformat(),
+            "net": _wire(latest.net),
+            "assets": _wire(latest.assets),
+            "owed": _wire(latest.liabilities),
+            "arriving": _wire(Money(arriving, currency)),
+            "leaving": _wire(Money(leaving, currency)),
+            "projected": _wire(Money(projected, currency)),
+            "pending_items": len(counted),
+            # Said on the phone as on the laptop, or a figure that leaves out a
+            # retirement account reads as the whole picture.
+            "not_counted": sorted(by_id.get(i, i) for i in self.excluded_accounts),
+        }
 
     def expected_money(self) -> list:
         """Everything outstanding, soonest first."""

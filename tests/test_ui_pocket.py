@@ -1347,3 +1347,24 @@ def test_the_phone_is_sent_the_category_list_favourites_first(app, tmp_path):
     snapshot = ledger.pocket_snapshot()
     assert snapshot["categories"][0] == "Travel"
     assert snapshot["favourites"] == ["Travel"]
+
+
+def test_the_phone_is_sent_net_worth_now_and_once_it_lands(app, tmp_path):
+    from carraway.core.money import Money
+
+    ledger = _cash_ledger(tmp_path)
+    ledger.add_expected_money("Cheque", Money.parse("100.00"))
+    ledger.add_expected_money("Bill", Money.parse("-30.00"))
+    worth = ledger.pocket_snapshot()["networth"]
+    # The same figure the laptop's Net worth screen leads with, whatever it is.
+    points = ledger.networth_points("daily")
+    assert worth["net"] == f"{points[-1].net.decimal:.2f}"
+    assert worth["arriving"] == "100.00" and worth["leaving"] == "30.00"
+    net = Money.parse(worth["net"])
+    assert Money.parse(worth["projected"]) == Money(net.minor + 10000 - 3000, net.currency)
+
+
+def test_no_balance_means_no_net_worth_rather_than_zero(app, tmp_path):
+    ledger = Ledger(path=tmp_path / "empty.db")
+    ledger.load()
+    assert ledger.networth_summary() is None
