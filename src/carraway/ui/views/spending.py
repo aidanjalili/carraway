@@ -173,7 +173,7 @@ class SpendingView(QWidget):
 
     def _toggle_favourites(self, only: bool) -> None:
         self.ledger.save_setting("spending_favourites_only", only)
-        self.refresh()
+        self._draw()
 
     def _scope(self) -> set[str] | None:
         """The categories this screen is limited to, or None for all of them.
@@ -213,19 +213,42 @@ class SpendingView(QWidget):
         # Land on the most recent period: that is what someone opening this
         # screen wants, not the oldest month in their history.
         self.index = len(self.buckets) - 1 if self.buckets else 0
-        self.refresh()
+        self._draw()
 
     def _step(self, direction: int) -> None:
         if not self.buckets:
             return
         self.index = max(0, min(len(self.buckets) - 1, self.index + direction))
-        self.refresh()
+        self._draw()
 
     def _show_chart(self, position: int) -> None:
         self.stack.setCurrentIndex(position)
-        self.refresh()
+        self._draw()
 
     def refresh(self) -> None:
+        """Recount from the ledger, staying on the period being looked at.
+
+        This is what the window calls after the ledger changes -- a sync, a
+        category set by hand, a rename, a collection from the phone -- and it
+        used to redraw the periods counted when the screen was built. Filing
+        a $900 charge under a different category left this screen showing it
+        where it had been until the app was restarted.
+        """
+        showing = self.buckets[self.index].start if self.buckets else None
+        show_guesses = bool(self.ledger.setting("include_guesses_in_totals"))
+        self.include_guesses.setVisible(bool(self.ledger.setting("auto_categorize")))
+        self.buckets = self.ledger.spending_buckets(
+            self.granularity.currentText(), include_guessed=show_guesses
+        )
+        starts = [bucket.start for bucket in self.buckets]
+        self.index = (
+            starts.index(showing)
+            if showing in starts
+            else (len(self.buckets) - 1 if self.buckets else 0)
+        )
+        self._draw()
+
+    def _draw(self) -> None:
         favourites = self.ledger.favourite_categories
         # Disabled, not hidden, when nothing is starred: the control is worth
         # discovering, and the tooltip says where the stars come from.

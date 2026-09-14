@@ -1489,6 +1489,24 @@ def _spending_ledger(tmp_path):
     return led
 
 
+def test_spending_recounts_when_the_window_refreshes(app, tmp_path):
+    """Refreshing redrew the periods counted when the screen was built, so a
+    charge filed under another category stayed where it had been."""
+    from carraway.ui.views.spending import SpendingView
+
+    ledger = _spending_ledger(tmp_path)
+    view = SpendingView(ledger)
+    rent = next(t for t in ledger.transactions if "LANDLORD" in t.description)
+    before = ledger.category_of(rent)
+
+    ledger.set_transaction_category(rent.id, "Travel")
+    view.refresh()
+    shown = {view.table.item(r, 0).text() for r in range(view.table.rowCount())}
+    assert "Travel" in shown
+    assert before not in shown or before == "Travel"
+    assert view.biggest_card.value_label.text() == "Travel"
+
+
 def test_favourites_only_narrows_every_figure(app, tmp_path):
     from carraway.ui.views.spending import SpendingView
 
