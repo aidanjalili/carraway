@@ -570,7 +570,7 @@ class NetWorthView(QWidget):
         toggle is to decide whether to untick it, which needs to know what
         unticking would cost.
         """
-        balance = self.ledger.balances.get(account.id)
+        balance = self.ledger.current_balances.get(account.id)
         lines = [account.name]
         detail = account.institution or str(account.type)
         if detail and detail != account.name:

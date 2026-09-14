@@ -720,7 +720,7 @@ class TransactionsView(QWidget):
         self.set_balance_button.setVisible(is_cash)
         self.add_txn_button.setVisible(is_cash)
 
-        balances = self.ledger.balances
+        balances = self.ledger.current_balances
         if only is not None:
             name = self.ledger.account_name(only)
             balance = balances.get(only)

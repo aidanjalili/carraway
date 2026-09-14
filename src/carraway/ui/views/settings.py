@@ -409,7 +409,7 @@ class SettingsView(QWidget):
             row.addWidget(box)
             row.addStretch(1)
 
-            balance = self.ledger.balances.get(account.id)
+            balance = self.ledger.current_balances.get(account.id)
             detail = QLabel(balance.format() if balance else "no balance recorded")
             detail.setObjectName("Muted")
             row.addWidget(detail)
@@ -590,7 +590,8 @@ class SettingsView(QWidget):
         if not excluded:
             self.excluded_total.setText("Everything is counted.")
             return
-        amounts = [self.ledger.balances[i] for i in excluded if i in self.ledger.balances]
+        current = self.ledger.current_balances
+        amounts = [current[i] for i in excluded if i in current]
         left_out = total([abs(a) for a in amounts]) if amounts else Money.zero()
         self.excluded_total.setText(
             f"{len(excluded)} account(s) left out, holding {left_out.format()}."

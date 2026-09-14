@@ -403,6 +403,51 @@ def test_a_reading_already_includes_its_own_day(tmp_path):
     assert ledger.implied_balance("cash") != Money.parse("1105.47")
 
 
+def test_a_cash_spend_after_the_last_count_moves_net_worth(tmp_path):
+    """Net worth read the raw count, so a spend logged after it -- the whole
+    point of logging cash from the phone -- moved nothing until the wallet
+    was counted again. On a copy of the real ledger a $10 lunch left the
+    total, the account banner and the phone's figure all exactly where they
+    were."""
+    ledger = _cash_ledger(tmp_path)
+    assert ledger.current_balances["cash"] == Money.parse("185.00")
+    before = ledger.networth_points("daily")[-1].net
+
+    ledger.add_cash_transaction("cash", date(2026, 8, 20), "Lunch", Money.parse("-10.00"))
+    after = ledger.networth_points("daily")[-1]
+    assert after.net == before - Money.parse("10.00")
+    assert after.balances["cash"] == Money.parse("175.00")
+    assert ledger.networth_summary()["net"] == "175.00"
+    # The reading itself is untouched: it is still what was counted, and when.
+    assert ledger.balances["cash"] == Money.parse("200.00")
+
+
+def test_a_synced_balance_is_not_rolled_forward(tmp_path):
+    """The feed dates a charge in UTC and the reading in local time, so an
+    evening sync can put a charge a day after the balance that includes it."""
+    path = tmp_path / "synced.db"
+    conn = db.connect(path)
+    db.upsert_account(conn, Account(id="chk", name="Checking", type=AccountType.CHECKING))
+    db.record_balance(conn, "chk", Money.parse("500.00"), date(2026, 8, 29))
+    db.insert_transactions(
+        conn,
+        [
+            Transaction(
+                id="late",
+                account_id="chk",
+                date=date(2026, 8, 30),
+                amount=Money.parse("-20.00"),
+                description="Dated tomorrow in UTC",
+            )
+        ],
+    )
+    conn.close()
+    ledger = Ledger(path=path)
+    ledger.load()
+    assert ledger.current_balances["chk"] == Money.parse("500.00")
+    assert ledger.networth_points("daily")[-1].net == Money.parse("500.00")
+
+
 # -- budgets --------------------------------------------------------------
 
 

@@ -312,6 +312,23 @@ def test_transactions_shows_its_balance_the_moment_it_opens(app, ledger):
     assert view.set_balance_button.isVisible() is False
 
 
+def test_a_cash_banner_includes_what_was_spent_since_the_count(app, tmp_path):
+    from carraway.ui.views.transactions import TransactionsView
+
+    path = tmp_path / "cash.db"
+    conn = db.connect(path)
+    db.upsert_account(conn, Account(id="cash", name="Wallet", type=AccountType.CASH))
+    db.record_balance(conn, "cash", Money.parse("63.00"), date.today() - timedelta(days=1))
+    conn.close()
+    ledger = Ledger(path=path)
+    ledger.load()
+    ledger.add_cash_transaction("cash", date.today(), "Lunch", Money.parse("-10.00"))
+
+    view = TransactionsView(ledger)
+    view._update_balance(["cash"])
+    assert view.balance.amount.text().strip() == "$53.00"
+
+
 # -- money on its way, on the Net worth screen ----------------------------
 
 

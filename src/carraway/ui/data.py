@@ -1249,6 +1249,31 @@ class Ledger:
         since = [t for t in moves if t.date > observed]
         return Money(base.minor + sum(t.amount.minor for t in since), base.currency)
 
+    @property
+    def current_balances(self) -> dict[str, Money]:
+        """What each account holds now, as far as this ledger can tell.
+
+        The same as `balances` for every account a bank reports on. A cash
+        account's reading is only as new as the last time somebody counted,
+        and every spend typed since -- on this screen or from the phone -- is
+        a movement the reading does not include. Net worth used the raw
+        reading, so a $10 lunch logged the day after a count moved nothing:
+        not the total, not the banner over the account, not the phone.
+
+        Only cash is rolled forward. A synced reading arrives in the same
+        response as the transactions it covers, so nothing can be newer than
+        it -- except that the feed dates transactions in UTC and the reading
+        is stamped with the local date, so an evening sync can file a charge
+        under tomorrow. Rolling those forward would count them twice.
+        """
+        out = dict(self.balances)
+        for account_id in out:
+            if self.is_cash_account(account_id):
+                rolled = self.implied_balance(account_id)
+                if rolled is not None:
+                    out[account_id] = rolled
+        return out
+
     def set_cash_balance(self, account_id: str, amount: Money, correction: bool = False) -> Money:
         """Record what the user says an account holds. Returns the correction made.
 
@@ -1585,7 +1610,7 @@ class Ledger:
         excluded = self.excluded_accounts
         accounts = [a for a in self.accounts if a.id not in excluded]
         transactions = [t for t in self.transactions if t.account_id not in excluded]
-        balances = {k: v for k, v in self.balances.items() if k not in excluded}
+        balances = {k: v for k, v in self.current_balances.items() if k not in excluded}
         if not balances:
             return []
         return networth_mod.reconstruct(accounts, transactions, balances, granularity=granularity)
