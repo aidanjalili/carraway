@@ -279,6 +279,7 @@ class Ledger:
         if ready:
             conn = db.connect(self.path)
             added, skipped = db.insert_transactions(conn, ready)
+            self._file_as_chosen_on_the_phone(conn, ready)
             conn.close()
             # The spends have to land before any count is reconciled, or the
             # difference is measured against a ledger that is missing them
@@ -305,6 +306,42 @@ class Ledger:
             **verdicts,
             "categorised": filed,
         }
+
+    def _file_as_chosen_on_the_phone(self, conn, spends: list[Transaction]) -> None:
+        """Keep the category picked when a spend was typed on the phone.
+
+        The phone asks for one with every spend, and it arrived on the row --
+        where nothing reads it. Categories come from the rules, and a cash
+        spend typed as "lunch with sam" matches none of them, so every spend
+        logged from the phone landed in Uncategorized however carefully it
+        had been filed. Stored as a choice made by hand, which is what it is,
+        so the phone can still hand it back to the rules.
+
+        Only a name this ledger offers. The phone's own list has drifted from
+        the laptop's before, and a name nothing else uses would quietly start
+        a category of its own.
+        """
+        offered = set(self.categories_available) - {cat.UNCATEGORIZED}
+        renames = self.category_renames
+        chosen = {
+            tx.id: name
+            for tx in spends
+            if (name := renames.get(tx.category, tx.category)) in offered
+        }
+        if not chosen:
+            return
+        marks = ",".join("?" for _ in chosen)
+        # Only rows that are really there. A spend collected twice is skipped
+        # on insert under its first id, and a hand-set category pointing
+        # at nothing would be clutter.
+        stored = {
+            r[0]
+            for r in conn.execute(
+                f"SELECT id FROM transactions WHERE id IN ({marks})", list(chosen)
+            )
+        }
+        for tx_id in stored:
+            db.set_category_override(conn, tx_id, chosen[tx_id])
 
     def _apply_categorisations(self, entries) -> int:
         """File transactions under the categories chosen on the phone.

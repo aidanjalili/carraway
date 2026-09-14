@@ -599,6 +599,70 @@ def test_spends_land_before_the_count_is_reconciled(app, tmp_path, monkeypatch):
     assert result["corrections"][0]["correction"] == Money.parse("-5.00")
 
 
+def _phone_spend(entry_id: str, description: str, category: str):
+    from datetime import date
+
+    from carraway.core.money import Money
+    from carraway.sync.pocket import InboxEntry
+
+    return InboxEntry(
+        id=entry_id,
+        occurred_on=date.today(),
+        amount=Money.parse("-12.00"),
+        description=description,
+        category=category,
+        account="Cash",
+    )
+
+
+def _collect_spends(tmp_path, monkeypatch, *entries):
+    ledger = _cash_ledger(tmp_path)
+    client = FakeClient()
+    client.entries = list(entries)
+    monkeypatch.setattr(Ledger, "pocket_client", lambda self: client)
+    ledger.save_setting("pocket_url", "https://money.example.com")
+    ledger.collect_from_pocket()
+    return ledger, {t.description: t for t in ledger.transactions}
+
+
+def test_a_spend_typed_on_the_phone_keeps_the_category_it_was_given(app, tmp_path, monkeypatch):
+    """The phone asks for a category with every spend, and the laptop never
+    read it: categories come from the rules, a typed "lunch with sam" matches
+    none, and every spend from the phone landed in Uncategorized."""
+    ledger, rows = _collect_spends(
+        tmp_path, monkeypatch, _phone_spend("p1", "lunch with sam", "Dining")
+    )
+    row = rows["lunch with sam"]
+    assert ledger.category_of(row) == "Dining"
+    # Filed by hand, so the phone can offer to hand it back to the rules.
+    assert row.id in ledger.category_overrides
+
+
+def test_a_phone_category_this_ledger_does_not_offer_is_left_to_the_rules(
+    app, tmp_path, monkeypatch
+):
+    ledger, rows = _collect_spends(
+        tmp_path,
+        monkeypatch,
+        _phone_spend("p1", "a present", "Gifts"),
+        _phone_spend("p2", "no idea", "Uncategorized"),
+    )
+    assert ledger.category_overrides == {}
+    assert ledger.category_of(rows["a present"]) == "Uncategorized"
+
+
+def test_a_phone_category_follows_a_rename(app, tmp_path, monkeypatch):
+    ledger = _cash_ledger(tmp_path)
+    ledger.rename_category("Dining", "Eating out")
+    client = FakeClient()
+    client.entries = [_phone_spend("p1", "lunch with sam", "Dining")]
+    monkeypatch.setattr(Ledger, "pocket_client", lambda self: client)
+    ledger.save_setting("pocket_url", "https://money.example.com")
+    ledger.collect_from_pocket()
+    row = next(t for t in ledger.transactions if t.description == "lunch with sam")
+    assert ledger.category_of(row) == "Eating out"
+
+
 def test_a_count_for_a_non_cash_account_is_not_guessed_at(app, tmp_path, monkeypatch):
     """A card balance comes from the bank; a typed figure would be replaced
     on the next sync, so it is left on the server instead."""
