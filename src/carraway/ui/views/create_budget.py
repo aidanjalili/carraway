@@ -58,6 +58,7 @@ from ..widgets import (
     as_tooltip,
     dress_calendar,
     enable_row_hover,
+    mark_favourite,
     refresh_everything,
     shorten,
 )
@@ -1140,9 +1141,9 @@ class CreateBudgetView(QWidget):
         # subscription filed under Uncategorized is still a subscription -- and
         # saying so only in a tooltip made the screen read as "everything up
         # here is a free choice", which it is not. Stated on the row instead.
-        label = category
+        label = mark_favourite(category, self.ledger.favourite_categories)
         if committed is not None and committed.minor > 0 and not locked:
-            label = f"{category}   ({committed.format()} of this is committed)"
+            label = f"{label}   ({committed.format()} of this is committed)"
 
         name = QTableWidgetItem(label)
         name.setFlags(name.flags() & ~Qt.ItemFlag.ItemIsEditable)

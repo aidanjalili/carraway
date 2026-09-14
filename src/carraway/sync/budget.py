@@ -33,7 +33,14 @@ MANUAL_COOLDOWN = timedelta(minutes=2)
 # Below the provider's own limit so a scheduled run always has room: a
 # background timer failing silently on quota is worse than a button that says
 # "not yet".
-DAILY_REQUEST_BUDGET = 18
+#
+# Lower than the provider's 24 by more than it looks, because this counter
+# only sees what *this* machine spends. Carraway Pocket's server holds the
+# same access URL and fetches on its own timer -- four times a day, one
+# request each -- and SimpleFIN counts those against the same allowance. This
+# machine gets sixteen, the server takes four, and four are left spare for a
+# manual refresh at a bad moment.
+DAILY_REQUEST_BUDGET = 16
 
 # Roughly what one full sync costs, measured rather than guessed.
 REQUESTS_PER_SYNC = 6

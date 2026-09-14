@@ -38,6 +38,7 @@ from ..widgets import (
     SortableItem,
     StatCard,
     StatRow,
+    mark_favourite,
     refresh_everything,
 )
 
@@ -231,11 +232,15 @@ class BudgetDetailView(QWidget):
     def _draw_rows(self, state) -> None:
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(state.lines))
+        favourites = self.ledger.favourite_categories
         for row, line in enumerate(state.lines):
             cells = [
                 SortableItem(
-                    line.category + ("  (not budgeted)" if line.unbudgeted else ""),
-                    line.category.lower(),
+                    mark_favourite(line.category, favourites)
+                    + ("  (not budgeted)" if line.unbudgeted else ""),
+                    # Favourites sort to the top, then by name, so the
+                    # categories that were starred are the ones read first.
+                    (line.category not in favourites, line.category.lower()),
                 ),
                 SortableItem(
                     line.allowance.format() if line.allowance.minor else "—",

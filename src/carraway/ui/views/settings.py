@@ -236,7 +236,10 @@ class SettingsView(QWidget):
         blurb = QLabel(
             "Add your own, or untick one you never use. Unticking hides a "
             "category from the lists; anything already filed under it keeps "
-            "its category rather than being moved somewhere else."
+            "its category rather than being moved somewhere else.\n\n"
+            "Star the ones you watch. A starred category is marked wherever "
+            "it appears and sorts to the top of the budget tables — it "
+            "changes nothing about the money, only where your eye lands."
         )
         blurb.setObjectName("Muted")
         blurb.setWordWrap(True)
@@ -281,12 +284,41 @@ class SettingsView(QWidget):
         for name in self.ledger.categories.values():
             counts[name] = counts.get(name, 0) + 1
 
-        for name in sorted(set(CATEGORIES) | available | set(counts)):
+        favourites = self.ledger.favourite_categories
+        # Starred first, then the rest alphabetically, so this list is
+        # ordered the same way the tables it controls are.
+        names = sorted(
+            set(CATEGORIES) | available | set(counts),
+            key=lambda n: (n not in favourites, n),
+        )
+        for name in names:
+            row = QWidget()
+            line = QHBoxLayout(row)
+            line.setContentsMargins(0, 0, 0, 0)
+            line.setSpacing(6)
+
+            star = QPushButton("★" if name in favourites else "☆")
+            star.setObjectName("InfoDot")
+            star.setFlat(True)
+            star.setCheckable(True)
+            star.setChecked(name in favourites)
+            star.setFixedSize(22, 22)
+            star.setCursor(Qt.CursorShape.PointingHandCursor)
+            star.setToolTip(f"Watch {name} across the app")
+            star.clicked.connect(lambda on, n=name: self._toggle_favourite(n, on))
+            line.addWidget(star)
+
             box = QCheckBox(f"{name}   ({counts.get(name, 0):,})")
             box.setChecked(name in available)
             box.setCursor(Qt.CursorShape.PointingHandCursor)
             box.toggled.connect(lambda shown, n=name: self._toggle_category(n, shown))
-            self.category_box.addWidget(box)
+            line.addWidget(box, stretch=1)
+            self.category_box.addWidget(row)
+
+    def _toggle_favourite(self, name: str, favourite: bool) -> None:
+        self.ledger.set_favourite_category(name, favourite)
+        self._rebuild_categories()
+        self._refresh_window()
 
     def _toggle_category(self, name: str, shown: bool) -> None:
         self.ledger.set_category_hidden(name, not shown)

@@ -553,23 +553,52 @@ class Ledger:
         return {
             "budgets": lines,
             "summaries": summaries,
-            # The user's own category rules, so the server files a merchant
-            # the same way this laptop does. Without them a row muted as
-            # "Dining" on the phone would arrive categorised by the built-in
-            # rules alone, land under something else, and the mute would look
-            # broken.
+            # How the server should file the rows it fetches, so a category
+            # muted on the phone means the same thing at both ends.
             #
-            # These are merchant patterns, and they go in the clear. That is a
-            # smaller step than it looks: the server's fetcher already reads
-            # every transaction in plaintext for the moment it takes to seal
-            # them, so the merchants are not news to it. What is new is that
-            # these persist rather than passing through.
-            "rules": [
-                {"pattern": r["pattern"], "category": r["category"]}
-                for r in self.user_rules
-                if r.get("pattern") and r.get("category")
-            ],
+            # Fingerprints, not merchant patterns. The first version of this
+            # published the user's 89 rules in the clear -- "CROOKED PINT" ->
+            # Dining -- which put a readable list of the places they go on a
+            # machine that is meant to hold nothing readable. A hash of each
+            # recent transaction answers the same question: the fetcher
+            # hashes what it pulls, finds the category, and never learns a
+            # name it did not already have in front of it.
+            #
+            # Only the recent window, because that is all the fetcher sees.
+            "filing": self.fingerprint_categories(days=45),
         }
+
+    def fingerprint_categories(self, days: int = 45) -> dict:
+        """{fingerprint: category} for recent transactions.
+
+        The fingerprint is the same one the server computes to remember what
+        it has already announced, so the two agree without either end sending
+        a merchant name. Truncated to a window because the server only ever
+        fetches recent rows, and a fingerprint for something it will never
+        see is payload for nothing.
+        """
+        import hashlib
+        from datetime import timedelta
+
+        cutoff = date.today() - timedelta(days=days)
+        names = {a.id: a.name for a in self.accounts}
+        out: dict[str, str] = {}
+        for tx in self.transactions:
+            if tx.date < cutoff:
+                continue
+            category = self.category_of(tx)
+            if not category or category == "Uncategorized":
+                continue
+            raw = "|".join(
+                (
+                    tx.date.isoformat(),
+                    f"{tx.amount.decimal:.2f}",
+                    tx.description,
+                    names.get(tx.account_id, ""),
+                )
+            )
+            out[hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]] = category
+        return out
 
     def pocket_digest(self) -> str:
         """A fingerprint of what would be published, without encrypting it.
@@ -589,16 +618,36 @@ class Ledger:
         return hashlib.sha256(raw).hexdigest()
 
     def publish_to_pocket(self) -> str | None:
-        """Send the summary, and the sealed history if there is a key.
+        """Send the summary and the history, encrypting what can be encrypted.
 
-        The summary travels in the clear because it is category names and
-        figures. The history does not, and is encrypted here before the
-        request is built -- the server is handed a blob it cannot read.
+        The history has always been sealed. The *summary* used to travel in
+        the clear on the grounds that it was only category names and figures
+        -- but "$3,478 of $4,000 spent, $225 left in Dining" is a description
+        of someone's month, and the server has no need of it: only the phone
+        reads it.
+
+        So it is sealed too, when there is a key. What stays readable is the
+        one part the server has to act on: `filing`, a map of transaction
+        fingerprints to category names, which is what lets the fetch timer
+        decide whether a new charge is one the user asked to be told about.
+        Hashes and generic category names, no merchants, no amounts.
         """
+        from ..sync.vault import seal
+
         client = self.pocket_client()
         if client is None:
             return None
-        payload = dict(self.pocket_snapshot())
+
+        snapshot = dict(self.pocket_snapshot())
+        key = self.vault_key()
+        payload: dict = {}
+        if key:
+            # Handed over whole, minus the part the server must read.
+            filing = snapshot.pop("filing", {})
+            payload = {"sealed": seal(snapshot, key).as_json(), "filing": filing}
+        else:
+            payload = snapshot
+
         sealed = self.sealed_history()
         if sealed is not None:
             payload["history"] = sealed
@@ -1303,6 +1352,29 @@ class Ledger:
         db.add_user_category(conn, name)
         conn.close()
         self.load()
+
+    # -- categories the user cares about most -------------------------------
+
+    #: Kept in settings rather than in `user_categories`, whose rows double as
+    #: "a category the user added" -- favouriting a built-in one there would
+    #: have made it appear twice in every list that offers categories.
+    FAVOURITES_SETTING = "favourite_categories"
+
+    @property
+    def favourite_categories(self) -> set[str]:
+        saved = self.setting(self.FAVOURITES_SETTING)
+        return {str(name) for name in saved} if isinstance(saved, list) else set()
+
+    def set_favourite_category(self, name: str, favourite: bool) -> None:
+        favourites = self.favourite_categories
+        if favourite:
+            favourites.add(name)
+        else:
+            favourites.discard(name)
+        self.save_setting(self.FAVOURITES_SETTING, sorted(favourites))
+
+    def is_favourite(self, name: str) -> bool:
+        return name in self.favourite_categories
 
     def set_category_hidden(self, name: str, hidden: bool) -> None:
         conn = db.connect(self.path)

@@ -1264,3 +1264,25 @@ def reset_columns(ledger) -> int:
     for key in keys:
         ledger.save_setting(key, "")
     return len(keys)
+
+
+#: Marks a category the user has starred. A prefix rather than a colour,
+#: because the tables it appears in already spend colour on money moving the
+#: wrong way, and a second meaning for the same signal would dilute both.
+FAVOURITE_MARK = "★ "
+
+
+def mark_favourite(name: str, favourites) -> str:
+    """`name` with a star in front when it is one of `favourites`.
+
+    The star goes in the displayed text, never in the stored category. Every
+    table that uses this keeps the real name on the item as data, because a
+    budget saved for a category called "★ Dining" would be a quiet disaster --
+    the same trap the committed-money annotation hit on this screen.
+    """
+    return f"{FAVOURITE_MARK}{name}" if name in (favourites or ()) else name
+
+
+def plain_category(text: str) -> str:
+    """The category behind a possibly-starred label."""
+    return text[len(FAVOURITE_MARK) :] if text.startswith(FAVOURITE_MARK) else text
