@@ -1216,6 +1216,63 @@ def delete_transactions(conn: sqlite3.Connection, ids: list[str]) -> int:
     return removed
 
 
+def rename_category(conn: sqlite3.Connection, old: str, new: str) -> None:
+    """Move every stored reference from `old` to `new`, in one transaction.
+
+    A category's name lives in five places, and renaming it in any fewer
+    leaves the rest pointing at a name that no longer exists: a rule filing
+    into it, a transaction filed by hand, a budget envelope, a tracked
+    subscription, and the user's own list. Done together so a failure
+    halfway cannot leave a budget envelope for a category nothing is filed
+    under.
+
+    A budget that already has an envelope under `new` keeps one envelope, with
+    the two amounts added, rather than failing on the primary key -- merging
+    two categories into one is a reasonable thing to mean by a rename.
+    """
+    with conn:
+        conn.execute("UPDATE user_rules SET category = ? WHERE category = ?", (new, old))
+        conn.execute(
+            "UPDATE category_overrides SET category = ? WHERE category = ?", (new, old)
+        )
+        conn.execute(
+            "UPDATE manual_subscriptions SET category = ? WHERE category = ?", (new, old)
+        )
+        for budget_id, amount in conn.execute(
+            "SELECT budget_id, amount_minor FROM budget_envelopes WHERE category = ?", (old,)
+        ).fetchall():
+            existing = conn.execute(
+                "SELECT amount_minor FROM budget_envelopes WHERE budget_id = ? AND category = ?",
+                (budget_id, new),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE budget_envelopes SET amount_minor = ? "
+                    "WHERE budget_id = ? AND category = ?",
+                    (existing[0] + amount, budget_id, new),
+                )
+                conn.execute(
+                    "DELETE FROM budget_envelopes WHERE budget_id = ? AND category = ?",
+                    (budget_id, old),
+                )
+            else:
+                conn.execute(
+                    "UPDATE budget_envelopes SET category = ? "
+                    "WHERE budget_id = ? AND category = ?",
+                    (new, budget_id, old),
+                )
+        row = conn.execute(
+            "SELECT hidden FROM user_categories WHERE name = ?", (old,)
+        ).fetchone()
+        if row is not None:
+            conn.execute("DELETE FROM user_categories WHERE name = ?", (old,))
+            conn.execute(
+                "INSERT INTO user_categories (name, hidden) VALUES (?, ?) "
+                "ON CONFLICT(name) DO UPDATE SET hidden = excluded.hidden",
+                (new, row[0]),
+            )
+
+
 def category_overrides(conn: sqlite3.Connection) -> dict[str, str]:
     """{transaction id: category} for every row categorised by hand."""
     return {

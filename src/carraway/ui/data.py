@@ -136,6 +136,21 @@ class Ledger:
                 self.categories[tx_id] = name
                 # No longer a guess, so it must not be marked or filtered as one.
                 self.guesses.pop(tx_id, None)
+
+        # Renamed categories. Stored references are rewritten when a rename
+        # happens, but a built-in category's name comes from the code's own
+        # rules on every load, so it has to be translated here as well --
+        # after everything that can produce a category name, so none slips
+        # through under the old one.
+        renames = self.category_renames
+        if renames:
+            self.categories = {k: renames.get(v, v) for k, v in self.categories.items()}
+            seen: set[str] = set()
+            self.categories_available = tuple(
+                n
+                for n in (renames.get(name, name) for name in self.categories_available)
+                if not (n in seen or seen.add(n))
+            )
         conn.close()
 
     # -- derived views the screens ask for --------------------------------
@@ -786,6 +801,51 @@ class Ledger:
         )
 
     # -- taking a row out of one budget rather than all of them -------------
+
+    #: Names the app's own logic depends on. Transfers are dropped from
+    #: spending by the name "Transfer", income is found by "Income", and
+    #: "Uncategorized" is what everything unmatched falls back to -- renaming
+    #: any of them would quietly break the thing that looks for it.
+    RESERVED_CATEGORIES = frozenset({"Income", "Transfer", "Uncategorized"})
+
+    @property
+    def category_renames(self) -> dict[str, str]:
+        saved = self.setting("category_renames")
+        return {str(k): str(v) for k, v in saved.items()} if isinstance(saved, dict) else {}
+
+    def rename_category(self, old: str, new: str) -> str | None:
+        """Rename a category everywhere. Returns why not, or None when done."""
+        new = " ".join(str(new).split())
+        if not new:
+            return "A category needs a name."
+        if old in self.RESERVED_CATEGORIES:
+            return f"{old} is used by the app itself and cannot be renamed."
+        if new in self.RESERVED_CATEGORIES:
+            return f"{new} is reserved for the app's own use."
+        if new == old:
+            return None
+
+        conn = db.connect(self.path)
+        db.rename_category(conn, old, new)
+        conn.close()
+
+        # The alias, for built-in names that come from the code on every load.
+        # Earlier renames that ended at `old` are pointed straight at `new`,
+        # so renaming twice leaves one hop rather than a chain.
+        renames = {k: (new if v == old else v) for k, v in self.category_renames.items()}
+        original = next((k for k, v in self.category_renames.items() if v == old), old)
+        renames[original] = new
+        renames.pop(new, None)
+        self.save_setting("category_renames", renames)
+
+        favourites = self.favourite_categories
+        if old in favourites:
+            favourites.discard(old)
+            favourites.add(new)
+            self.save_setting(self.FAVOURITES_SETTING, sorted(favourites))
+
+        self.load()
+        return None
 
     def set_transaction_category(self, transaction_id: str, category: str | None) -> None:
         """File one transaction by hand, or put it back under the rules."""

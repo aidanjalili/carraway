@@ -313,7 +313,51 @@ class SettingsView(QWidget):
             box.setCursor(Qt.CursorShape.PointingHandCursor)
             box.toggled.connect(lambda shown, n=name: self._toggle_category(n, shown))
             line.addWidget(box, stretch=1)
+
+            # Right-click to rename, on the whole row -- the checkbox is where
+            # the pointer is, and a menu only on the blank space beside it
+            # would be one nobody finds.
+            for target in (row, box):
+                target.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                target.customContextMenuRequested.connect(
+                    lambda pos, n=name, w=target: self._category_menu(n, w, pos)
+                )
             self.category_box.addWidget(row)
+
+    def _category_menu(self, name: str, widget, position) -> None:
+        from PySide6.QtGui import QAction
+        from PySide6.QtWidgets import QMenu
+
+        menu = QMenu(self)
+        rename = QAction("Rename…", self)
+        reserved = name in self.ledger.RESERVED_CATEGORIES
+        rename.setEnabled(not reserved)
+        if reserved:
+            # Said in the menu rather than refused after the dialog, so nobody
+            # types a new name only to be told it cannot be used.
+            rename.setText("Rename… (used by the app itself)")
+        rename.triggered.connect(lambda: self._rename_category(name))
+        menu.addAction(rename)
+        menu.exec(widget.mapToGlobal(position))
+
+    def _rename_category(self, name: str) -> None:
+        from PySide6.QtWidgets import QInputDialog, QMessageBox
+
+        new, ok = QInputDialog.getText(
+            self,
+            "Rename category",
+            f"Rename {name} to:\n\nEverything filed under it moves with it -- rules, "
+            "budgets, tracked subscriptions and transactions you filed by hand.",
+            text=name,
+        )
+        if not ok:
+            return
+        problem = self.ledger.rename_category(name, new)
+        if problem:
+            QMessageBox.information(self, "Could not rename", problem)
+            return
+        self._rebuild_categories()
+        self._refresh_window()
 
     def _toggle_favourite(self, name: str, favourite: bool) -> None:
         self.ledger.set_favourite_category(name, favourite)

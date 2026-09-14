@@ -1096,3 +1096,93 @@ def test_a_detected_series_that_charges_again_does_reopen(tmp_path):
     if series is None:
         return  # detection needs more history than this fixture gives
     assert ledger.kind_of(series) == "unknown"
+
+
+# -- renaming a category --------------------------------------------------
+
+
+def _dining_ledger(tmp_path):
+    import io
+
+    from carraway.analysis.budgets import Budget, Envelope
+    from carraway.importers.csv_importer import import_csv
+
+    path = tmp_path / "rename.db"
+    conn = db.connect(path)
+    db.upsert_account(conn, Account(id="a1", name="Card", type=AccountType.CREDIT_CARD))
+    rows = "Date,Description,Amount\n" + f"{date.today()},CORNER BISTRO,-40.00\n"
+    txs, _ = import_csv(io.StringIO(rows), "a1")
+    db.insert_transactions(conn, txs)
+    db.add_user_rule(conn, "CORNER BISTRO", "Dining")
+    conn.close()
+    led = Ledger(path=path)
+    led.load()
+    led.save_budget(
+        Budget(
+            id="b",
+            name="Month",
+            starts_on=date.today().replace(day=1),
+            ends_on=date.today(),
+            envelopes=[Envelope(category="Dining", allowance=Money.parse("200.00"))],
+        )
+    )
+    led.set_favourite_category("Dining", True)
+    return led
+
+
+def test_a_rename_moves_everything_filed_under_the_old_name(tmp_path):
+    ledger = _dining_ledger(tmp_path)
+    assert ledger.rename_category("Dining", "Eating out") is None
+
+    assert "Eating out" in ledger.categories.values()
+    assert "Dining" not in ledger.categories.values()
+    assert [e.category for e in ledger.budget_by_id("b").envelopes] == ["Eating out"]
+    assert "Eating out" in ledger.favourite_categories
+    assert "Dining" not in ledger.categories_available
+
+
+def test_renaming_twice_leaves_one_hop_not_a_chain(tmp_path):
+    ledger = _dining_ledger(tmp_path)
+    ledger.rename_category("Dining", "Eating out")
+    ledger.rename_category("Eating out", "Restaurants")
+    assert ledger.category_renames == {"Dining": "Restaurants"}
+    assert "Restaurants" in ledger.categories.values()
+
+
+def test_the_names_the_app_depends_on_cannot_be_renamed(tmp_path):
+    ledger = _dining_ledger(tmp_path)
+    for reserved in ("Transfer", "Income", "Uncategorized"):
+        assert ledger.rename_category(reserved, "Something") is not None
+    assert ledger.rename_category("Dining", "Transfer") is not None
+    assert ledger.rename_category("Dining", "   ") is not None
+
+
+def test_a_rename_survives_a_fresh_load(tmp_path):
+    ledger = _dining_ledger(tmp_path)
+    ledger.rename_category("Dining", "Eating out")
+    again = Ledger(path=ledger.path)
+    again.load()
+    assert "Eating out" in again.categories.values()
+
+
+def test_merging_into_an_existing_envelope_adds_the_amounts(tmp_path):
+    """Renaming into a category a budget already has is a merge, not a crash
+    on the primary key."""
+    from carraway.analysis.budgets import Budget, Envelope
+
+    ledger = _dining_ledger(tmp_path)
+    ledger.save_budget(
+        Budget(
+            id="b",
+            name="Month",
+            starts_on=date.today().replace(day=1),
+            ends_on=date.today(),
+            envelopes=[
+                Envelope(category="Dining", allowance=Money.parse("200.00")),
+                Envelope(category="Groceries", allowance=Money.parse("100.00")),
+            ],
+        )
+    )
+    ledger.rename_category("Dining", "Groceries")
+    envelopes = {e.category: e.allowance for e in ledger.budget_by_id("b").envelopes}
+    assert envelopes == {"Groceries": Money.parse("300.00")}
