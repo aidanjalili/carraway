@@ -821,17 +821,24 @@ def test_the_dialog_comes_back_filled_in(app, with_balance):
     assert dialog.values["amount"] == Money.parse("-150.00")
 
 
-def test_editing_does_not_double_count_the_entry_in_its_own_preview(app, with_balance):
-    """Net worth already includes this entry's effect in what the view shows,
-    so previewing against it unbacked would add the figure twice."""
+def test_editing_previews_against_the_figure_the_bank_reports(app, with_balance):
+    """The screen hands the dialog the real net worth, which never includes
+    what is written down as on its way. Editing backed the entry out of it
+    anyway, so correcting a $150 bill on $1,000 previewed "reads $1,150.00
+    today" -- a figure shown nowhere else."""
     from carraway.ui.views.expected_money import ExpectedMoneyDialog
+    from carraway.ui.views.networth import NetWorthView
 
     with_balance.add_expected_money("Card pending", Money.parse("-150.00"))
     entry = with_balance.expected_money()[0]
+    real = with_balance.networth_points("daily")[-1].net
+    # The same figure the Net worth screen passes, whether adding or editing.
+    assert NetWorthView(with_balance).net_card.value_label.text() == real.format()
 
-    dialog = ExpectedMoneyDialog(None, Money.parse("1000.00"), None, entry)
-    assert "$1,150.00" in dialog.preview.text()  # the real figure, entry backed out
-    assert "$1,000.00" in dialog.preview.text()  # and where it lands again
+    dialog = ExpectedMoneyDialog(None, real, None, entry)
+    assert f"reads {real.format()} today" in dialog.preview.text()
+    after = Money(real.minor - 15000, real.currency)
+    assert f"would be {after.format()}" in dialog.preview.text()
 
 
 def test_an_undated_entry_reopens_undated(app, with_balance):

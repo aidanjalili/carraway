@@ -54,13 +54,12 @@ class ExpectedMoneyDialog(QDialog):
         entry=None,
     ) -> None:
         super().__init__(parent)
-        # Editing subtracts the entry's own figure from the net it previews
-        # against, or correcting a $150 bill would preview as though a second
-        # $150 were being added on top of it.
-        if entry is not None and current_net is not None:
-            current_net = Money(
-                current_net.minor - entry.amount.minor, current_net.currency
-            )
+        # `current_net` is what the bank says, which never includes anything
+        # written down here -- adding and editing both pass the real figure.
+        # Editing used to back the entry's own amount out of it on the theory
+        # that it was already counted, so correcting a $150 bill on a $1,000
+        # net worth previewed "reads $1,150.00 today": a figure that appears
+        # nowhere else in the app.
         self.setWindowTitle("On its way" if entry is None else "Edit this")
         self.setMinimumWidth(460)
         self._current_net = current_net
