@@ -146,10 +146,15 @@ class Ledger:
         if renames:
             self.categories = {k: renames.get(v, v) for k, v in self.categories.items()}
             seen: set[str] = set()
+            # Hidden is judged on the name after renaming as well as before.
+            # Settings hides what it shows, which for a renamed built-in is
+            # the new name -- but the built-in list still says the old one, so
+            # checked only beforehand, hiding "Food" left Dining in the list
+            # and translated it straight back to "Food".
             self.categories_available = tuple(
                 n
                 for n in (renames.get(name, name) for name in self.categories_available)
-                if not (n in seen or seen.add(n))
+                if n not in hidden and not (n in seen or seen.add(n))
             )
         conn.close()
 

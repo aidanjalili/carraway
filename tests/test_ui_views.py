@@ -1546,3 +1546,18 @@ def test_opening_price_history_gives_it_room(app, ledger):
     view.panels.setSizes([0, 800])
     view._give_price_history_room()
     assert view.panels.sizes()[0] >= 160
+
+
+def test_a_renamed_built_in_is_listed_once_under_its_new_name(app, ledger):
+    """The Settings list was built from the shipped names, so a renamed
+    built-in stayed on as an empty row under its old one. Ticking or renaming
+    that ghost rewrote the alias and moved every row a second time."""
+    from PySide6.QtWidgets import QCheckBox
+
+    from carraway.ui.views.settings import SettingsView
+
+    ledger.rename_category("Dining", "Eating out")
+    view = SettingsView(ledger)
+    labels = [box.text().split("   ")[0] for box in view.findChildren(QCheckBox)]
+    assert "Dining" not in labels
+    assert labels.count("Eating out") == 1

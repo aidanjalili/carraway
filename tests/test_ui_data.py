@@ -1231,3 +1231,26 @@ def test_merging_into_an_existing_envelope_adds_the_amounts(tmp_path):
     ledger.rename_category("Dining", "Groceries")
     envelopes = {e.category: e.allowance for e in ledger.budget_by_id("b").envelopes}
     assert envelopes == {"Groceries": Money.parse("300.00")}
+
+
+def test_hiding_a_renamed_built_in_hides_it(tmp_path):
+    """Settings hides the name it shows, which is the new one. The built-in
+    list still says Dining, so hiding "Eating out" kept Dining on offer and
+    translated it straight back."""
+    ledger = _dining_ledger(tmp_path)
+    ledger.rename_category("Dining", "Eating out")
+    ledger.set_category_hidden("Eating out", True)
+    assert "Eating out" not in ledger.categories_available
+    assert "Dining" not in ledger.categories_available
+    # Still filed there: hiding stops a name being offered, it moves no money.
+    assert "Eating out" in ledger.categories.values()
+
+    ledger.set_category_hidden("Eating out", False)
+    assert ledger.categories_available.count("Eating out") == 1
+
+
+def test_renaming_a_hidden_built_in_keeps_it_hidden(tmp_path):
+    ledger = _dining_ledger(tmp_path)
+    ledger.set_category_hidden("Dining", True)
+    ledger.rename_category("Dining", "Eating out")
+    assert "Eating out" not in ledger.categories_available

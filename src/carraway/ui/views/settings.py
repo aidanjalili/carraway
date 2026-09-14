@@ -285,10 +285,16 @@ class SettingsView(QWidget):
             counts[name] = counts.get(name, 0) + 1
 
         favourites = self.ledger.favourite_categories
+        # The built-ins under the names the user gave them. Listed as shipped,
+        # a renamed built-in stayed on as a second, empty row under its old
+        # name -- and renaming or ticking that ghost rewrote the alias, sending
+        # everything already moved to the new name somewhere else again.
+        renames = self.ledger.category_renames
+        builtins = {renames.get(name, name) for name in CATEGORIES}
         # Starred first, then the rest alphabetically, so this list is
         # ordered the same way the tables it controls are.
         names = sorted(
-            set(CATEGORIES) | available | set(counts),
+            builtins | available | set(counts),
             key=lambda n: (n not in favourites, n),
         )
         for name in names:
