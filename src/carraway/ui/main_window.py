@@ -214,14 +214,26 @@ class MainWindow(QMainWindow):
         return any(s.availableGeometry().intersects(frame) for s in QApplication.screens())
 
     def closeEvent(self, event) -> None:
-        """Remember the window before it goes."""
+        """Remember the window, and stop background work, before it goes."""
         # Failing to record a window size is not a reason to refuse to quit.
         with contextlib.suppress(Exception):
             self.ledger.save_setting(
                 "window_geometry",
                 bytes(self.saveGeometry().toBase64()).decode("ascii"),
             )
+        # Threads first, widgets after. A QThread destroyed while running is a
+        # fatal abort in Qt, not an exception anyone can catch.
+        self.stop_background_work()
         super().closeEvent(event)
+
+    def stop_background_work(self) -> None:
+        """Quit and wait on every thread this window started."""
+        from .views.pocket import stop_all_runners
+
+        with contextlib.suppress(Exception):
+            self.syncer.stop()
+        with contextlib.suppress(Exception):
+            stop_all_runners()
 
     def _build_sidebar(self) -> QWidget:
         sidebar = QFrame()

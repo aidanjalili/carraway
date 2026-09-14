@@ -58,6 +58,11 @@ def _wait_for_in_flight() -> None:
     _IN_FLIGHT.clear()
 
 
+def stop_all_runners() -> None:
+    """Quit and wait on every Pocket round trip still in flight."""
+    _wait_for_in_flight()
+
+
 _ATEXIT_ARMED = False
 
 

@@ -93,6 +93,40 @@ class SyncWorker(QObject):
             self.failed.emit(f"{type(exc).__name__}: {exc}")
 
 
+#: Every sync thread still running, kept alive by this set rather than by a
+#: widget. See `SyncRunner.start`.
+_LIVE: set = set()
+_SHUTDOWN_ARMED = False
+
+
+def stop_all() -> None:
+    """Quit and wait on every sync thread. Bounded, never a hang."""
+    for thread in list(_LIVE):
+        thread.quit()
+        thread.wait(5000)
+    _LIVE.clear()
+
+
+def _arm_shutdown() -> None:
+    """Wait on running threads however the process ends.
+
+    `aboutToQuit` covers closing the window; `atexit` covers everything else,
+    including a test run that never started an event loop at all.
+    """
+    global _SHUTDOWN_ARMED
+    if _SHUTDOWN_ARMED:
+        return
+    import atexit
+
+    from PySide6.QtCore import QCoreApplication
+
+    atexit.register(stop_all)
+    app = QCoreApplication.instance()
+    if app is not None:
+        app.aboutToQuit.connect(stop_all)
+    _SHUTDOWN_ARMED = True
+
+
 class SyncRunner(QObject):
     """Owns the thread, so callers do not have to."""
 
@@ -115,7 +149,20 @@ class SyncRunner(QObject):
         if self.running:
             return False
 
-        self._thread = QThread(self)
+        # Unparented, and held in `_LIVE` until it has actually stopped.
+        #
+        # Parented to this runner -- which is parented to the main window --
+        # a thread still running when the window was destroyed went with it,
+        # and Qt answers a running QThread being destroyed with a fatal
+        # abort. The test suite hit that on every run for a night: 38
+        # SIGABRTs, each one writing a core dump of several hundred MB on an
+        # 8 GB machine that could not spare it. A window closed mid-sync in
+        # real use does the same thing. Nothing owned by a widget can be
+        # allowed to be the last reference to a running thread.
+        self._thread = QThread()
+        _LIVE.add(self._thread)
+        self._thread.finished.connect(lambda t=self._thread: _LIVE.discard(t))
+        _arm_shutdown()
         self._worker = SyncWorker(self.database)
         self._worker.moveToThread(self._thread)
 
@@ -125,6 +172,10 @@ class SyncRunner(QObject):
         self.started.emit()
         self._thread.start()
         return True
+
+    def stop(self) -> None:
+        """Wait for a sync in flight. Called before the window goes away."""
+        self._teardown()
 
     def _teardown(self) -> None:
         if self._thread is not None:
