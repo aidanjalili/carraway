@@ -1008,7 +1008,7 @@ def test_a_dragged_column_width_comes_back(app, with_balance):
     header = view.table.horizontalHeader()
     header.resizeSection(2, 240)
     with_balance.save_setting(
-        "columns:networth.history",
+        "columns2:networth.history",
         header.saveState().toBase64().data().decode("ascii"),
     )
 
@@ -1020,16 +1020,16 @@ def test_a_dragged_column_width_comes_back(app, with_balance):
 def test_resetting_forgets_column_widths_too(app, with_balance):
     from carraway.ui.widgets import reset_columns
 
-    with_balance.save_setting("columns:networth.history", "something")
-    with_balance.save_setting("columns:transactions", "something else")
+    with_balance.save_setting("columns2:networth.history", "something")
+    with_balance.save_setting("columns2:transactions", "something else")
     assert reset_columns(with_balance) == 2
-    assert not with_balance.setting("columns:networth.history")
+    assert not with_balance.setting("columns2:networth.history")
 
 
 def test_a_corrupt_saved_column_state_is_ignored(app, with_balance):
     from carraway.ui.views.networth import NetWorthView
 
-    with_balance.save_setting("columns:networth.history", "not base64 at all!!")
+    with_balance.save_setting("columns2:networth.history", "not base64 at all!!")
     view = NetWorthView(with_balance)
     view.resize(1400, 900)
     assert view.table.columnCount() == 5
@@ -1050,7 +1050,7 @@ def test_a_saved_layout_cannot_bring_back_an_undraggable_column(app, with_balanc
     # Write a state with Stretch baked into it, as older versions did.
     header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
     with_balance.save_setting(
-        "columns:networth.history",
+        "columns2:networth.history",
         header.saveState().toBase64().data().decode("ascii"),
     )
 
@@ -1071,3 +1071,66 @@ def test_a_column_can_actually_be_resized(app, with_balance):
     header = view.table.horizontalHeader()
     header.resizeSection(0, 300)
     assert header.sectionSize(0) == 300
+
+
+def test_columns_are_measured_against_real_rows_not_an_empty_table(app, with_balance):
+    """A view builds its table before it has anything in it, so sizing to
+    contents during __init__ measured nothing -- which is how every money
+    column arrived 50 pixels wide with the figures cut off."""
+    from PySide6.QtCore import QTimer
+
+    from carraway.ui.views.networth import NetWorthView
+
+    view = NetWorthView(with_balance)
+    view.resize(1700, 1000)
+    view.show()
+    QTimer.singleShot(50, app.quit)
+    app.exec()
+
+    header = view.table.horizontalHeader()
+    widths = [header.sectionSize(c) for c in range(view.table.columnCount())]
+    assert all(w >= 80 for w in widths), f"a column is too narrow to read: {widths}"
+
+
+def test_the_columns_fill_the_width_without_a_gap(app, with_balance):
+    from PySide6.QtCore import QTimer
+
+    from carraway.ui.views.networth import NetWorthView
+
+    view = NetWorthView(with_balance)
+    view.resize(1700, 1000)
+    view.show()
+    QTimer.singleShot(50, app.quit)
+    app.exec()
+
+    header = view.table.horizontalHeader()
+    used = sum(header.sectionSize(c) for c in range(view.table.columnCount()))
+    assert abs(used - view.table.viewport().width()) <= 4
+
+
+def test_spare_width_is_shared_out_not_dumped_on_one_column(app, with_balance):
+    """Giving it all to one column produced a date column 1,291 pixels wide
+    beside four squeezed to 81."""
+    from PySide6.QtCore import QTimer
+
+    from carraway.ui.views.networth import NetWorthView
+
+    view = NetWorthView(with_balance)
+    view.resize(1700, 1000)
+    view.show()
+    QTimer.singleShot(50, app.quit)
+    app.exec()
+
+    header = view.table.horizontalHeader()
+    widths = [header.sectionSize(c) for c in range(view.table.columnCount())]
+    # Nothing in this table is a text field, so no column should be running
+    # away with the width.
+    assert max(widths) < sum(widths) * 0.6
+
+
+def test_a_long_text_column_can_still_be_squeezed(app, three_accounts):
+    """Treating a merchant column's full content width as a minimum stopped
+    the table ever fitting a narrower window."""
+    from carraway.ui.widgets import _ColumnFit
+
+    assert _ColumnFit.FLOOR_CAP <= 260

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import contextlib
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -939,38 +939,159 @@ class PanelSplitter(QSplitter):
         return len(keys)
 
 
-#: Saved column widths live under this prefix, and are cleared with the
-#: panel sizes by the one control in Settings.
-COLUMN_PREFIX = "columns:"
+#: Saved column widths live under this prefix, and are cleared with the panel
+#: sizes by the one control in Settings.
+#:
+#: Version 2. The first attempt saved the header's whole state, which carries
+#: resize *modes* as well as widths -- so layouts written while one column was
+#: still Stretch came back with that column swallowing the table and every
+#: figure beside it truncated. Those are not worth migrating; a new prefix
+#: ignores them and starts from a sensible default.
+COLUMN_PREFIX = "columns2:"
+
+
+class _ColumnFit(QObject):
+    """Keeps a table's columns filling its width, the way desktop apps do.
+
+    Spare width is shared out in proportion to what each column already has,
+    rather than dumped on one. Giving it all to a single column is right for
+    a table with an obviously dominant text field and absurd for one made of
+    five short figures -- where it produced a date column 1,291 pixels wide
+    beside four squeezed to 81.
+
+    Qt has no resize mode that does this: `Stretch` fills but cannot be
+    dragged, `Interactive` drags but never fills.
+    """
+
+    #: Fallback floor, for columns never measured against real rows.
+    FLOOR = 70
+
+    #: No column's floor goes above this, however long its content is. A
+    #: merchant column measured against "ALI JALILI MY MEET MOBILE
+    #: SUBSCRIPTION..." wants six hundred pixels, and treating that as a
+    #: minimum stops the table ever fitting a narrower window -- it overflowed
+    #: by four hundred pixels rather than letting the text ellipsise, which is
+    #: what a text column is supposed to do.
+    FLOOR_CAP = 240
+
+    def __init__(self, table, main: int, *, sized: bool = False) -> None:
+        super().__init__(table)
+        self._table = table
+        self._main = main
+        self._busy = False
+        # False until the columns have been measured against real rows. A
+        # view builds its table before it has anything in it, so sizing to
+        # contents during __init__ measures an empty table -- which is how
+        # every money column arrived 50 pixels wide with the figures cut off
+        # and the date column swallowing the rest.
+        self._sized = sized
+        # Per column, the width its own content needs. A single global floor
+        # cannot know that a date column needs ninety pixels and a category
+        # needs sixty, so sharing out spare width would quietly squeeze one
+        # of them until it truncated.
+        self._floors: dict[int, int] = {}
+        table.viewport().installEventFilter(self)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if event.type() == QEvent.Type.Resize:
+            self.fit()
+        return super().eventFilter(watched, event)
+
+    def columns(self) -> int:
+        table = self._table
+        if hasattr(table, "columnCount"):
+            return table.columnCount()
+        model = table.model()
+        return model.columnCount() if model is not None else 0
+
+    def rows(self) -> int:
+        table = self._table
+        if hasattr(table, "rowCount"):
+            return table.rowCount()
+        model = table.model()
+        return model.rowCount() if model is not None else 0
+
+    def size_to_contents(self) -> None:
+        """Measure the columns against the rows now present, once."""
+        from PySide6.QtWidgets import QHeaderView
+
+        header = self._table.horizontalHeader()
+        count = self.columns()
+        self._busy = True
+        try:
+            for column in range(count):
+                header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+            widths = [header.sectionSize(c) for c in range(count)]
+            for column in range(count):
+                header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+                # A little air either side of the content, and never so narrow
+                # that a heading is unreadable.
+                width = max(widths[column] + 22, 80)
+                self._floors[column] = min(width, self.FLOOR_CAP)
+                header.resizeSection(column, width)
+        finally:
+            self._busy = False
+        self._sized = True
+
+    def fit(self) -> None:
+        if self._busy:
+            return
+        header = self._table.horizontalHeader()
+        count = self.columns()
+        if not (0 <= self._main < count):
+            return
+        if not self._sized and self.rows():
+            self.size_to_contents()
+        spare = self._table.viewport().width()
+        if spare <= 0:
+            return
+        live = [c for c in range(count) if not self._table.isColumnHidden(c)]
+        if not live:
+            return
+        sizes = {c: header.sectionSize(c) for c in live}
+        used = sum(sizes.values())
+        # A pixel or two either way is not worth a relayout, and chasing it
+        # can oscillate against the scroll bar appearing and disappearing.
+        if used <= 0 or abs(used - spare) <= 2:
+            return
+
+        share = spare / used
+        self._busy = True
+        try:
+            widths = {
+                c: max(self._floors.get(c, self.FLOOR), int(sizes[c] * share)) for c in live
+            }
+            # Rounding leaves a few pixels over; they go to the widest column,
+            # where nobody will notice them.
+            drift = spare - sum(widths.values())
+            widest = max(live, key=lambda c: widths[c])
+            widths[widest] = max(self._floors.get(widest, self.FLOOR), widths[widest] + drift)
+            for column, width in widths.items():
+                header.resizeSection(column, width)
+        finally:
+            self._busy = False
 
 
 def resizable_columns(table, ledger, name: str, *, stretch: int = 0) -> None:
-    """Let the user drag any of a table's column dividers, and remember where.
+    """Size a table's columns sensibly, let them be dragged, remember them.
 
-    Columns were sized `Stretch` and `ResizeToContents`. Both compute a width
-    and both refuse to be dragged, so the divider is inert under the cursor --
-    which reads as a broken table rather than a deliberate one.
+    What a table is expected to do, and what took three attempts to get
+    right: start at widths that fit the content, let any divider be dragged,
+    fill the width without a dead strip on the right, and come back tomorrow
+    the way it was left.
 
-    Every column is `Interactive`, with none left on `Stretch`. Keeping one
-    stretched was the obvious way to stop leftover width becoming dead space
-    at the right-hand edge, but it costs that column both of its dividers,
-    and the widest column is exactly the one people reach for first. So the
-    slack is handed to `stretch` once, at setup, rather than permanently: the
-    table still fills its width when it opens, and after that every boundary
-    behaves the way a spreadsheet's does.
-
-    Widths are saved under `columns:<name>` as the header's own state, which
-    already encodes order and hidden sections, so a column moved or resized
-    comes back the way it was left.
+    Qt gives none of that in one resize mode. `Stretch` fills but cannot be
+    dragged -- and it was on the widest column, which is the first one anyone
+    reaches for. `ResizeToContents` cannot be dragged either. `Interactive`
+    can be dragged but never fills, which leaves either a gap or a scroll
+    bar. So every column is Interactive and `_ColumnFit` does the filling.
     """
-    from PySide6.QtCore import QByteArray, QTimer
+    from PySide6.QtCore import QByteArray
     from PySide6.QtWidgets import QHeaderView
 
     header = table.horizontalHeader()
     key = f"{COLUMN_PREFIX}{name}"
 
-    # QTableWidget answers columnCount(); QTableView does not -- its columns
-    # belong to the model, and this app uses both kinds of table.
     if hasattr(table, "columnCount"):
         columns = table.columnCount()
     else:
@@ -979,42 +1100,22 @@ def resizable_columns(table, ledger, name: str, *, stretch: int = 0) -> None:
     if not columns:
         return
 
-    # Content widths first, so the starting point is what ResizeToContents
-    # would have produced, then handed over to the user.
-    for column in range(columns):
-        header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
-    widths = [max(header.sectionSize(c), 60) for c in range(columns)]
     for column in range(columns):
         header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
-        header.resizeSection(column, widths[column])
 
     saved = ledger.setting(key)
     restored = False
     if isinstance(saved, str) and saved:
         with contextlib.suppress(Exception):
             restored = header.restoreState(QByteArray.fromBase64(saved.encode("ascii")))
+            # restoreState carries modes as well as widths, so they are put
+            # back afterwards: the widths are the part worth keeping.
+            for column in range(columns):
+                header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
 
-    # A header's saved state carries its resize *modes* as well as its
-    # widths, so restoring one written before this change put Stretch back on
-    # the column it had been on -- and that column's dividers went dead
-    # again. The widths are what is worth keeping here; the modes are decided
-    # above, every time.
-    if restored:
-        for column in range(columns):
-            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
-
-    def fill() -> None:
-        """Give whatever width is left over to one column, once."""
-        spare = header.parentWidget().width() if header.parentWidget() else 0
-        spare = max(spare, table.viewport().width())
-        used = sum(header.sectionSize(c) for c in range(columns))
-        if spare > used and 0 <= stretch < columns:
-            header.resizeSection(stretch, header.sectionSize(stretch) + (spare - used))
-
-    if not restored:
-        # After layout: before the table has been shown the viewport has no
-        # width, so there is nothing to divide up yet.
-        QTimer.singleShot(0, fill)
+    # Sized against real rows the first time there are any; a remembered
+    # layout is already the right answer and is left alone.
+    table._carraway_fit = _ColumnFit(table, stretch, sized=bool(restored))
 
     def remember(*_args) -> None:
         ledger.save_setting(key, header.saveState().toBase64().data().decode("ascii"))
