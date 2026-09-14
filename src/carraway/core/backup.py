@@ -62,18 +62,28 @@ def snapshot(database: Path, *, tag: str = "") -> Path | None:
 
 
 def prune(database: Path, keep: int = KEEP) -> int:
-    """Delete all but the newest `keep` snapshots. Returns how many went."""
-    snapshots = sorted(backup_dir(database).glob("carraway-*.db"))
+    """Delete all but the newest `keep` snapshots. Returns how many went.
+
+    Newest by when the file was written, not by name. Sorted by name, a copy
+    called `carraway-before-...` sorts after every `carraway-2026...` one,
+    so the hand-made copies taken before a risky change were never pruned and
+    each new sync snapshot pushed out the most recent automatic ones instead.
+    """
+    snapshots = _oldest_first(backup_dir(database).glob("carraway-*.db"))
     stale = snapshots[:-keep] if keep > 0 else snapshots
     for path in stale:
         path.unlink(missing_ok=True)
     return len(stale)
 
 
+def _oldest_first(paths) -> list[Path]:
+    return sorted(paths, key=lambda path: (path.stat().st_mtime, path.name))
+
+
 def list_snapshots(database: Path) -> list[tuple[Path, date, int]]:
     """Existing snapshots as (path, date taken, size in bytes), oldest first."""
     out = []
-    for path in sorted(backup_dir(database).glob("carraway-*.db")):
+    for path in _oldest_first(backup_dir(database).glob("carraway-*.db")):
         stat = path.stat()
         out.append((path, date.fromtimestamp(stat.st_mtime), stat.st_size))
     return out

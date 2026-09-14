@@ -160,3 +160,23 @@ def test_a_test_never_writes_beside_the_real_ledger(tmp_path):
     from carraway.core import backup
 
     assert str(backup.backup_dir(tmp_path / "x.db")).startswith(str(tmp_path))
+
+
+def test_prune_keeps_the_newest_backups_whatever_they_are_called(tmp_path):
+    """A hand-made `carraway-before-...` copy sorts after every timestamped
+    one by name. Pruning by name kept the old hand-made copies for ever and
+    threw away the latest sync snapshots."""
+    import os
+
+    from carraway.core import backup
+
+    folder = backup.backup_dir(tmp_path / "x.db")
+    folder.mkdir(parents=True)
+    old = folder / "carraway-before-cash-20260830-205552.db"
+    new = folder / "carraway-20260914-081742-sync.db"
+    for when, path in enumerate((old, new)):
+        path.write_bytes(b"x")
+        os.utime(path, (1_000_000 + when, 1_000_000 + when))
+
+    assert backup.prune(tmp_path / "x.db", keep=1) == 1
+    assert new.exists() and not old.exists()
