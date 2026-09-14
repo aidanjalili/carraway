@@ -107,6 +107,14 @@ class TransactionModel(QAbstractTableModel):
 
         # An excluded row still shows -- it is money that left the account --
         # but muted, so the state is legible without opening a menu to ask.
+        if role == Qt.ItemDataRole.ToolTipRole:
+            held = min(abs(getattr(tx, "budget_excluded_minor", 0) or 0), abs(tx.amount.minor))
+            if held and not getattr(tx, "budget_excluded", False):
+                counted = Money(abs(tx.amount.minor) - held)
+                return (
+                    f"{counted.format()} of this counts toward budgets; "
+                    f"{Money(held).format()} does not."
+                )
         if role == Qt.ItemDataRole.ForegroundRole and getattr(tx, "budget_excluded", False):
             return QColor(theme.ACTIVE.muted)
 
@@ -892,11 +900,41 @@ class TransactionsView(QWidget):
                 )
                 per_budget.addAction(entry)
 
+        # Only ever one row: "count 40% of these six" is not a thought
+        # anybody has, and splitting a selection evenly would be a guess.
+        if len(chosen) == 1:
+            tx = chosen[0]
+            held = min(abs(getattr(tx, "budget_excluded_minor", 0) or 0), abs(tx.amount.minor))
+            part = QAction(
+                "Count part of this…"
+                if not held
+                else f"Counting {Money(abs(tx.amount.minor) - held).format()} of this…",
+                self,
+            )
+            part.triggered.connect(lambda: self._set_share(tx))
+            menu.addAction(part)
+
         note = QAction("Excluded rows stay in Spending and in every total", self)
         note.setEnabled(False)
         menu.addSeparator()
         menu.addAction(note)
         menu.exec(self.table.viewport().mapToGlobal(position))
+
+    def _set_share(self, tx) -> None:
+        """Ask how much of one transaction counts, and store the rest."""
+        from .budget_share import prompt
+
+        whole = abs(tx.amount)
+        held = min(abs(getattr(tx, "budget_excluded_minor", 0) or 0), whole.minor)
+        counted = Money(whole.minor - held, whole.currency)
+        excluded = prompt(tx.description, tx.amount, counted, self)
+        if excluded is None:
+            return
+        conn = db.connect(self.ledger.path)
+        db.set_budget_share(conn, tx.id, excluded)
+        conn.close()
+        self.ledger.load()
+        refresh_everything(self)
 
     def _set_budget_excluded(self, budget_id: str, transaction_ids: list, excluded: bool) -> None:
         self.ledger.set_budget_exclusion(budget_id, transaction_ids, excluded)

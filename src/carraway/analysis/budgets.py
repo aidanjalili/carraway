@@ -834,15 +834,24 @@ def status(
         # a budget quietly ignoring money that left the account is how a screen
         # stops agreeing with the bank, and the whole point of this one is that
         # it does.
-        # Two ways out of a budget. The flag on the transaction means every
-        # budget -- a reimbursement was never your money under any accounting.
-        # `excluded_ids` means this one only, which is the answer for a trip
-        # that belongs to the travel budget and not to September.
+        # Three ways out of a budget, in order of bluntness. The flag on the
+        # transaction means every budget -- a reimbursement was never your
+        # money under any accounting. `excluded_ids` means this budget only,
+        # for a trip that belongs to the travel budget and not to September.
+        # And a share means part of it was never yours: a utility bill split
+        # with a flatmate is not excluded and not counted in full.
+        whole = abs(tx.amount.minor)
         if getattr(tx, "budget_excluded", False) or (out_of_this_one and tx.id in out_of_this_one):
+            held_back = whole
+        else:
+            held_back = min(abs(getattr(tx, "budget_excluded_minor", 0) or 0), whole)
+
+        if held_back:
             if tx.amount.minor < 0:
-                excluded_minor += -tx.amount.minor
-            continue
-        outflow = -tx.amount.minor
+                excluded_minor += held_back
+            if held_back >= whole:
+                continue
+        outflow = -tx.amount.minor - (held_back if tx.amount.minor < 0 else 0)
         spent[category] = spent.get(category, 0) + outflow
         if tx.date == today:
             today_minor += outflow

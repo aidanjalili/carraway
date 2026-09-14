@@ -81,6 +81,12 @@ class Transaction:
     # and in every total that claims to match the bank statement. Only the
     # budget skips it, and the budget says out loud that it did.
     budget_excluded: bool = False
+    # How much of this does *not* count toward a budget, in minor units and
+    # always positive. Zero is the ordinary case. Equal to the transaction's
+    # own magnitude means the same as `budget_excluded`; anything between is
+    # a share -- a utility bill split with a flatmate, a group dinner where
+    # only your half was yours.
+    budget_excluded_minor: int = 0
     tags: list[str] = field(default_factory=list)
 
     @property

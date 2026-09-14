@@ -1312,3 +1312,69 @@ def test_no_exclusions_behaves_exactly_as_before():
         )
         assert same.spent == plain.spent
         assert same.excluded == plain.excluded
+
+
+# -- counting only part of a transaction ----------------------------------
+
+
+def test_a_split_bill_counts_only_your_share():
+    """A utility bill split three ways is not excluded and not counted. Two
+    thirds of it was never yours."""
+    from datetime import date
+
+    from carraway.analysis import budgets as B
+    from carraway.core.money import Money
+
+    budget, rows, categories = _two_budget_setup()
+    # $50.00 each; hold back $33.34 of the first, leaving a third.
+    rows[0].budget_excluded_minor = 3334
+    out = B.status(budget, rows, asof=date(2026, 9, 30), categories=categories)
+
+    assert out.spent == Money.parse("116.66")
+    assert out.excluded == Money.parse("33.34")
+
+
+def test_holding_back_everything_is_the_same_as_excluding_it():
+    from datetime import date
+
+    from carraway.analysis import budgets as B
+    from carraway.core.money import Money
+
+    budget, rows, categories = _two_budget_setup()
+    rows[0].budget_excluded_minor = 5000  # the whole thing
+    held = B.status(budget, rows, asof=date(2026, 9, 30), categories=categories)
+
+    budget2, rows2, categories2 = _two_budget_setup()
+    rows2[0].budget_excluded = True
+    flagged = B.status(budget2, rows2, asof=date(2026, 9, 30), categories=categories2)
+
+    assert held.spent == flagged.spent == Money.parse("100.00")
+    assert held.excluded == flagged.excluded == Money.parse("50.00")
+
+
+def test_holding_back_more_than_the_transaction_cannot_go_negative():
+    from datetime import date
+
+    from carraway.analysis import budgets as B
+    from carraway.core.money import Money
+
+    budget, rows, categories = _two_budget_setup()
+    rows[0].budget_excluded_minor = 999_999
+    out = B.status(budget, rows, asof=date(2026, 9, 30), categories=categories)
+    assert out.spent == Money.parse("100.00")
+    assert out.excluded == Money.parse("50.00")
+
+
+def test_a_share_and_a_whole_budget_exclusion_do_not_double_count():
+    """The blunt flag wins; the share must not be subtracted on top of it."""
+    from datetime import date
+
+    from carraway.analysis import budgets as B
+    from carraway.core.money import Money
+
+    budget, rows, categories = _two_budget_setup()
+    rows[0].budget_excluded = True
+    rows[0].budget_excluded_minor = 2000
+    out = B.status(budget, rows, asof=date(2026, 9, 30), categories=categories)
+    assert out.spent == Money.parse("100.00")
+    assert out.excluded == Money.parse("50.00")

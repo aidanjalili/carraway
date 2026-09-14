@@ -1275,3 +1275,94 @@ def test_the_table_gets_the_slack_in_its_panel(app, with_balance):
     others = [layout.stretch(i) for i in range(layout.count()) if i != index]
     assert all(stretch == 0 for stretch in others)
     assert view.expected_table.maximumHeight() > 10_000, "a height cap is back"
+
+
+# -- counting only part of a transaction ----------------------------------
+
+
+def _one_transaction_ledger(tmp_path):
+    from carraway.core.models import AccountType
+
+    path = tmp_path / "share.db"
+    conn = db.connect(path)
+    db.upsert_account(conn, Account(id="a1", name="Checking", type=AccountType.CHECKING))
+    db.insert_transactions(
+        conn,
+        [
+            Transaction(
+                id="bill",
+                account_id="a1",
+                date=date.today(),
+                amount=Money.parse("-104.74"),
+                description="ALLIANT WPL PAYMENT",
+            )
+        ],
+    )
+    conn.close()
+    led = Ledger(path=path)
+    led.load()
+    return led
+
+
+def test_splitting_a_bill_three_ways_counts_a_third(app, tmp_path):
+    from carraway.ui.views.budget_share import BudgetShareDialog
+
+    dialog = BudgetShareDialog("ALLIANT WPL", Money.parse("-104.74"), Money.parse("104.74"))
+    dialog._split(3)
+    # Rounded down, so three shares never claim more of the bill than exists.
+    assert dialog.amount.text() == "34.91"
+    assert dialog.excluded == Money.parse("69.83")
+
+
+def test_counting_all_of_it_holds_nothing_back(app):
+    from carraway.ui.views.budget_share import BudgetShareDialog
+
+    dialog = BudgetShareDialog("X", Money.parse("-50.00"), Money.parse("50.00"))
+    assert dialog.excluded == Money.zero()
+    assert "All of it counts" in dialog.preview.text()
+
+
+def test_counting_more_than_the_transaction_is_capped(app):
+    from carraway.ui.views.budget_share import BudgetShareDialog
+
+    dialog = BudgetShareDialog("X", Money.parse("-50.00"), Money.parse("50.00"))
+    dialog.amount.setText("900")
+    assert dialog.excluded == Money.zero()
+    assert "capped" in dialog.preview.text()
+
+
+def test_the_share_is_stored_and_survives_a_reload(app, tmp_path):
+    ledger = _one_transaction_ledger(tmp_path)
+    conn = db.connect(ledger.path)
+    db.set_budget_share(conn, "bill", Money.parse("69.83"))
+    conn.close()
+    ledger.load()
+
+    tx = ledger.transactions[0]
+    assert tx.budget_excluded_minor == 6983
+    # Not the blunt flag: two thirds held back is not "none of this counts".
+    assert tx.budget_excluded is False
+
+
+def test_holding_back_the_whole_amount_sets_the_flag(app, tmp_path):
+    """One representation of "none of this counts", not two that could
+    disagree."""
+    ledger = _one_transaction_ledger(tmp_path)
+    conn = db.connect(ledger.path)
+    db.set_budget_share(conn, "bill", Money.parse("104.74"))
+    conn.close()
+    ledger.load()
+    assert ledger.transactions[0].budget_excluded is True
+
+
+def test_clearing_the_share_puts_the_whole_thing_back(app, tmp_path):
+    ledger = _one_transaction_ledger(tmp_path)
+    conn = db.connect(ledger.path)
+    db.set_budget_share(conn, "bill", Money.parse("69.83"))
+    db.set_budget_share(conn, "bill", None)
+    conn.close()
+    ledger.load()
+
+    tx = ledger.transactions[0]
+    assert tx.budget_excluded_minor == 0
+    assert tx.budget_excluded is False

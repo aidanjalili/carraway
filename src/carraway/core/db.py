@@ -286,6 +286,23 @@ MIGRATIONS: list[str] = [
     );
     CREATE INDEX budget_exclusions_budget ON budget_exclusions(budget_id);
     """,
+    # v19 - counting only part of a transaction.
+    #
+    # A utility bill split three ways is not excluded and not counted: two
+    # thirds of it was never yours. The v16 flag could only say all or
+    # nothing, so the honest options were to overstate the month by $70 or to
+    # hide a real $104 charge completely.
+    #
+    # Stored as the amount that does *not* count, in minor units, always
+    # positive. Backfilled so an existing all-or-nothing exclusion means what
+    # it always did -- the flag stays as the fast path and the authority for
+    # "none of this counts", and this column carries the middle ground.
+    """
+    ALTER TABLE transactions ADD COLUMN budget_excluded_minor INTEGER NOT NULL DEFAULT 0;
+    UPDATE transactions
+       SET budget_excluded_minor = ABS(amount_minor)
+     WHERE budget_excluded = 1;
+    """,
 ]
 
 
@@ -428,6 +445,7 @@ def _row_to_transaction(r: sqlite3.Row) -> Transaction:
         # migration has no such column, and sqlite3.Row raises rather than
         # returning None.
         budget_excluded=bool(dict(r).get("budget_excluded") or 0),
+        budget_excluded_minor=int(dict(r).get("budget_excluded_minor") or 0),
     )
 
 
@@ -1273,6 +1291,36 @@ def set_budget_exclusion(
     return cur.rowcount
 
 
+def set_budget_share(
+    conn: sqlite3.Connection, transaction_id: str, excluded: Money | None
+) -> int:
+    """Say how much of one transaction does not count toward budgets.
+
+    `None`, or an amount of zero, puts the whole thing back. An amount at or
+    above the transaction's own magnitude is stored as a full exclusion, so
+    there is one representation of "none of this counts" rather than two that
+    could disagree.
+    """
+    row = conn.execute(
+        "SELECT amount_minor FROM transactions WHERE id = ?", (transaction_id,)
+    ).fetchone()
+    if row is None:
+        return 0
+    whole = abs(int(row[0]))
+    amount = abs(excluded.minor) if excluded is not None else 0
+    amount = min(amount, whole)
+    cur = conn.execute(
+        """
+        UPDATE transactions
+           SET budget_excluded_minor = ?, budget_excluded = ?
+         WHERE id = ?
+        """,
+        (amount, int(amount >= whole > 0), transaction_id),
+    )
+    conn.commit()
+    return cur.rowcount
+
+
 def set_budget_excluded(
     conn: sqlite3.Connection, transaction_ids: list[str], excluded: bool
 ) -> int:
@@ -1287,8 +1335,13 @@ def set_budget_excluded(
         return 0
     marks = ",".join("?" for _ in transaction_ids)
     cur = conn.execute(
-        f"UPDATE transactions SET budget_excluded = ? WHERE id IN ({marks})",
-        [int(bool(excluded)), *transaction_ids],
+        f"""
+        UPDATE transactions
+           SET budget_excluded = ?,
+               budget_excluded_minor = CASE WHEN ? THEN ABS(amount_minor) ELSE 0 END
+         WHERE id IN ({marks})
+        """,
+        [int(bool(excluded)), int(bool(excluded)), *transaction_ids],
     )
     conn.commit()
     return cur.rowcount
