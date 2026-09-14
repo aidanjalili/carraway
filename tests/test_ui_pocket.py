@@ -1315,6 +1315,49 @@ def test_a_share_larger_than_the_transaction_counts_all_of_it(app, tmp_path, mon
     assert ledger.transactions[0].budget_excluded is False
 
 
+def _collect_in_order(tmp_path, monkeypatch, *entries):
+    import dataclasses
+    from datetime import date, timedelta
+
+    ledger = _cash_ledger(tmp_path)
+    client = FakeClient()
+    start = date.today() - timedelta(days=len(entries))
+    client.entries = [
+        dataclasses.replace(entry, id=f"e{n}", occurred_on=start + timedelta(days=n))
+        for n, entry in enumerate(entries)
+    ]
+    monkeypatch.setattr(Ledger, "pocket_client", lambda self: client)
+    ledger.save_setting("pocket_url", "https://money.example.com")
+    ledger.collect_from_pocket()
+    return next(t for t in ledger.transactions if t.id == "spend1")
+
+
+def test_a_share_after_taking_it_out_counts_the_share(app, tmp_path, monkeypatch):
+    """Shares were applied first and whole verdicts after, whatever order the
+    phone sent them in, so "take it out" then "count $10 of it" in one
+    collection ended with none of it counting."""
+    row = _collect_in_order(
+        tmp_path, monkeypatch, _verdict("spend1", "exclude"), _share_verdict("spend1", "10.00")
+    )
+    assert row.budget_excluded is False
+    assert row.budget_excluded_minor == 2000
+
+
+def test_counting_it_again_after_a_share_counts_all_of_it(app, tmp_path, monkeypatch):
+    row = _collect_in_order(
+        tmp_path, monkeypatch, _share_verdict("spend1", "10.00"), _verdict("spend1", "include")
+    )
+    assert row.budget_excluded is False
+    assert row.budget_excluded_minor == 0
+
+
+def test_a_share_after_counting_it_again_is_kept(app, tmp_path, monkeypatch):
+    row = _collect_in_order(
+        tmp_path, monkeypatch, _verdict("spend1", "include"), _share_verdict("spend1", "10.00")
+    )
+    assert row.budget_excluded_minor == 2000
+
+
 def test_the_history_tells_the_phone_what_is_held_back(app, tmp_path):
     from carraway.core import db
     from carraway.core.money import Money

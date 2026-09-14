@@ -373,10 +373,18 @@ class Ledger:
             # A verdict may carry the part that still counts. Zero means none
             # of it, which is what every verdict meant before shares existed,
             # so an older phone keeps saying exactly what it used to.
+            #
+            # A share and an every-budget verdict are two answers to the same
+            # question -- how much of this counts -- so whichever came later
+            # replaces the other. Kept in separate piles and applied shares
+            # first, "take it out" followed by "count $20 of it" ended fully
+            # excluded, and "count it again" followed by a share lost the
+            # share: the older answer was applied last.
             if entry.excludes and getattr(entry, "amount", None) is not None:
                 counted = abs(entry.amount.minor)
                 if counted:
                     shares[entry.subject] = counted
+                    wanted.pop(("", entry.subject), None)
                     continue
             if scope and scope not in budgets:
                 # Named a budget this ledger no longer has. Same reasoning as
@@ -385,6 +393,8 @@ class Ledger:
                 unknown += 1
                 continue
             wanted[(scope, entry.subject)] = entry.excludes
+            if not scope:
+                shares.pop(entry.subject, None)
 
         if shares:
             by_id = {tx.id: tx for tx in self.transactions}
