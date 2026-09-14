@@ -334,13 +334,18 @@ class SpendingView(QWidget):
 
     def _transaction_count(self, bucket, scope: set[str] | None = None) -> int:
         include = bool(self.ledger.setting("include_guesses_in_totals"))
+        # The same rows the totals are made of. A transfer with no matching
+        # half is still filed as Transfer and left out of every figure on
+        # this screen, but it was counted here -- a month of brokerage moves
+        # read as dozens of purchases that appear in no category.
         return sum(
             1
             for t in self.ledger.transactions
             if bucket.start <= t.date < bucket.end
             and t.is_outflow
             and not t.is_transfer
-            and (scope is None or self.ledger.category_of(t, include_guessed=include) in scope)
+            and (name := self.ledger.category_of(t, include_guessed=include)) != "Transfer"
+            and (scope is None or name in scope)
         )
 
     def _fill_table(self, slices: list[Slice], total: Money) -> None:

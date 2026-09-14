@@ -1520,6 +1520,17 @@ def test_spending_recounts_when_the_window_refreshes(app, tmp_path):
     assert view.biggest_card.value_label.text() == "Travel"
 
 
+def test_an_unpaired_transfer_is_not_counted_as_a_purchase(app, tmp_path):
+    from carraway.ui.views.spending import SpendingView
+
+    ledger = _spending_ledger(tmp_path)
+    before = int(SpendingView(ledger).count_card.value_label.text())
+    rent = next(t for t in ledger.transactions if "LANDLORD" in t.description)
+    ledger.set_transaction_category(rent.id, "Transfer")
+    view = SpendingView(ledger)
+    assert int(view.count_card.value_label.text()) == before - 1
+
+
 def test_favourites_only_narrows_every_figure(app, tmp_path):
     from carraway.ui.views.spending import SpendingView
 
