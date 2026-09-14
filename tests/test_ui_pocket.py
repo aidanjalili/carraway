@@ -1320,6 +1320,31 @@ def test_the_history_says_which_budgets_a_row_is_out_of(app, tmp_path):
     assert all("excluded_from" not in r for r in others)
 
 
+def test_deleting_a_budget_stops_the_phone_hearing_about_it(app, tmp_path):
+    """Its exclusions had no foreign key to go with it, so the history went
+    on saying the row was out of a budget that no longer existed -- and the
+    phone's "count it again" named that budget and came back as a change for
+    a transaction the ledger did not have."""
+    from datetime import date
+
+    from carraway.analysis.budgets import Budget, Envelope
+    from carraway.core import db
+    from carraway.core.money import Money
+
+    ledger = _cash_ledger(tmp_path)
+    window = {"starts_on": date(2020, 1, 1), "ends_on": date(2030, 1, 1)}
+    envelopes = [Envelope(category="Uncategorized", allowance=Money.parse("500.00"))]
+    ledger.save_budget(Budget(id="trip", name="Trip", envelopes=envelopes, **window))
+    ledger.set_budget_exclusion("trip", ["spend1"], True)
+
+    ledger.delete_budget("trip")
+    row = next(r for r in ledger.pocket_history()["transactions"] if r["id"] == "spend1")
+    assert "excluded_from" not in row
+    conn = db.connect(ledger.path)
+    assert db.all_budget_exclusions(conn) == {}
+    conn.close()
+
+
 def _share_verdict(subject: str, counts: str):
     """A verdict carrying the part that still counts."""
     import dataclasses

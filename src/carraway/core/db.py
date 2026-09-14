@@ -934,6 +934,12 @@ def delete_budget(conn: sqlite3.Connection, budget_id: str) -> int:
     # The cascade needs foreign keys on, which `connect` enables; deleting the
     # envelopes explicitly means this is right either way.
     conn.execute("DELETE FROM budget_envelopes WHERE budget_id = ?", (budget_id,))
+    # And the rows taken out of it alone, which have no foreign key to cascade
+    # on. Left behind, they went on telling the phone that transactions were
+    # out of a budget that no longer exists, and the phone's "count it again"
+    # then named that budget and came back as a change for a transaction this
+    # ledger does not have.
+    conn.execute("DELETE FROM budget_exclusions WHERE budget_id = ?", (budget_id,))
     cur = conn.execute("DELETE FROM budgets WHERE id = ?", (budget_id,))
     conn.commit()
     return cur.rowcount

@@ -925,10 +925,11 @@ class Ledger:
 
     def excluded_from(self, transaction_id: str) -> list[str]:
         """The ids of every budget this transaction has been taken out of."""
+        live = {b.id for b in self.budgets}
         return sorted(
             budget_id
             for budget_id, ids in self.exclusions.items()
-            if transaction_id in ids
+            if transaction_id in ids and budget_id in live
         )
 
     def suggest_envelopes(self, starts_on: date, ends_on: date, accounts=None):
