@@ -857,6 +857,7 @@ class PanelSplitter(QSplitter):
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.setFixedSize(22, 22)
         button.setToolTip(f"Give {title.lower()} the whole screen")
+        button.setProperty("carraway_expand_tip", button.toolTip())
         button.clicked.connect(lambda _=False, i=index: self.toggle_full(i))
         bar.addWidget(button)
         self._buttons[index] = button
@@ -898,7 +899,12 @@ class PanelSplitter(QSplitter):
             others = [n for n in range(len(sizes)) if n != index]
             full = bool(others) and all(sizes[n] == 0 for n in others)
             button.setText("⤡" if full else "⤢")
-            button.setToolTip("Back to the other panels" if full else button.toolTip())
+            # The expanding tooltip is kept on the button rather than read back
+            # off it, which after one trip to full screen and back would read
+            # "Back to the other panels" on a button that now expands.
+            button.setToolTip(
+                "Back to the other panels" if full else button.property("carraway_expand_tip")
+            )
 
     def save(self) -> None:
         if self._restoring:

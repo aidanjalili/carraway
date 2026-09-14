@@ -945,6 +945,8 @@ def test_one_panel_can_take_the_whole_screen_and_come_back(app, with_balance):
     view.panels.toggle_full(0)
     # Back to what the user had, not to the shipped default.
     assert view.panels.sizes() == before
+    # And the button says what it will do next, not what it did last.
+    assert "whole screen" in view.panels._buttons[0].toolTip()
 
 
 def test_resetting_puts_every_screen_back(app, with_balance):
