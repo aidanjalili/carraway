@@ -329,3 +329,71 @@ def test_the_budget_leaves_room_for_a_scheduled_sync():
     # A background timer failing silently on quota is worse than a button that
     # says "not yet", so the budget must sit below the provider's own limit.
     assert sync_worker.DAILY_REQUEST_BUDGET < 24
+
+
+def _two_coffees(first_id="c1", second_id="c2"):
+    charge = {"posted": 1767139200, "amount": "-4.75", "description": "BLUE BOTTLE COFFEE"}
+    return {
+        "accounts": [
+            {
+                "id": "acc-1",
+                "name": "Everyday Checking",
+                "currency": "USD",
+                "balance": "100.00",
+                "transactions": [
+                    {**charge, "id": first_id},
+                    {**charge, "id": second_id},
+                ],
+            }
+        ]
+    }
+
+
+def test_two_identical_charges_with_their_own_ids_both_land(tmp_path):
+    """Keyed on date, amount and description, two coffees at one shop on one
+    day became one transaction inside a single response."""
+    from carraway.core import db
+
+    with patch("carraway.sync.simplefin._get", return_value=_two_coffees()):
+        result = SimpleFinProvider("https://u:p@example.org/simplefin").fetch()
+    assert len(result.transactions) == 2
+    assert sorted(t.occurrence for t in result.transactions) == [0, 1]
+
+    conn = db.connect(tmp_path / "ledger.db")
+    for account in result.accounts:
+        db.upsert_account(conn, account)
+    assert db.insert_transactions(conn, result.transactions) == (2, 0)
+    conn.close()
+
+
+def test_resyncing_the_same_pair_inserts_nothing(tmp_path):
+    from carraway.core import db
+
+    provider = SimpleFinProvider("https://u:p@example.org/simplefin")
+    conn = db.connect(tmp_path / "ledger.db")
+    with patch("carraway.sync.simplefin._get", return_value=_two_coffees()):
+        first = provider.fetch()
+    for account in first.accounts:
+        db.upsert_account(conn, account)
+    assert db.insert_transactions(conn, first.transactions) == (2, 0)
+
+    with patch("carraway.sync.simplefin._get", return_value=_two_coffees()):
+        second = provider.fetch()
+    assert db.insert_transactions(conn, second.transactions) == (0, 2)
+    assert len(db.list_transactions(conn)) == 2
+    conn.close()
+
+
+def test_one_charge_sent_twice_under_its_id_is_kept_once():
+    """Windows overlap on their boundary day, so the bank can send the same
+    transaction in two responses. Its id says it is one charge."""
+    with patch("carraway.sync.simplefin._get", return_value=_two_coffees("same", "same")):
+        result = SimpleFinProvider("https://u:p@example.org/simplefin").fetch()
+    assert len(result.transactions) == 1
+
+
+def test_a_charge_with_no_id_still_falls_back_to_its_description():
+    payload = _two_coffees("", "")
+    with patch("carraway.sync.simplefin._get", return_value=payload):
+        result = SimpleFinProvider("https://u:p@example.org/simplefin").fetch()
+    assert len(result.transactions) == 1

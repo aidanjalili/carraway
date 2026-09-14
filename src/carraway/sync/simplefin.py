@@ -345,7 +345,7 @@ class SimpleFinProvider:
         """
         result = SyncResult()
         seen_accounts: dict[str, Account] = {}
-        signatures: set[tuple[str, str, int, str]] = set()
+        signatures: set[tuple] = set()
 
         window_end = date.today() + timedelta(days=1)
         floor = since or self.EARLIEST
@@ -389,12 +389,23 @@ class SimpleFinProvider:
         payload: dict[str, Any],
         result: SyncResult,
         seen_accounts: dict[str, Account],
-        signatures: set[tuple[str, str, int, str]],
+        signatures: set[tuple],
     ) -> int:
         """Merge one window's payload into the running result.
 
         Windows share their boundary day, so the same transaction can arrive
         twice; a signature set keeps it from being counted or stored twice.
+
+        Recognised by the bank's own id wherever there is one. Keyed on date,
+        amount and description alone, two real charges that agree on all three
+        -- two coffees at one shop on one day -- were one transaction by the
+        time they left this method, even inside a single response, and the
+        second was never stored. The description-based key is kept only for a
+        transaction the bank sends without an id.
+
+        Re-syncing stays idempotent without the id reaching the database: the
+        identical pair is numbered 0 and 1 by `assign_occurrences` on every
+        sync alike, so both fingerprints match what is already stored.
         """
         for message in _messages_in(json.dumps(payload)):
             if message not in result.warnings:
@@ -425,7 +436,11 @@ class SimpleFinProvider:
                 tx = _to_transaction(raw, local_id, account.currency)
                 if tx is None:
                     continue
-                key = (local_id, tx.date.isoformat(), tx.amount.minor, tx.description.upper())
+                key = (
+                    (local_id, "id", tx.external_id)
+                    if tx.external_id
+                    else (local_id, tx.date.isoformat(), tx.amount.minor, tx.description.upper())
+                )
                 if key in signatures:
                     continue
                 signatures.add(key)
