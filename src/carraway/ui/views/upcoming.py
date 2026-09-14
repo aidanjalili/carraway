@@ -219,8 +219,13 @@ class UpcomingView(QWidget):
         rows = self._expected(horizon)
         today = date.today()
 
-        outflows = [s.typical_amount for _, s in rows if s.typical_amount.minor < 0]
-        inflows = [s.typical_amount for _, s in rows if s.typical_amount.minor > 0]
+        # At today's price, the same figure each row shows. Summed from the
+        # historical median instead, a subscription that went up from $8.43 to
+        # $9.48 was listed at $9.48 and counted at $8.43, so the cards above
+        # the table disagreed with the rows they claim to add up.
+        amounts = [self.ledger.current_amount(s) for _, s in rows]
+        outflows = [a for a in amounts if a.minor < 0]
+        inflows = [a for a in amounts if a.minor > 0]
         going_out = total([abs(a) for a in outflows]) if outflows else Money.zero()
         coming_in = total(inflows) if inflows else Money.zero()
 

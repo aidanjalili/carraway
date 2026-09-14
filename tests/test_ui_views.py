@@ -105,6 +105,19 @@ def test_upcoming_dismiss_removes_the_series_everywhere(app, ledger):
     assert any("NETFLIX" in s.merchant.upper() for s in ledger.dismissed)
 
 
+def test_upcoming_totals_add_up_the_prices_the_rows_show(app, ledger, monkeypatch):
+    """The rows showed today's price and the cards summed the historical
+    median, so after a price rise the two disagreed."""
+    from carraway.ui.views.upcoming import UpcomingView
+
+    monkeypatch.setattr(Ledger, "current_amount", lambda self, series: Money.parse("-9.48"))
+    view = UpcomingView(ledger)
+    rows = view.table.rowCount()
+    assert rows
+    assert all(view.table.item(r, 3).text() == "$9.48" for r in range(rows))
+    assert view.out_card.value_label.text() == (Money.parse("9.48") * rows).format()
+
+
 def test_subscriptions_classify_opens_the_dialog_and_applies_it(app, ledger, monkeypatch):
     from carraway.ui.views.classify_dialog import ClassifyDialog
     from carraway.ui.views.subscriptions import SubscriptionsView
