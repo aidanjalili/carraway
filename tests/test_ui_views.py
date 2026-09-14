@@ -20,7 +20,11 @@ pytest.importorskip("PySide6", reason="GUI tests need the [gui] extra")
 from datetime import date  # noqa: E402
 
 from PySide6.QtCore import Qt  # noqa: E402
-from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QDialog,
+    QTableView,
+)
 
 from carraway.core import db  # noqa: E402
 from carraway.core.models import Account, AccountType, Transaction  # noqa: E402
@@ -955,7 +959,10 @@ def test_a_corrupt_saved_layout_falls_back_rather_than_failing(app, with_balance
 # -- columns the user can drag --------------------------------------------
 
 
-def test_columns_are_draggable_except_the_one_that_absorbs_slack(app, with_balance):
+def test_every_column_divider_can_be_dragged(app, with_balance):
+    """Leaving one column on Stretch stopped leftover width becoming dead
+    space, and cost that column both of its dividers -- on the widest column,
+    which is the one people reach for first."""
     from PySide6.QtWidgets import QHeaderView
 
     from carraway.ui.views.networth import NetWorthView
@@ -965,14 +972,32 @@ def test_columns_are_draggable_except_the_one_that_absorbs_slack(app, with_balan
     header = view.table.horizontalHeader()
     modes = [header.sectionResizeMode(c) for c in range(view.table.columnCount())]
 
-    # Exactly one Stretch: something has to take the width left over, or
-    # narrowing a column leaves dead space at the right-hand edge.
-    assert modes.count(QHeaderView.ResizeMode.Stretch) == 1
-    assert all(
-        m == QHeaderView.ResizeMode.Interactive
-        for m in modes
-        if m != QHeaderView.ResizeMode.Stretch
-    )
+    assert modes, "the table has no columns"
+    assert all(m == QHeaderView.ResizeMode.Interactive for m in modes)
+    assert QHeaderView.ResizeMode.Stretch not in modes
+
+
+def test_every_table_in_the_app_has_draggable_columns(app, with_balance, three_accounts):
+    """One table left on Stretch is the one the user will happen to try."""
+    from PySide6.QtWidgets import QHeaderView
+
+    from carraway.ui.views.networth import NetWorthView
+    from carraway.ui.views.transactions import TransactionsView
+
+    for view in (NetWorthView(with_balance), TransactionsView(three_accounts)):
+        view.resize(1400, 900)
+        for table in view.findChildren(QTableView):
+            # A QCalendarWidget keeps its day grid in a QTableView whose
+            # columns are Stretch by design. It is a calendar, not data.
+            if table.objectName() == "qt_calendar_calendarview":
+                continue
+            header = table.horizontalHeader()
+            model = table.model()
+            count = model.columnCount() if model is not None else 0
+            modes = [header.sectionResizeMode(c) for c in range(count)]
+            assert QHeaderView.ResizeMode.Stretch not in modes, (
+                f"{type(view).__name__} has a column that cannot be dragged"
+            )
 
 
 def test_a_dragged_column_width_comes_back(app, with_balance):
@@ -1008,3 +1033,41 @@ def test_a_corrupt_saved_column_state_is_ignored(app, with_balance):
     view = NetWorthView(with_balance)
     view.resize(1400, 900)
     assert view.table.columnCount() == 5
+
+
+def test_a_saved_layout_cannot_bring_back_an_undraggable_column(app, with_balance):
+    """A header's saved state carries its resize *modes* as well as its
+    widths. Restoring one written before columns became draggable put Stretch
+    back on a column, and that column's dividers went dead again -- on the
+    exact table the user was trying to drag."""
+    from PySide6.QtWidgets import QHeaderView
+
+    from carraway.ui.views.networth import NetWorthView
+
+    first = NetWorthView(with_balance)
+    first.resize(1400, 900)
+    header = first.table.horizontalHeader()
+    # Write a state with Stretch baked into it, as older versions did.
+    header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+    with_balance.save_setting(
+        "columns:networth.history",
+        header.saveState().toBase64().data().decode("ascii"),
+    )
+
+    reopened = NetWorthView(with_balance)
+    reopened.resize(1400, 900)
+    modes = [
+        reopened.table.horizontalHeader().sectionResizeMode(c)
+        for c in range(reopened.table.columnCount())
+    ]
+    assert QHeaderView.ResizeMode.Stretch not in modes
+
+
+def test_a_column_can_actually_be_resized(app, with_balance):
+    from carraway.ui.views.networth import NetWorthView
+
+    view = NetWorthView(with_balance)
+    view.resize(1400, 900)
+    header = view.table.horizontalHeader()
+    header.resizeSection(0, 300)
+    assert header.sectionSize(0) == 300

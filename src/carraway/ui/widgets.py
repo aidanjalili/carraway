@@ -945,24 +945,25 @@ COLUMN_PREFIX = "columns:"
 
 
 def resizable_columns(table, ledger, name: str, *, stretch: int = 0) -> None:
-    """Let the user drag a table's column dividers, and remember where.
+    """Let the user drag any of a table's column dividers, and remember where.
 
-    Columns were sized `Stretch` and `ResizeToContents`, which both compute a
-    width and refuse to be dragged -- the divider is simply inert under the
-    cursor. `Interactive` is the mode that can be dragged, so every column
-    gets it except one.
+    Columns were sized `Stretch` and `ResizeToContents`. Both compute a width
+    and both refuse to be dragged, so the divider is inert under the cursor --
+    which reads as a broken table rather than a deliberate one.
 
-    That one keeps `Stretch`, and it is the difference between this and a
-    table full of dead space: something has to absorb the width left over, or
-    dragging a column narrower leaves a gap at the right-hand edge rather
-    than giving the room to a neighbour. The text column is the one that
-    wants slack anyway.
+    Every column is `Interactive`, with none left on `Stretch`. Keeping one
+    stretched was the obvious way to stop leftover width becoming dead space
+    at the right-hand edge, but it costs that column both of its dividers,
+    and the widest column is exactly the one people reach for first. So the
+    slack is handed to `stretch` once, at setup, rather than permanently: the
+    table still fills its width when it opens, and after that every boundary
+    behaves the way a spreadsheet's does.
 
     Widths are saved under `columns:<name>` as the header's own state, which
-    already encodes order and hidden sections, so a column moved or hidden
+    already encodes order and hidden sections, so a column moved or resized
     comes back the way it was left.
     """
-    from PySide6.QtCore import QByteArray
+    from PySide6.QtCore import QByteArray, QTimer
     from PySide6.QtWidgets import QHeaderView
 
     header = table.horizontalHeader()
@@ -975,28 +976,51 @@ def resizable_columns(table, ledger, name: str, *, stretch: int = 0) -> None:
     else:
         model = table.model()
         columns = model.columnCount() if model is not None else 0
+    if not columns:
+        return
 
+    # Content widths first, so the starting point is what ResizeToContents
+    # would have produced, then handed over to the user.
     for column in range(columns):
-        if column == stretch:
-            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
-            continue
-        # Sized from the content first, so the starting widths are the ones
-        # the old ResizeToContents produced, then handed over to the user.
         header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
-        width = max(header.sectionSize(column), 60)
+    widths = [max(header.sectionSize(c), 60) for c in range(columns)]
+    for column in range(columns):
         header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
-        header.resizeSection(column, width)
+        header.resizeSection(column, widths[column])
 
     saved = ledger.setting(key)
+    restored = False
     if isinstance(saved, str) and saved:
         with contextlib.suppress(Exception):
-            header.restoreState(QByteArray.fromBase64(saved.encode("ascii")))
+            restored = header.restoreState(QByteArray.fromBase64(saved.encode("ascii")))
+
+    # A header's saved state carries its resize *modes* as well as its
+    # widths, so restoring one written before this change put Stretch back on
+    # the column it had been on -- and that column's dividers went dead
+    # again. The widths are what is worth keeping here; the modes are decided
+    # above, every time.
+    if restored:
+        for column in range(columns):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+
+    def fill() -> None:
+        """Give whatever width is left over to one column, once."""
+        spare = header.parentWidget().width() if header.parentWidget() else 0
+        spare = max(spare, table.viewport().width())
+        used = sum(header.sectionSize(c) for c in range(columns))
+        if spare > used and 0 <= stretch < columns:
+            header.resizeSection(stretch, header.sectionSize(stretch) + (spare - used))
+
+    if not restored:
+        # After layout: before the table has been shown the viewport has no
+        # width, so there is nothing to divide up yet.
+        QTimer.singleShot(0, fill)
 
     def remember(*_args) -> None:
         ledger.save_setting(key, header.saveState().toBase64().data().decode("ascii"))
 
-    # Queued rather than immediate: sectionResized fires for every pixel of a
-    # drag, and each one is a database write.
+    # Debounced: sectionResized fires for every pixel of a drag, and each one
+    # would otherwise be a database write.
     header.sectionResized.connect(lambda *_: _debounce(header, remember))
     header.sectionMoved.connect(remember)
 
