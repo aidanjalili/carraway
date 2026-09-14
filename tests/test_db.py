@@ -152,3 +152,11 @@ def test_a_tracked_subscription_remembers_when_it_started(tmp_path):
         conn, "Gym", Money.parse("29.54"), "monthly", started_on=date(2026, 8, 30)
     )
     assert db.list_manual_subscriptions(conn)[0]["started_on"] == date(2026, 8, 30)
+
+
+def test_a_test_never_writes_beside_the_real_ledger(tmp_path):
+    """Backups land under XDG_DATA_HOME whatever database they copy, and prune
+    that folder as they go. The suite must keep them in its own."""
+    from carraway.core import backup
+
+    assert str(backup.backup_dir(tmp_path / "x.db")).startswith(str(tmp_path))

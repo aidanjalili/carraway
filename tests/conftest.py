@@ -29,6 +29,12 @@ def _no_real_credentials(tmp_path, monkeypatch):
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(credentials, "_keyring", lambda: None)
+    # And no data directory but its own. Backups are written under
+    # XDG_DATA_HOME whatever database they copy, and each one prunes that
+    # folder to the newest ten -- so a test that went through a sync's persist
+    # step put a copy of its fixture among the user's real snapshots, and
+    # could delete the oldest of them to make room.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     yield
 
 
