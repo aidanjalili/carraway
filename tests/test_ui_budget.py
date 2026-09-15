@@ -728,3 +728,103 @@ def test_hand_set_figures_do_not_follow_into_the_next_budget(view, ledger):
     view._create()
     view.refresh()
     assert _allowances(view)[first] == usual
+
+
+# -- changing a budget that already exists ------------------------------
+
+
+def _saved(ledger, view):
+    view._create()
+    ledger.load()
+    return ledger.budgets[0]
+
+
+def test_editing_saves_onto_the_same_budget(view, ledger):
+    """Deleting and rebuilding was the only way to change an allowance, and it
+    threw away the rows taken out of that budget and the phone's verdicts on
+    it -- both of which hang off the budget's id."""
+    view.by_history.setChecked(True)
+    first = next(iter(_allowances(view)))
+    budget = _saved(ledger, view)
+    original_id = budget.id
+
+    view.load_budget(budget)
+    assert view.create.text() == "Save changes"
+    assert view.title.text() == "Edit budget"
+    # It opens showing what was saved, not a fresh suggestion.
+    saved = {e.category: e.allowance for e in budget.envelopes}
+    assert _allowances(view)[first] == saved[first].format()
+    _set(view, first, "77")
+    view._create()
+
+    ledger.load()
+    assert len(ledger.budgets) == 1
+    changed = ledger.budgets[0]
+    assert changed.id == original_id
+    assert dict((e.category, e.allowance) for e in changed.envelopes)[first] == Money.parse("77")
+    # And the form is a blank one again afterwards.
+    assert view.create.text() == "Create budget"
+    assert view._editing == ""
+
+
+def test_editing_does_not_add_categories_the_budget_never_had(view, ledger):
+    """In usual-spending mode the table is rebuilt from every category that
+    has seen spending. Editing must show the budget's own lines instead."""
+    view.by_history.setChecked(True)
+    budget = _saved(ledger, view)
+    kept = {e.category for e in budget.envelopes}
+
+    view.load_budget(budget)
+    assert set(_allowances(view)) == kept
+
+    # A refresh -- which happens after any sync -- must not widen it either.
+    view.refresh()
+    assert set(_allowances(view)) == kept
+
+
+def test_a_category_can_be_taken_out_while_editing(view, ledger):
+    view.by_history.setChecked(True)
+    budget = _saved(ledger, view)
+    view.load_budget(budget)
+    going = next(iter(_allowances(view)))
+
+    view._drop_category(going)
+    assert going not in _allowances(view)
+
+    view._create()
+    ledger.load()
+    assert going not in {e.category for e in ledger.budgets[0].envelopes}
+
+
+def test_cancelling_an_edit_changes_nothing(view, ledger):
+    view.by_history.setChecked(True)
+    budget = _saved(ledger, view)
+    before = {e.category: e.allowance for e in budget.envelopes}
+
+    view.load_budget(budget)
+    _set(view, next(iter(before)), "5")
+    view._cancel_edit()
+
+    ledger.load()
+    assert {e.category: e.allowance for e in ledger.budgets[0].envelopes} == before
+    assert view._editing == ""
+    assert view.create.text() == "Create budget"
+
+
+def test_editing_can_move_the_window_and_the_accounts(view, ledger):
+    from PySide6.QtCore import QDate
+
+    view.by_history.setChecked(True)
+    budget = _saved(ledger, view)
+    view.load_budget(budget)
+
+    later = budget.starts_on + timedelta(days=3)
+    view.starts.setDate(QDate(later.year, later.month, later.day))
+    view._account_boxes["a2"].setChecked(True)
+    view._all_accounts.setChecked(False)
+    view._create()
+
+    ledger.load()
+    changed = ledger.budgets[0]
+    assert changed.starts_on == later
+    assert changed.accounts == ("a2",)

@@ -1689,3 +1689,36 @@ def test_a_failed_sync_still_counts_against_the_day(app, tmp_path, monkeypatch):
     # Two windows came back and a third was in flight when it failed.
     assert budget.requests_left(conn) == budget.DAILY_REQUEST_BUDGET - 3
     conn.close()
+
+
+def test_the_edit_button_opens_the_budget_on_the_screen_that_made_it(app, ledger, monkeypatch):
+    from datetime import date, timedelta
+
+    from carraway.analysis.budgets import Budget, Envelope
+    from carraway.core.money import Money
+    from carraway.ui import main_window
+    from carraway.ui.views.budget_detail import BudgetDetailView
+
+    ledger.save_budget(
+        Budget(
+            id="b1",
+            name="September",
+            starts_on=date.today(),
+            ends_on=date.today() + timedelta(days=10),
+            envelopes=(Envelope("Dining", Money.parse("200")),),
+        )
+    )
+    window = main_window.MainWindow(ledger.path)
+    detail = next(
+        window.stack.widget(i)
+        for i in range(window.stack.count())
+        if isinstance(window.stack.widget(i), BudgetDetailView)
+    )
+    detail._edit()
+
+    maker = window.stack.currentWidget()
+    assert maker.__class__.__name__ == "CreateBudgetView"
+    assert maker._editing == "b1"
+    assert maker.create.text() == "Save changes"
+    assert maker.name.text() == "September"
+    window.close()

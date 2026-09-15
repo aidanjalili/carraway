@@ -662,6 +662,21 @@ class MainWindow(QMainWindow):
         if button is not None:
             button.setChecked(True)
 
+    def edit_budget(self, budget_id: str) -> None:
+        """Load a budget into the screen that builds them, ready to change."""
+        budget = self.ledger.budget_by_id(budget_id)
+        if budget is None:
+            return
+        for index, (label, _) in enumerate(_SCREENS):
+            if label != "Create a budget":
+                continue
+            view = self.stack.widget(index)
+            load = getattr(view, "load_budget", None)
+            if callable(load):
+                load(budget)
+            self._show_screen(label)
+            return
+
     def _export(self) -> None:
         from PySide6.QtWidgets import QFileDialog, QMessageBox
 

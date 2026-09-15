@@ -63,6 +63,10 @@ class BudgetDetailView(QWidget):
         self.title.setObjectName("Title")
         header.addWidget(self.title)
         header.addStretch(1)
+        self.edit_button = QPushButton("Edit this budget")
+        self.edit_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.edit_button.clicked.connect(self._edit)
+        header.addWidget(self.edit_button)
         self.delete_button = QPushButton("Delete this budget…")
         self.delete_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.delete_button.clicked.connect(self._delete)
@@ -329,6 +333,18 @@ class BudgetDetailView(QWidget):
         self.footnote.setText("   ·   ".join(notes))
 
     # -- actions ----------------------------------------------------------
+
+    def _edit(self) -> None:
+        """Open this budget on the screen that made it.
+
+        Until now the only way to change an allowance was to delete the
+        budget and build another, which threw away everything attached to it:
+        the rows taken out of it, and the per-budget verdicts sent from the
+        phone.
+        """
+        edit = getattr(self.window(), "edit_budget", None)
+        if callable(edit):
+            edit(self.budget_id)
 
     def _delete(self) -> None:
         budget = self.ledger.budget_by_id(self.budget_id)

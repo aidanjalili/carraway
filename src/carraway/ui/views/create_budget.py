@@ -90,6 +90,12 @@ _LOCKED_HEADING = "You cannot change these this month"
 # fallback, not the expectation.
 _PRESETS = ["This month", "Next month", "Next 30 days", "Next 7 days", "Custom"]
 
+_NEW_TITLE = "Create a budget"
+_NEW_SUBTITLE = (
+    "Set what you are allowed to spend over a stretch of days, then check "
+    "back and see how you are going."
+)
+
 # The explanations behind each "i". Kept together so they can be read as a
 # set and checked for contradicting each other, which is how help text goes
 # stale — one sentence gets corrected and its neighbour does not.
@@ -230,6 +236,12 @@ class CreateBudgetView(QWidget):
         # thirteen categories deciding each one, adjust the total by fifty
         # dollars, and watch every decision be thrown away.
         self._pinned: dict[str, Money] = {}
+        # Set while this screen is editing a budget that already exists: its
+        # id, and the allowances it was saved with. Editing reuses this form
+        # rather than a second one, so a change of dates, method, categories
+        # or accounts works exactly as it does when building a budget.
+        self._editing: str = ""
+        self._original: dict[str, Money] = {}
         self._has_totals = False
         self._warning = ""
         # A note about something the user just did, shown when nothing is
@@ -243,16 +255,14 @@ class CreateBudgetView(QWidget):
         layout.setContentsMargins(28, 24, 28, 24)
         layout.setSpacing(14)
 
-        title = QLabel("Create a budget")
-        title.setObjectName("Title")
-        layout.addWidget(title)
+        self.title = QLabel(_NEW_TITLE)
+        self.title.setObjectName("Title")
+        layout.addWidget(self.title)
 
-        subtitle = QLabel(
-            "Set what you are allowed to spend over a stretch of days, then check "
-            "back and see how you are going."
-        )
-        subtitle.setObjectName("Subtitle")
-        layout.addWidget(subtitle)
+        self.subtitle = QLabel(_NEW_SUBTITLE)
+        self.subtitle.setObjectName("Subtitle")
+        self.subtitle.setWordWrap(True)
+        layout.addWidget(self.subtitle)
 
         layout.addWidget(self._build_basics())
         layout.addWidget(self._build_method())
@@ -263,6 +273,11 @@ class CreateBudgetView(QWidget):
         self.note.setObjectName("Muted")
         self.note.setWordWrap(True)
         buttons.addWidget(self.note, stretch=1)
+        self.cancel = QPushButton("Cancel")
+        self.cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cancel.clicked.connect(self._cancel_edit)
+        self.cancel.hide()
+        buttons.addWidget(self.cancel)
         self.create = QPushButton("Create budget")
         self.create.setCursor(Qt.CursorShape.PointingHandCursor)
         self.create.clicked.connect(self._create)
@@ -763,7 +778,24 @@ class CreateBudgetView(QWidget):
                 "this long. Type over it with whatever you would rather spend."
             )
 
-        if self.by_history.isChecked():
+        if self._editing and self.by_history.isChecked():
+            # The categories this budget already has, at the allowances it
+            # already has, in the order it was saved with. A refill in the
+            # ordinary sense -- every category that has seen spending, at its
+            # usual rate -- would quietly add lines the user never budgeted
+            # for and rewrite the ones they set by hand.
+            lines = [
+                budgets_mod.Envelope(c, self._pinned.get(c, a)) for c, a in self._original.items()
+            ] + [
+                budgets_mod.Envelope(c, a)
+                for c, a in self._pinned.items()
+                if c not in self._original
+            ]
+            self.method_note.setText(
+                f"The {len(lines)} categories in this budget. Change any allowance, "
+                "add one below, or right-click a row to take it out."
+            )
+        elif self.by_history.isChecked():
             # A figure typed over a suggestion stays as typed, and so does a
             # category added by hand. This screen refills itself whenever the
             # rest of the app refreshes -- after a sync, or a collection from
@@ -789,6 +821,18 @@ class CreateBudgetView(QWidget):
             weights = {
                 category: amount for category, amount in suggested.items() if amount.minor > 0
             } or self.ledger.spending_weights(accounts)
+            if self._editing:
+                # Splitting a new total across every category that has seen
+                # spending would add lines this budget does not have. Kept to
+                # its own categories, falling back to what each was allowed
+                # when the usual rate says nothing about it.
+                mine = set(self._original) | set(self._pinned)
+                weights = {
+                    category: weights.get(category)
+                    or self._original.get(category)
+                    or Money.parse("0.01")
+                    for category in mine
+                }
             if self.by_total.isChecked():
                 total = _parse(self.total_input.text())
                 if total is None or total.minor <= 0:
@@ -1362,6 +1406,11 @@ class CreateBudgetView(QWidget):
         category = str(name.data(Qt.ItemDataRole.UserRole + 1) or name.text())
 
         menu = QMenu(self)
+        if self._editing or category in self._pinned:
+            drop = QAction(f"Take {category} out of this budget", self)
+            drop.triggered.connect(lambda: self._drop_category(category))
+            menu.addAction(drop)
+            menu.addSeparator()
         menu_start, menu_end = self.date_range()
         found = self.ledger.commitments_in(category, menu_start, menu_end)
         if found:
@@ -1373,6 +1422,17 @@ class CreateBudgetView(QWidget):
             nothing.setEnabled(False)
             menu.addAction(nothing)
         menu.exec(self.table.viewport().mapToGlobal(position))
+
+    def _drop_category(self, category: str) -> None:
+        """Remove one category from the budget being built or edited."""
+        self._original.pop(category, None)
+        self._pinned.pop(category, None)
+        # Zero rather than absent while creating: a fresh suggestion would put
+        # it straight back, and `envelopes()` skips a line worth nothing.
+        if not self._editing:
+            self._pinned[category] = Money.zero()
+        self._hint = f"{category} is no longer in this budget."
+        self._fill()
 
     def _show_commitments(self, category: str, found: list) -> None:
         """List the recurring charges behind a category's committed figure."""
@@ -1500,6 +1560,90 @@ class CreateBudgetView(QWidget):
         self.table.editItem(self.table.item(row, 2))
         self._update_total()
 
+    # -- editing one that already exists ------------------------------------
+
+    def load_budget(self, budget) -> None:
+        """Fill this form from a saved budget, and save back onto it.
+
+        The same screen, because everything here applies just as well to a
+        budget that exists: the window, the accounts, how the numbers were
+        arrived at, and every allowance. A separate edit dialog would be a
+        second implementation of all of it, and the two would drift.
+
+        The id is kept, so the exclusions, the per-budget verdicts from the
+        phone and the budget's own screen all survive the edit. Deleting and
+        rebuilding -- the only way to change a budget until now -- lost them.
+        """
+        self._editing = budget.id
+        self._original = {e.category: e.allowance for e in budget.envelopes}
+        # Every allowance counts as decided by hand: they were, when the
+        # budget was made. Anything not touched here is saved back unchanged.
+        self._pinned = dict(self._original)
+
+        self._filling = True
+        try:
+            self.name.setText(budget.name)
+            self._name_is_ours = False
+            self.preset.setCurrentText("Custom")
+            self.starts.setDate(
+                QDate(budget.starts_on.year, budget.starts_on.month, budget.starts_on.day)
+            )
+            self.ends.setDate(QDate(budget.ends_on.year, budget.ends_on.month, budget.ends_on.day))
+            self._all_accounts.setChecked(not budget.accounts)
+            for account_id, box in self._account_boxes.items():
+                box.setChecked(account_id in budget.accounts)
+            if budget.expected_income or budget.savings_target or budget.fixed_costs:
+                self.by_backwards.setChecked(True)
+                self._backwards_is_ours = False
+                for box, amount in (
+                    (self.income_input, budget.expected_income),
+                    (self.saving_input, budget.savings_target),
+                    (self.fixed_input, budget.fixed_costs),
+                ):
+                    box.setText(f"{amount.decimal:.2f}" if amount else "")
+            else:
+                self.by_history.setChecked(True)
+                self.total_input.setText(f"{budget.total.decimal:.2f}")
+        finally:
+            self._filling = False
+
+        self.title.setText("Edit budget")
+        self.subtitle.setText(
+            f"Changing “{budget.name}”. Its spending, and anything you have taken "
+            "out of it, stay as they are."
+        )
+        self.create.setText("Save changes")
+        self.cancel.show()
+        self._hint = ""
+        self._fill()
+
+    def _cancel_edit(self) -> None:
+        """Leave the budget as it was and go back to making a new one."""
+        budget = self.ledger.budget_by_id(self._editing) if self._editing else None
+        self._leave_edit()
+        show = getattr(self.window(), "show_budget", None)
+        if budget is not None and callable(show):
+            show(budget.id)
+
+    def _leave_edit(self) -> None:
+        self._editing = ""
+        self._original = {}
+        self._pinned = {}
+        self.title.setText(_NEW_TITLE)
+        self.subtitle.setText(_NEW_SUBTITLE)
+        self.create.setText("Create budget")
+        self.cancel.hide()
+        self.name.clear()
+        self._name_is_ours = True
+        self.total_input.clear()
+        self._filling = True
+        try:
+            self.by_history.setChecked(True)
+            self.preset.setCurrentText(_PRESETS[0])
+        finally:
+            self._filling = False
+        self.refresh()
+
     # -- creating ---------------------------------------------------------
 
     def _create(self) -> None:
@@ -1513,7 +1657,7 @@ class CreateBudgetView(QWidget):
             return
 
         name = self.name.text().strip() or self._default_name(start, end)
-        if any(b.name == name for b in self.ledger.budgets):
+        if any(b.name == name and b.id != self._editing for b in self.ledger.budgets):
             answer = QMessageBox.question(
                 self,
                 "Same name",
@@ -1526,7 +1670,9 @@ class CreateBudgetView(QWidget):
 
         backwards = self.by_backwards.isChecked()
         budget = budgets_mod.Budget(
-            id=uuid.uuid4().hex[:12],
+            # The same budget when editing, so its exclusions, the verdicts
+            # sent from the phone and its own screen all follow the change.
+            id=self._editing or uuid.uuid4().hex[:12],
             name=name,
             starts_on=start,
             ends_on=end,
@@ -1550,11 +1696,11 @@ class CreateBudgetView(QWidget):
 
         publish_in_background(self, self.ledger)
 
-        self.name.clear()
-        self._name_is_ours = True
-        # Those figures were decisions about the budget just saved. Carried
-        # into the next one, they would reappear in a form that looks fresh.
-        self._pinned = {}
+        edited = bool(self._editing)
+        # Back to a blank form either way: those figures were decisions about
+        # the budget just saved, and carried into the next one they would
+        # reappear in a form that looks fresh.
+        self._leave_edit()
         # Rebuilds the sidebar so the new budget appears under My budgets, and
         # every other screen alongside it.
         refresh_everything(self)
@@ -1565,4 +1711,8 @@ class CreateBudgetView(QWidget):
         if callable(show):
             show(budget.id)
         else:
-            self.note.setText(f"Created “{name}”. It is in the sidebar under My budgets.")
+            self.note.setText(
+                f"Saved “{name}”."
+                if edited
+                else f"Created “{name}”. It is in the sidebar under My budgets."
+            )
