@@ -84,6 +84,17 @@ class MainWindow(QMainWindow):
         # construction, so the app is on screen and usable while it runs.
         QTimer.singleShot(600, self._sync_if_due)
 
+        # And again while it stays open. Checking only at launch meant a
+        # window opened when the day's requests were nearly spent never synced
+        # again: left open overnight, it sat on yesterday morning's data while
+        # the "every six hours" it promised never came. `is_due` is still the
+        # judge, so this spends nothing until a sync really is owed.
+        self._last_auto_attempt: datetime | None = None
+        self._sync_watch = QTimer(self)
+        self._sync_watch.setInterval(30 * 60 * 1000)  # half an hour
+        self._sync_watch.timeout.connect(lambda: self._sync_if_due(quiet=True))
+        self._sync_watch.start()
+
         # Next charge dates are counted forward from today, and today is read
         # when the ledger loads. An app left open across midnight would go on
         # showing yesterday's answer -- and for anything billing today, a date
@@ -345,17 +356,36 @@ class MainWindow(QMainWindow):
 
     # -- syncing ---------------------------------------------------------
 
-    def _sync_if_due(self) -> None:
-        """Sync on open, but only when the data is actually stale."""
+    #: The least time between two automatic attempts. A sync that fails
+    #: never marks itself done, so it stays "due", and without this a dead
+    #: connection would be retried on every check.
+    AUTO_RETRY_GAP_S = 60 * 60
+
+    def _sync_if_due(self, quiet: bool = False) -> None:
+        """Sync when the data is actually stale: on open, then on a timer.
+
+        `quiet` is the timer's call. It leaves the status line alone when
+        there is nothing to do, so a warning or a failure the user has not
+        read yet is not replaced with "last refreshed" half an hour later.
+        """
+        if self.syncer.running:
+            return
+        recently = self._last_auto_attempt is not None and (
+            (datetime.now() - self._last_auto_attempt).total_seconds() < self.AUTO_RETRY_GAP_S
+        )
+        if quiet and recently:
+            return
         if not sync_worker.is_configured():
-            self.sync_status.setText("No bank connected.")
+            if not quiet:
+                self.sync_status.setText("No bank connected.")
             return
         conn = db.connect(self.ledger.path)
         due = sync_worker.is_due(conn)
         conn.close()
         if due:
+            self._last_auto_attempt = datetime.now()
             self.syncer.start()
-        else:
+        elif not quiet:
             self._describe_last_sync()
 
     def _sync_now(self) -> None:

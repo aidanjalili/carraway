@@ -1629,3 +1629,63 @@ def test_a_renamed_built_in_is_listed_once_under_its_new_name(app, ledger):
     labels = [box.text().split("   ")[0] for box in view.findChildren(QCheckBox)]
     assert "Dining" not in labels
     assert labels.count("Eating out") == 1
+
+
+def test_an_open_window_keeps_checking_whether_a_sync_is_due(app, ledger, monkeypatch):
+    """Checked only at launch, a window opened when the day's requests were
+    nearly spent never synced again, however long it stayed open."""
+    from datetime import datetime, timedelta
+
+    from carraway.ui import main_window, sync_worker
+
+    window = main_window.MainWindow(ledger.path)
+    started: list[int] = []
+    due = {"now": False}
+    monkeypatch.setattr(sync_worker, "is_configured", lambda: True)
+    monkeypatch.setattr(sync_worker, "is_due", lambda conn: due["now"])
+    monkeypatch.setattr(window.syncer, "start", lambda: started.append(1) or True)
+    window.sync_status.setText("Refresh failed — offline")
+
+    window._sync_if_due(quiet=True)
+    assert started == []
+    # A quiet check with nothing to do leaves an unread message alone.
+    assert "failed" in window.sync_status.text()
+
+    due["now"] = True  # midnight passed and the allowance came back
+    window._sync_if_due(quiet=True)
+    assert started == [1]
+
+    # Still due, because a failed sync never marks itself done -- but not
+    # retried on every tick.
+    window._sync_if_due(quiet=True)
+    assert started == [1]
+    window._last_auto_attempt = datetime.now() - timedelta(hours=2)
+    window._sync_if_due(quiet=True)
+    assert started == [1, 1]
+    window.close()
+
+
+def test_a_failed_sync_still_counts_against_the_day(app, tmp_path, monkeypatch):
+    from carraway.core import db
+    from carraway.sync import budget, credentials, simplefin
+    from carraway.ui import sync_worker
+
+    path = tmp_path / "l.db"
+    db.connect(path).close()
+    monkeypatch.setattr(credentials, "load", lambda name: "https://user:pw@example.invalid/x")
+
+    def boom(self, *a, **k):
+        self.requests_made = 2
+        raise simplefin.SimpleFinError("connection reset")
+
+    monkeypatch.setattr(simplefin.SimpleFinProvider, "fetch", boom)
+    worker = sync_worker.SyncWorker(path)
+    failures: list[str] = []
+    worker.failed.connect(failures.append)
+    worker.run()
+
+    assert failures == ["connection reset"]
+    conn = db.connect(path)
+    # Two windows came back and a third was in flight when it failed.
+    assert budget.requests_left(conn) == budget.DAILY_REQUEST_BUDGET - 3
+    conn.close()

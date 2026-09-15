@@ -13,6 +13,8 @@ already ran; pressing Refresh always syncs, because that is a person asking.
 
 from __future__ import annotations
 
+import contextlib
+
 from PySide6.QtCore import QObject, QThread, Signal
 
 from ..core import backup, db
@@ -58,6 +60,8 @@ class SyncWorker(QObject):
             self.failed.emit("No provider is connected.")
             return
 
+        provider = None
+        conn = None
         try:
             conn = db.connect(self.database)
             # Snapshot first, for the same reason the CLI does: a sync is the
@@ -68,6 +72,7 @@ class SyncWorker(QObject):
             provider = SimpleFinProvider(access_url, account_ids=known)
             result = provider.fetch()
             budget.record_usage(conn, provider.requests_made)
+            provider = None  # counted; a later failure must not count it twice
 
             # Before the user's names replace them. See db.remember_bank_names.
             db.remember_bank_names(conn, result.accounts)
@@ -89,10 +94,30 @@ class SyncWorker(QObject):
             conn.close()
             self.finished.emit(inserted, skipped, list(result.warnings))
         except SimpleFinError as exc:
+            self._count_failed_attempt(conn, provider)
             self.failed.emit(str(exc))
         except Exception as exc:  # noqa: BLE001
+            self._count_failed_attempt(conn, provider)
             # A sync failing must never take the window down with it.
             self.failed.emit(f"{type(exc).__name__}: {exc}")
+
+    @staticmethod
+    def _count_failed_attempt(conn, provider) -> None:
+        """Charge a failed sync against the day's requests.
+
+        Usage used to be recorded only once a fetch came back whole, so a
+        sync that failed spent nothing as far as the budget knew -- and the
+        request that failed, plus any windows before it, may still have
+        counted at SimpleFIN. Now that the window retries on a timer, an
+        uncounted failure is one that could repeat all day. The request in
+        flight when it failed is counted too, since it was sent.
+        """
+        if conn is None or provider is None:
+            return
+        with contextlib.suppress(Exception):
+            budget.record_usage(conn, provider.requests_made + 1)
+        with contextlib.suppress(Exception):
+            conn.close()
 
 
 #: Every sync thread still running, kept alive by this set rather than by a
