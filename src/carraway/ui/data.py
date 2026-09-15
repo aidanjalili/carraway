@@ -715,6 +715,14 @@ class Ledger:
                             f"{budget.name} · {state.days_left} days left"
                             + (f" · {per_day.format()}/day" if per_day else "")
                         ),
+                        # The window this line covers, so the phone can list
+                        # the transactions behind the figure. The note has
+                        # carried the budget's name since the start, but a
+                        # name is not a date range and the phone has no other
+                        # way to know which rows were counted.
+                        "budget_id": budget.id,
+                        "starts_on": budget.starts_on.isoformat(),
+                        "ends_on": budget.ends_on.isoformat(),
                     }
                 )
 

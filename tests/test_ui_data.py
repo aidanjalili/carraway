@@ -658,7 +658,19 @@ def test_the_snapshot_carries_budget_lines_and_nothing_else(tmp_path, monkeypatc
     assert line["category"] == "Travel"
     assert line["remaining"] == "600.00"
     # Nothing that says where the money is, or what was bought.
-    assert set(line) == {"category", "allowance", "spent", "remaining", "note"}
+    assert set(line) == {
+        "category",
+        "allowance",
+        "spent",
+        "remaining",
+        "note",
+        "budget_id",
+        "starts_on",
+        "ends_on",
+    }
+    # The window, so the phone can list the rows behind the figure.
+    assert line["starts_on"] == date.today().isoformat()
+    assert line["ends_on"] == (date.today() + timedelta(days=20)).isoformat()
 
 
 # -- a detected series that shares a merchant with a tracked one ---------
