@@ -11,7 +11,7 @@ two, and the user can only weigh that if they can see it.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QColor
@@ -27,7 +27,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...analysis import subscriptions
 from ...core.money import Money, total
 from .. import theme
 from ..data import Ledger
@@ -180,39 +179,9 @@ class UpcomingView(QWidget):
         refresh_everything(self)
 
     def _expected(self, horizon_days: int) -> list[tuple[date, object]]:
-        """(date, series) for everything due inside the horizon, soonest first.
-
-        A yearly charge inside a 30-day window appears once; a weekly one
-        appears four times, because that is what will actually happen.
-        """
-        from ...analysis.recurring import advance
-
-        today = date.today()
-        limit = today + timedelta(days=horizon_days)
-
-        out: list[tuple[date, object]] = []
-        for series in self.ledger.series:
-            if self.ledger.kind_of(series) == subscriptions.CANCELLED:
-                continue
-            when = series.next_expected
-            if when is None:
-                continue
-            # A prediction already in the past is not upcoming; roll it
-            # forward so a series missed by a few days still shows its next
-            # real occurrence rather than disappearing. Calendar arithmetic
-            # rather than a fixed number of days, or a charge on the 30th
-            # walks backwards through the year.
-            day_of_month = when.day if series.cadence in ("monthly", "quarterly") else None
-            guard = 0
-            while when < today and guard < 600:
-                when = advance(when, series.cadence, day_of_month)
-                guard += 1
-            while when <= limit and guard < 600:
-                out.append((when, series))
-                when = advance(when, series.cadence, day_of_month)
-                guard += 1
-        out.sort(key=lambda row: (row[0], -abs(row[1].typical_amount.minor)))
-        return out
+        """What is due inside the horizon. The ledger works it out, because
+        the phone shows the same list from the same method."""
+        return self.ledger.expected_charges(horizon_days)
 
     def refresh(self) -> None:
         horizon = _HORIZONS[self.horizon.currentText()]

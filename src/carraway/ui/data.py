@@ -741,6 +741,9 @@ class Ledger:
             # name it did not already have in front of it.
             #
             # Only the recent window, because that is all the fetcher sees.
+            # What is due in the next month, so the phone can answer "what is
+            # still coming out" away from the laptop. Sealed with the rest.
+            "upcoming": self.upcoming_for_pocket(),
             "filing": self.fingerprint_categories(days=45),
             # What the phone may file a transaction under, starred first, so
             # its picker offers the same list as the laptop's rather than a
@@ -1117,6 +1120,61 @@ class Ledger:
         if votes:
             return votes.most_common(1)[0][0]
         return self.tracked_category(series) or "Subscriptions"
+
+    def expected_charges(self, horizon_days: int = 30) -> list[tuple[date, object]]:
+        """(date, series) for everything due inside the horizon, soonest first.
+
+        A yearly charge inside a 30-day window appears once; a weekly one
+        appears four times, because that is what will actually happen.
+
+        Lives here rather than on the Upcoming screen because the phone shows
+        the same list, and two implementations of "what is due next" would
+        disagree the first time one of them was corrected.
+        """
+        from datetime import timedelta
+
+        from ..analysis import subscriptions as subs_mod
+        from ..analysis.recurring import advance
+
+        today = date.today()
+        limit = today + timedelta(days=horizon_days)
+
+        out: list[tuple[date, object]] = []
+        for series in self.series:
+            if self.kind_of(series) == subs_mod.CANCELLED:
+                continue
+            when = series.next_expected
+            if when is None:
+                continue
+            # A prediction already in the past is not upcoming; roll it
+            # forward so a series missed by a few days still shows its next
+            # real occurrence rather than disappearing. Calendar arithmetic
+            # rather than a fixed number of days, or a charge on the 30th
+            # walks backwards through the year.
+            day_of_month = when.day if series.cadence in ("monthly", "quarterly") else None
+            guard = 0
+            while when < today and guard < 600:
+                when = advance(when, series.cadence, day_of_month)
+                guard += 1
+            while when <= limit and guard < 600:
+                out.append((when, series))
+                when = advance(when, series.cadence, day_of_month)
+                guard += 1
+        out.sort(key=lambda row: (row[0], -abs(row[1].typical_amount.minor)))
+        return out
+
+    def upcoming_for_pocket(self, horizon_days: int = 30) -> list[dict]:
+        """What is due in the next month, small enough to seal and send."""
+        return [
+            {
+                "date": when.isoformat(),
+                "what": series.merchant,
+                "amount": _wire(self.current_amount(series)),
+                "kind": self.kind_of(series),
+                "cadence": series.cadence,
+            }
+            for when, series in self.expected_charges(horizon_days)
+        ]
 
     def commitment_schedule(self, start: date, end: date) -> list:
         """Every charge already expected between two dates, with its date.
