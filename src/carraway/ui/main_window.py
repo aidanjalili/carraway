@@ -116,7 +116,11 @@ class MainWindow(QMainWindow):
         # bank sync or budget edit", which were the only two things that
         # published before. It skips when nothing has changed.
         self._pocket_timer = QTimer(self)
-        self._pocket_timer.setInterval(15 * 60 * 1000)
+        # Five minutes, not fifteen. This costs one request to the user's own
+        # server and no bank quota at all, and fifteen was how long a category
+        # chosen on the phone could sit there saying it had not been picked
+        # up -- long enough to read as broken rather than as pending.
+        self._pocket_timer.setInterval(5 * 60 * 1000)
         self._pocket_timer.timeout.connect(self._pocket_round_trip)
         self._pocket_timer.start()
         QTimer.singleShot(4000, self._pocket_round_trip)
