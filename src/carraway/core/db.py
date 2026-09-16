@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from .models import Account, AccountType, ExpectedMoney, Transaction
@@ -407,17 +407,55 @@ def list_accounts(conn: sqlite3.Connection) -> list[Account]:
 # -- transactions --------------------------------------------------------
 
 
+def _already_here_a_day_either_side(conn, tx: Transaction, days: int) -> bool:
+    """Whether this charge is already stored, dated within `days` of it.
+
+    For statement imports only. A bank statement dates a charge by the day it
+    was made; SimpleFIN dates it by the day it posted, which for some
+    merchants is the day after. The same DigitalOcean subscription arrived
+    twice a day apart, and the signature check -- which includes the date --
+    saw two different transactions. Thirty-nine of them built up on one card
+    before anyone noticed, $770 of spending that never happened.
+
+    Deliberately not applied to a sync. Two identical charges on consecutive
+    days are ordinary (the same sandwich shop twice), and dropping the second
+    would be the same class of bug in the other direction; a statement is the
+    only source that can restate what the bank has already told us.
+    """
+    since = (tx.date - timedelta(days=days)).isoformat()
+    until = (tx.date + timedelta(days=days)).isoformat()
+    wanted = " ".join(tx.description.split()).upper()
+    for row in conn.execute(
+        """
+        SELECT description FROM transactions
+        WHERE account_id = ? AND amount_minor = ? AND date BETWEEN ? AND ?
+        """,
+        (tx.account_id, tx.amount.minor, since, until),
+    ):
+        # Whitespace differs between the two sources for the same charge
+        # ("SUNCTRYAIR  UCJMGK" against "SUNCTRYAIR UCJMGK"), so it is
+        # collapsed rather than compared as sent.
+        if " ".join(str(row[0]).split()).upper() == wanted:
+            return True
+    return False
+
+
 def insert_transactions(
-    conn: sqlite3.Connection, transactions: list[Transaction]
+    conn: sqlite3.Connection, transactions: list[Transaction], *, near_days: int = 0
 ) -> tuple[int, int]:
     """Insert transactions, skipping ones already present.
 
     Returns `(inserted, skipped)`. Relies on the unique index over
     (account_id, signature) so that re-importing an overlapping statement
     cannot create duplicates.
+
+    `near_days` widens that to a window either side of the date, for callers
+    importing a statement: see `_already_here_a_day_either_side`.
     """
     inserted = 0
     for tx in transactions:
+        if near_days and _already_here_a_day_either_side(conn, tx, near_days):
+            continue
         cur = conn.execute(
             """
             INSERT OR IGNORE INTO transactions

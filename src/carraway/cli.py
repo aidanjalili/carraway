@@ -127,7 +127,9 @@ def cmd_import(args: argparse.Namespace) -> int:
             db.record_balance(conn, args.account, amount, observed)
             print(f"Recorded a balance of {amount.format()} as of {observed}.")
 
-    inserted, skipped = db.insert_transactions(conn, transactions)
+    # A statement import: the same charge may already be here from a sync,
+    # dated the day it posted rather than the day it was made.
+    inserted, skipped = db.insert_transactions(conn, transactions, near_days=3)
     print(f"Imported {inserted} transaction(s) from {Path(args.file).name}")
     if skipped:
         print(f"  {skipped} already present, skipped")

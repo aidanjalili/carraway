@@ -180,3 +180,56 @@ def test_prune_keeps_the_newest_backups_whatever_they_are_called(tmp_path):
 
     assert backup.prune(tmp_path / "x.db", keep=1) == 1
     assert new.exists() and not old.exists()
+
+
+def test_a_statement_does_not_re_add_what_a_sync_dated_a_day_later(tmp_path):
+    """A statement dates a charge when it was made; SimpleFIN dates it when it
+    posted. The same DigitalOcean subscription arrived twice, a day apart, 39
+    times on one card -- $770 of spending that never happened."""
+    from datetime import date
+
+    from carraway.core.models import Transaction
+    from carraway.core.money import Money
+
+    conn = make_db(tmp_path)
+    posted = Transaction(
+        id="synced",
+        account_id="acct1",
+        date=date(2026, 8, 2),
+        amount=Money.parse("-12.00"),
+        description="DIGITALOCEAN.COM",
+    )
+    assert db.insert_transactions(conn, [posted]) == (1, 0)
+
+    made = Transaction(
+        id="imported",
+        account_id="acct1",
+        date=date(2026, 8, 1),
+        # Whitespace differs between the two sources for the same charge.
+        amount=Money.parse("-12.00"),
+        description="DIGITALOCEAN.COM ",
+    )
+    assert db.insert_transactions(conn, [made], near_days=3) == (0, 1)
+    assert len(db.list_transactions(conn)) == 1
+
+    # A sync is not narrowed this way: two identical charges on consecutive
+    # days are ordinary, and dropping the second is the same bug reversed.
+    again = Transaction(
+        id="second-real-charge",
+        account_id="acct1",
+        date=date(2026, 8, 1),
+        amount=Money.parse("-12.00"),
+        description="DIGITALOCEAN.COM",
+    )
+    assert db.insert_transactions(conn, [again]) == (1, 0)
+
+    # And a charge of a different size a day apart is left alone either way.
+    other = Transaction(
+        id="different",
+        account_id="acct1",
+        date=date(2026, 8, 3),
+        amount=Money.parse("-12.18"),
+        description="DIGITALOCEAN.COM",
+    )
+    assert db.insert_transactions(conn, [other], near_days=3) == (1, 0)
+    assert len(db.list_transactions(conn)) == 3

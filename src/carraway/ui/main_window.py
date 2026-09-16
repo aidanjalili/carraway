@@ -557,7 +557,8 @@ class MainWindow(QMainWindow):
                     observed, amount = closing
                     db.record_balance(conn, account_id, amount, observed)
 
-            inserted, skipped = db.insert_transactions(conn, transactions)
+            # A statement import; see db.insert_transactions on near_days.
+            inserted, skipped = db.insert_transactions(conn, transactions, near_days=3)
             total_new += inserted
             total_skipped += skipped
             lines.append(f"{path.name}: {inserted} new, {skipped} already present")
