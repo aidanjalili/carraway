@@ -694,6 +694,32 @@ class Ledger:
                     ),
                     "elapsed_days": state.elapsed_days,
                     "total_days": state.total_days,
+                    # Everything the phone needs to work these figures out
+                    # again itself, days later, without the laptop.
+                    #
+                    # A phone a week away from an open laptop was showing last
+                    # week's budget: the figures above are worked out here, and
+                    # nothing on the server can redo them. With the window, the
+                    # accounts in scope and the dates the known bills fall on,
+                    # the phone can recompute the lot from the history it
+                    # already holds -- which the server keeps current twice a
+                    # day -- and only the arithmetic moves, never the source of
+                    # truth.
+                    "starts_on": budget.starts_on.isoformat(),
+                    "ends_on": budget.ends_on.isoformat(),
+                    # Account names, because a name is what the history rows
+                    # carry. Empty means every account, as it does here.
+                    "accounts": sorted(
+                        a.name for a in self.accounts if a.id in (budget.accounts or ())
+                    ),
+                    "schedule": [
+                        {
+                            "date": item.due.isoformat(),
+                            "amount": _wire(abs(item.amount)),
+                            "category": item.category,
+                        }
+                        for item in self.commitment_schedule(budget.starts_on, budget.ends_on)
+                    ],
                 }
             )
 
